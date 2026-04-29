@@ -184,7 +184,7 @@ def sample_dropbox_page_html():
     """Return HTML for the dropbox upload page."""
     return """
     <html>
-    <head><meta name="csrf-token" value="csrf_token_xyz789"></head>
+    <head><meta name="csrf-token" content="csrf_token_xyz789"></head>
     <body>
       <form id="edit_dropbox_123" action="/student/classes/11460711/core_tasks/27254393/dropbox" method="post">
         <input type="file" name="dropbox[assets_attributes][0][file]">

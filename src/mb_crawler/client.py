@@ -167,7 +167,9 @@ class ManageBacClient:
         for a in soup.find_all("a", href="/student/profile"):
             text = a.get_text(strip=True)
             if text and "Manage" in text:
-                self.student_name = text.split("Manage")[0].strip()
+                self.student_name = (
+                    text.split("Manage")[0].strip().rstrip("\u2014\u2015- ")
+                )
                 return
 
     # ── Tile parsing (Faria "f-tile" UI) ────────────────────────────────

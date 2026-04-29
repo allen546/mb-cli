@@ -597,6 +597,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output format (default: pretty for TTY, json otherwise)",
     )
+    logout.set_defaults(func=cmd_logout)
 
     daemon = subparsers.add_parser("daemon", help="Manage webhook daemon")
     daemon_subparsers = daemon.add_subparsers(dest="daemon_command", required=True)
