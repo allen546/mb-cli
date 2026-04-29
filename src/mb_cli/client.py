@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime
@@ -56,6 +57,7 @@ class ManageBacClient:
         self.student_name: str | None = None
         self.cache = cache or ResponseCache()
         self.retry = retry
+        self._last_url: str | None = None
 
     # ── Auth ────────────────────────────────────────────────────────────
 
@@ -106,11 +108,15 @@ class ManageBacClient:
         return False
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        headers = kwargs.pop("headers", {}) or {}
+        if self._last_url and "Referer" not in headers:
+            headers["Referer"] = self._last_url
         last_exc: Exception | None = None
         for attempt in range(self.retry + 1):
             try:
-                r = self.session.request(method, url, **kwargs)
+                r = self.session.request(method, url, headers=headers, **kwargs)
                 r.raise_for_status()
+                self._last_url = url
                 return r
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_exc = exc
@@ -816,6 +822,8 @@ class ManageBacClient:
             log.info("%s page %d: %d items", view, page, len(tasks))
             if not self._has_next_page(soup, page, view):
                 break
+            if page < max_pages:
+                time.sleep(random.uniform(0.5, 2.0))
         return all_tasks
 
     def get_task_detail(self, task_path: str) -> dict | None:
@@ -903,6 +911,8 @@ class ManageBacClient:
                     task["detail"] = detail
                 if (i + 1) % 5 == 0:
                     log.info("  detail %d/%d", i + 1, len(items))
+                if i < len(items) - 1:
+                    time.sleep(random.uniform(0.5, 2.0))
 
         return {
             "student_name": self.student_name,
