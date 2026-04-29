@@ -201,8 +201,11 @@ Run loop mode:
 
 ```bash
 mb daemon start
-mb daemon start --interval 900
+mb daemon start --interval 1800                        # 30 min base (randomized ±20%)
+mb daemon start --active-hours-start 8 --active-hours-end 22  # only check 8am-10pm
 ```
+
+The daemon randomizes its polling interval (±20% of base) and only runs during active hours (default 7am-11pm local time). Outside active hours it sleeps 10 minutes between checks.
 
 Stop loop mode:
 
