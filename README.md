@@ -4,6 +4,20 @@ Crawl **ManageBac** tasks, grades, submissions, notifications, calendar, and tim
 
 Supports both `managebac.com` and `managebac.cn` (China) instances.
 
+## Disclaimer
+
+**Use at your own risk.** This tool is an unofficial, community-maintained scraper. It is not affiliated with or endorsed by Faria Education or ManageBac. By using this tool, you acknowledge and accept the following:
+
+Faria/ManageBac's legal documents explicitly prohibit automated access:
+
+- **robots.txt** (managebac.com & managebac.cn): Disallows `/login`, `/admin`, `/api` for all user agents.
+- **Terms of Use §1.2.6**: "Accounts registered by 'bots' or screen scrapers and/or other automated means are not permitted and access will be terminated without notice."
+- **Terms of Service §5.5**: "Misuse of the Service, including but not limited to reverse engineering... may result in permanent and/or temporary suspension or termination of the School's account."
+- **Terms of Service §1.4**: Violations may result in account termination without notice.
+- **Terms of Service §9.4**: Schools exceeding 200 GB/month bandwidth may face caps or additional invoices.
+
+**The author of this tool bears no responsibility for any consequences resulting from its use, including but not limited to account suspension, termination, or school-level penalties.** You are solely responsible for ensuring your use complies with your school's policies and ManageBac's Terms of Service.
+
 ## Install
 
 ```bash
