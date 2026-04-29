@@ -21,6 +21,7 @@ mb-crawler notifications
 mb-crawler calendar
 mb-crawler timetable
 mb-crawler grades
+mb-crawler count-grade-freq
 mb-crawler logout
 mb-crawler daemon start
 mb-crawler daemon stop
@@ -43,7 +44,7 @@ An MCP (Model Context Protocol) server is also available for AI agent integratio
 mb-mcp
 ```
 
-This starts the server on stdio transport with 11 tools: `list_tasks`, `view_task`, `submit_file`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`.
+This starts the server on stdio transport with 12 tools: `list_tasks`, `view_task`, `submit_file`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`, `count_grade_frequencies`.
 
 ## Config files
 
@@ -159,6 +160,15 @@ mb-crawler grades --subject EL                 # fuzzy match class name
 
 Shows per-task grades, category weights, and a computed expected grade.
 
+## Count grade frequency
+
+Count how many times each grade letter appears across all or one class:
+
+```bash
+mb-crawler count-grade-freq                    # all classes
+mb-crawler count-grade-freq --subject EL       # one class only
+```
+
 ## Daemon
 
 Configure webhook:
@@ -223,6 +233,10 @@ hub.mark_read(235151424)
 # File submission
 client.submit_file("11460711", "27254393", "/path/to/file.pdf")
 ```
+
+## Stability note
+
+This tool is fundamentally a web scraper. It parses ManageBac HTML pages and relies on internal markup structure (CSS classes, DOM layout). If Faria Education changes their frontend, parsing may break without warning. The student name heuristic (`_capture_student_name`) is particularly fragile — it looks for a profile link with specific text patterns and may fail silently if the page layout changes.
 
 ## License
 

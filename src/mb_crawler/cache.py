@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -53,10 +54,11 @@ class ResponseCache:
         if not self.enabled:
             return
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.cache_dir, 0o700)
         data = {"url": url, "body": body, "status": status, "ts": time.time()}
-        self._path(url).write_text(
-            json.dumps(data, ensure_ascii=False), encoding="utf-8"
-        )
+        p = self._path(url)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.chmod(p, 0o600)
 
     def invalidate(self, url: str | None = None) -> None:
         """Remove one entry, or flush the entire cache if *url* is ``None``."""
