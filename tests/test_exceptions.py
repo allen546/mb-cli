@@ -1,6 +1,6 @@
-"""Tests for mb_crawler.exceptions."""
+"""Tests for mb_cli.exceptions."""
 
-from mb_crawler.exceptions import CommandError
+from mb_cli.exceptions import CommandError
 
 
 class TestCommandError:

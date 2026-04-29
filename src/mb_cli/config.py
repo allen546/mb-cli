@@ -1,4 +1,4 @@
-"""Configuration and session persistence for mb-crawler."""
+"""Configuration and session persistence for mb-cli."""
 
 from __future__ import annotations
 
