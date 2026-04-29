@@ -17,11 +17,12 @@ def hub_for_domain(domain: str) -> str:
 class MNNHubClient:
     """REST client for the ManageBac Notification Network hub."""
 
-    def __init__(self, endpoint: str, token: str):
+    def __init__(self, endpoint: str, token: str, verify: bool | str = True):
         self.base = f"{endpoint}/api/frontend/v2"
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
         self.session.headers["Content-Type"] = "application/json"
+        self.session.verify = verify
 
     # ── Read ────────────────────────────────────────────────────────────
 

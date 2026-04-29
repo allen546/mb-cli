@@ -49,6 +49,7 @@ class AppState:
 
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
 
 
 def resolve_config_path(explicit: str | None = None) -> Path:
@@ -80,6 +81,7 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
+    os.chmod(path, 0o600)
 
 
 def load_state(
