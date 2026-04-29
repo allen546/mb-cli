@@ -11,7 +11,13 @@ from datetime import date, datetime, timedelta
 from .auth import build_client
 from .client import ManageBacClient
 from .config import clear_session, load_state, save_profile, save_session
-from .daemon import configure_webhook, load_daemon_config, start_loop, stop_daemon
+from .daemon import (
+    configure_channel_send,
+    configure_webhook,
+    load_daemon_config,
+    start_loop,
+    stop_daemon,
+)
 from .exceptions import CommandError
 from .filters import (
     filter_result_by_subject,
@@ -197,7 +203,16 @@ def cmd_daemon_start(args) -> int:
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(args.daemon_config)
     if args.webhook_url:
-        daemon_config["webhook_url"] = args.webhook_url
+        daemon_config["delivery"] = {
+            "mode": "webhook",
+            "webhook_url": args.webhook_url,
+        }
+    if args.channel_id and args.recipient:
+        daemon_config["delivery"] = {
+            "mode": "channel_send",
+            "channel_id": args.channel_id,
+            "recipient": args.recipient,
+        }
     if args.interval is not None:
         daemon_config["interval"] = args.interval
     result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
@@ -218,6 +233,15 @@ def cmd_daemon_stop(args) -> int:
 def cmd_daemon_configure_webhook(args) -> int:
     config = configure_webhook(args.url, args.daemon_config)
     payload = ok("daemon.configure-webhook", "default", config)
+    print_payload(payload, args.output, args.format)
+    return 0
+
+
+def cmd_daemon_configure_channel(args) -> int:
+    config = configure_channel_send(
+        args.channel_id, args.recipient, args.daemon_config
+    )
+    payload = ok("daemon.configure-channel", "default", config)
     print_payload(payload, args.output, args.format)
     return 0
 
@@ -609,6 +633,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start.add_argument("--daemon-config", help="Path to daemon JSON config")
     daemon_start.add_argument("--webhook-url", help="Override webhook URL for this run")
     daemon_start.add_argument(
+        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+    )
+    daemon_start.add_argument(
+        "--recipient", help="Channel recipient ID (used with --channel-id)"
+    )
+    daemon_start.add_argument(
         "--interval", type=int, help="Polling interval in seconds"
     )
     daemon_start.add_argument(
@@ -645,6 +675,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: pretty for TTY, json otherwise)",
     )
     daemon_configure.set_defaults(func=cmd_daemon_configure_webhook)
+
+    daemon_configure_ch = daemon_subparsers.add_parser(
+        "configure-channel",
+        help="Persist delivery via zeroclaw channel send (no LLM call)",
+    )
+    daemon_configure_ch.add_argument(
+        "channel_id", help="Channel name (e.g. qq, telegram)"
+    )
+    daemon_configure_ch.add_argument(
+        "recipient", help="Recipient ID (platform-specific)"
+    )
+    daemon_configure_ch.add_argument(
+        "--daemon-config", help="Path to daemon JSON config"
+    )
+    daemon_configure_ch.add_argument("--output", "-o", help="Write output to file")
+    daemon_configure_ch.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default=None,
+        help="Output format (default: pretty for TTY, json otherwise)",
+    )
+    daemon_configure_ch.set_defaults(func=cmd_daemon_configure_channel)
 
     submit = subparsers.add_parser("submit", help="Upload a file to a task dropbox")
     add_common_auth_flags(submit)
