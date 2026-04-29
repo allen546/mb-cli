@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.__main__ (CLI entry-point)."""
+"""Tests for mb_cli.__main__ (CLI entry-point)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_crawler.__main__ import build_parser, main
+from mb_cli.__main__ import build_parser, main
 
 
 class TestBuildParser:
@@ -169,12 +169,12 @@ class TestMainLogin:
         mock_client.base = "https://bj80.managebac.cn"
         mock_client.session.cookies.get.return_value = "session_cookie"
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(
                 mock_client, "test@example.com"
             )
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -215,10 +215,10 @@ class TestMainList:
             "summary": {"upcoming_count": 1, "past_count": 0, "overdue_count": 0},
         }
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["list", "--format", "json"])
@@ -236,10 +236,10 @@ class TestMainView:
         mock_client = MagicMock()
         mock_client.get_task_detail.return_value = {"description": "Do this"}
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -258,10 +258,10 @@ class TestMainView:
 
         mock_client = MagicMock()
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["view", "--format", "json"])
@@ -282,10 +282,10 @@ class TestMainView:
             "crawled_at": "t",
         }
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["view", "99999", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -298,10 +298,10 @@ class TestMainSubmit:
 
         mock_client = MagicMock()
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -312,10 +312,10 @@ class TestMainSubmit:
 
         mock_client = MagicMock()
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "12345", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -339,10 +339,10 @@ class TestMainCalendar:
         mock_client = MagicMock()
         mock_client.get_calendar_events.return_value = []
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["calendar", "--today", "--format", "json"])
@@ -357,10 +357,10 @@ class TestMainTimetable:
         mock_client = MagicMock()
         mock_client.get_timetable.return_value = {"days": [], "lessons": []}
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["timetable", "--format", "json"])
@@ -383,10 +383,10 @@ class TestMainGrades:
             "crawled_at": "t",
         }
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--format", "json"])
@@ -404,10 +404,10 @@ class TestMainGrades:
             "expected_grade": None,
         }
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--class-id", "100", "--format", "json"])
@@ -422,11 +422,11 @@ class TestMainNotifications:
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
-                    with patch("mb_crawler.__main__.MNNHubClient") as MockHub:
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
+                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.stats.return_value = {"unread_messages": 2}
                         mock_hub.list.return_value = {
@@ -445,11 +445,11 @@ class TestMainNotifications:
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
-                    with patch("mb_crawler.__main__.MNNHubClient") as MockHub:
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
+                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.mark_read.return_value = True
                         with patch("builtins.print"):
@@ -471,7 +471,7 @@ class TestMainDaemon:
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
 
-        with patch("mb_crawler.__main__.stop_daemon") as mock_stop:
+        with patch("mb_cli.__main__.stop_daemon") as mock_stop:
             mock_stop.return_value = {"stopped": False, "reason": "pid_file_missing"}
             with patch("builtins.print"):
                 with pytest.raises(SystemExit) as exc_info:
@@ -482,7 +482,7 @@ class TestMainDaemon:
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
 
-        with patch("mb_crawler.__main__.configure_webhook") as mock_conf:
+        with patch("mb_cli.__main__.configure_webhook") as mock_conf:
             mock_conf.return_value = {"webhook_url": "http://new:8080/hook"}
             with patch("builtins.print"):
                 with pytest.raises(SystemExit) as exc_info:
@@ -510,10 +510,10 @@ class TestMainCountGradeFreq:
             "classes": [{"id": "100", "name": "Math"}],
         }
 
-        with patch("mb_crawler.__main__._build_client") as mock_bc:
+        with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_crawler.__main__.save_profile"):
-                with patch("mb_crawler.__main__.save_session"):
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["count-grade-freq", "--format", "json"])

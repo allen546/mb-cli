@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.mcp_server."""
+"""Tests for mb_cli.mcp_server."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_crawler.mcp_server import (
+from mb_cli.mcp_server import (
     count_grade_frequencies,
     get_calendar_events,
     get_class_grades,
@@ -28,7 +28,7 @@ from mb_crawler.mcp_server import (
 @pytest.fixture()
 def mock_build_client():
     """Patch auth.build_client for MCP tool tests."""
-    with patch("mb_crawler.mcp_server.build_client") as mock:
+    with patch("mb_cli.mcp_server.build_client") as mock:
         mock_state = MagicMock()
         mock_state.active_profile = "default"
         mock_client = MagicMock()
@@ -40,7 +40,7 @@ def mock_build_client():
 
 class TestMcpServerSetup:
     def test_mcp_name(self):
-        assert mcp.name == "mb-crawler"
+        assert mcp.name == "mb-cli"
 
     def test_tools_registered(self):
         tool_names = (
@@ -137,7 +137,7 @@ class TestGetNotificationsTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
-        with patch("mb_crawler.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {"unread_messages": 3}
             mock_hub.list.return_value = {
@@ -153,7 +153,7 @@ class TestGetNotificationsTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_crawler.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {}
             mock_hub.list.return_value = {"items": [], "meta": {}}
@@ -166,7 +166,7 @@ class TestMarkNotificationTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_crawler.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_read.return_value = True
             result = mark_notification(notification_id=123, action="read")
@@ -178,7 +178,7 @@ class TestMarkNotificationTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_crawler.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
             result = mark_notification(notification_id=123, action="invalid")
             data = json.loads(result)
             assert "error" in data
@@ -189,7 +189,7 @@ class TestMarkAllNotificationsReadTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_crawler.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_all_read.return_value = True
             result = mark_all_notifications_read()

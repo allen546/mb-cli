@@ -1,11 +1,11 @@
-"""Tests for mb_crawler.notifications."""
+"""Tests for mb_cli.notifications."""
 
 from __future__ import annotations
 
 import pytest
 import requests_mock
 
-from mb_crawler.notifications import HUB_ENDPOINTS, MNNHubClient, hub_for_domain
+from mb_cli.notifications import HUB_ENDPOINTS, MNNHubClient, hub_for_domain
 
 
 class TestHubForDomain:

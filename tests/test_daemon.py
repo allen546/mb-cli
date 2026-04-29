@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.daemon."""
+"""Tests for mb_cli.daemon."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests_mock as rm
 
-from mb_crawler.daemon import (
+from mb_cli.daemon import (
     DEFAULT_WEBHOOK_URL,
     configure_webhook,
     diff_snapshots,
@@ -258,16 +258,16 @@ class TestStopDaemon:
         assert result["stopped"] is False
         assert result["reason"] == "invalid_pid"
 
-    def test_non_mb_crawler_process(self, tmp_path: Path):
+    def test_non_mb_cli_process(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
         pid_path.write_text("99999")
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_crawler.daemon._is_mb_crawler_pid", return_value=False):
+        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=False):
             result = stop_daemon(str(config_path))
             assert result["stopped"] is False
-            assert result["reason"] == "not_mb_crawler_process"
+            assert result["reason"] == "not_mb_cli_process"
 
     def test_valid_process_kills(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
@@ -275,8 +275,8 @@ class TestStopDaemon:
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_crawler.daemon._is_mb_crawler_pid", return_value=True):
-            with patch("mb_crawler.daemon.os.kill") as mock_kill:
+        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=True):
+            with patch("mb_cli.daemon.os.kill") as mock_kill:
                 result = stop_daemon(str(config_path))
                 assert result["stopped"] is True
                 assert result["pid"] == 12345
