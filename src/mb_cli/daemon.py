@@ -7,15 +7,17 @@ Delivery modes:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time as dt_time
 import json
 import logging
 import os
 from pathlib import Path
+import random
 import shutil
 import signal
 import subprocess
 import time
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -45,6 +47,8 @@ def load_daemon_config(path: str | None = None) -> dict:
                 "webhook_url": DEFAULT_WEBHOOK_URL,
             },
             "interval": 900,
+            "active_hours_start": 7,
+            "active_hours_end": 23,
             "verify_tls": True,
             "snapshot_file": str(DEFAULT_SNAPSHOT_PATH),
             "pid_file": str(DEFAULT_PID_PATH),
@@ -175,13 +179,22 @@ def _send_channel(
     text = message + footer
 
     binary = zeroclaw_bin or shutil.which("zeroclaw") or "zeroclaw"
-    cmd = [binary, "channel", "send", text, "--channel-id", channel_id,
-           "--recipient", recipient]
+    cmd = [
+        binary,
+        "channel",
+        "send",
+        text,
+        "--channel-id",
+        channel_id,
+        "--recipient",
+        recipient,
+    ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
-            log.warning("channel send failed (rc=%d): %s", proc.returncode,
-                        proc.stderr.strip())
+            log.warning(
+                "channel send failed (rc=%d): %s", proc.returncode, proc.stderr.strip()
+            )
         return proc.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         log.error("channel send error: %s", exc)
@@ -208,6 +221,20 @@ def _deliver_alerts(
         result=result,
         verify=verify_tls,
     )
+
+
+def _is_within_active_hours(daemon_config: dict) -> bool:
+    """Check if current local time is within active hours."""
+    start_hour = daemon_config.get("active_hours_start", 7)
+    end_hour = daemon_config.get("active_hours_end", 23)
+    now = datetime.now(ZoneInfo("UTC")).astimezone().time()
+    return dt_time(start_hour) <= now <= dt_time(end_hour)
+
+
+def _sleep_interval(daemon_config: dict) -> float:
+    """Return a randomized sleep duration (base interval ±20%)."""
+    base = int(daemon_config.get("interval", 900))
+    return random.uniform(base * 0.8, base * 1.2)
 
 
 def run_daemon_once(
@@ -242,7 +269,9 @@ def configure_webhook(url: str, path: str | None = None) -> dict:
 
 
 def configure_channel_send(
-    channel_id: str, recipient: str, path: str | None = None,
+    channel_id: str,
+    recipient: str,
+    path: str | None = None,
     zeroclaw_bin: str | None = None,
 ) -> dict:
     config = load_daemon_config(path)
@@ -273,6 +302,10 @@ def start_loop(
 
     try:
         while True:
+            if not _is_within_active_hours(daemon_config):
+                _log(log_path, "outside active hours, sleeping...")
+                time.sleep(600)
+                continue
             result = run_daemon_once(client, daemon_config, dry_run=dry_run)
             _log(
                 log_path,
@@ -280,7 +313,7 @@ def start_loop(
             )
             if once:
                 return result
-            time.sleep(int(daemon_config.get("interval", 900)))
+            time.sleep(_sleep_interval(daemon_config))
     finally:
         if pid_path.exists():
             pid_path.unlink()

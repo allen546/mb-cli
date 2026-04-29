@@ -215,6 +215,10 @@ def cmd_daemon_start(args) -> int:
         }
     if args.interval is not None:
         daemon_config["interval"] = args.interval
+    if args.active_hours_start is not None:
+        daemon_config["active_hours_start"] = args.active_hours_start
+    if args.active_hours_end is not None:
+        daemon_config["active_hours_end"] = args.active_hours_end
     result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
     payload = ok(
         "daemon.start", state.active_profile, result | {"daemon": daemon_config}
@@ -238,9 +242,7 @@ def cmd_daemon_configure_webhook(args) -> int:
 
 
 def cmd_daemon_configure_channel(args) -> int:
-    config = configure_channel_send(
-        args.channel_id, args.recipient, args.daemon_config
-    )
+    config = configure_channel_send(args.channel_id, args.recipient, args.daemon_config)
     payload = ok("daemon.configure-channel", "default", config)
     print_payload(payload, args.output, args.format)
     return 0
@@ -640,6 +642,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     daemon_start.add_argument(
         "--interval", type=int, help="Polling interval in seconds"
+    )
+    daemon_start.add_argument(
+        "--active-hours-start",
+        type=int,
+        metavar="HOUR",
+        help="Start of active hours (0-23, default: 7)",
+    )
+    daemon_start.add_argument(
+        "--active-hours-end",
+        type=int,
+        metavar="HOUR",
+        help="End of active hours (0-23, default: 23)",
     )
     daemon_start.add_argument(
         "--dry-run",
