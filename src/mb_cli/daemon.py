@@ -1,18 +1,28 @@
-"""Webhook daemon support for mb-cli."""
+"""Daemon support for mb-cli — polls ManageBac and delivers alerts.
+
+Delivery modes:
+  - ``webhook``: POST alerts to an HTTP endpoint (legacy).
+  - ``channel_send``: push alerts via ``zeroclaw channel send`` (no LLM call).
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 import json
+import logging
 import os
 from pathlib import Path
+import shutil
 import signal
+import subprocess
 import time
 
 import requests
 
 from .client import ManageBacClient
 from .config import AppState, save_profile
+
+log = logging.getLogger(__name__)
 
 DEFAULT_DAEMON_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.json"
 DEFAULT_WEBHOOK_URL = "http://127.0.0.1:42617/webhook"
@@ -30,14 +40,24 @@ def load_daemon_config(path: str | None = None) -> dict:
     daemon_path = Path(path).expanduser() if path else DEFAULT_DAEMON_PATH
     if not daemon_path.exists():
         return {
-            "webhook_url": DEFAULT_WEBHOOK_URL,
+            "delivery": {
+                "mode": "webhook",
+                "webhook_url": DEFAULT_WEBHOOK_URL,
+            },
             "interval": 900,
             "verify_tls": True,
             "snapshot_file": str(DEFAULT_SNAPSHOT_PATH),
             "pid_file": str(DEFAULT_PID_PATH),
             "log_file": str(DEFAULT_LOG_PATH),
         }
-    return json.loads(daemon_path.read_text(encoding="utf-8"))
+    data = json.loads(daemon_path.read_text(encoding="utf-8"))
+    # Migrate legacy flat config → nested delivery block
+    if "delivery" not in data:
+        data["delivery"] = {
+            "mode": "webhook",
+            "webhook_url": data.pop("webhook_url", DEFAULT_WEBHOOK_URL),
+        }
+    return data
 
 
 def save_daemon_config(data: dict, path: str | None = None) -> Path:
@@ -138,6 +158,58 @@ def _post_webhook(
     return response.status_code < 400
 
 
+def _send_channel(
+    channel_id: str,
+    recipient: str,
+    alerts: list[dict],
+    result: dict,
+    zeroclaw_bin: str | None = None,
+) -> bool:
+    """Deliver alerts via ``zeroclaw channel send`` — no LLM call."""
+    message = "\n".join(alert["message"] for alert in alerts)
+    footer = (
+        f"\n[mb-cli] "
+        f"upcoming={result['summary']['upcoming_count']} "
+        f"overdue={result['summary']['overdue_count']}"
+    )
+    text = message + footer
+
+    binary = zeroclaw_bin or shutil.which("zeroclaw") or "zeroclaw"
+    cmd = [binary, "channel", "send", text, "--channel-id", channel_id,
+           "--recipient", recipient]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            log.warning("channel send failed (rc=%d): %s", proc.returncode,
+                        proc.stderr.strip())
+        return proc.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        log.error("channel send error: %s", exc)
+        return False
+
+
+def _deliver_alerts(
+    delivery: dict, alerts: list[dict], result: dict, verify_tls: bool = True
+) -> bool:
+    """Dispatch alerts to the configured delivery backend."""
+    mode = delivery.get("mode", "webhook")
+    if mode == "channel_send":
+        return _send_channel(
+            channel_id=delivery["channel_id"],
+            recipient=delivery["recipient"],
+            alerts=alerts,
+            result=result,
+            zeroclaw_bin=delivery.get("zeroclaw_bin"),
+        )
+    # Default: webhook
+    return _post_webhook(
+        webhook_url=delivery.get("webhook_url", DEFAULT_WEBHOOK_URL),
+        alerts=alerts,
+        result=result,
+        verify=verify_tls,
+    )
+
+
 def run_daemon_once(
     client: ManageBacClient,
     daemon_config: dict,
@@ -151,10 +223,9 @@ def run_daemon_once(
 
     delivered = False
     if alerts and not dry_run:
+        delivery = daemon_config.get("delivery", {"mode": "webhook"})
         verify = daemon_config.get("verify_tls", True)
-        delivered = _post_webhook(
-            daemon_config["webhook_url"], alerts, result, verify=verify
-        )
+        delivered = _deliver_alerts(delivery, alerts, result, verify_tls=verify)
     return {
         "alerts": alerts,
         "alert_count": len(alerts),
@@ -165,7 +236,24 @@ def run_daemon_once(
 
 def configure_webhook(url: str, path: str | None = None) -> dict:
     config = load_daemon_config(path)
-    config["webhook_url"] = url
+    config["delivery"] = {"mode": "webhook", "webhook_url": url}
+    save_daemon_config(config, path)
+    return config
+
+
+def configure_channel_send(
+    channel_id: str, recipient: str, path: str | None = None,
+    zeroclaw_bin: str | None = None,
+) -> dict:
+    config = load_daemon_config(path)
+    delivery: dict[str, str] = {
+        "mode": "channel_send",
+        "channel_id": channel_id,
+        "recipient": recipient,
+    }
+    if zeroclaw_bin:
+        delivery["zeroclaw_bin"] = zeroclaw_bin
+    config["delivery"] = delivery
     save_daemon_config(config, path)
     return config
 
