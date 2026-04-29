@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.client."""
+"""Tests for mb_cli.client."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests_mock as rm
 
-from mb_crawler.cache import ResponseCache
-from mb_crawler.client import HEADERS, ManageBacClient
+from mb_cli.cache import ResponseCache
+from mb_cli.client import HEADERS, ManageBacClient
 
 
 @pytest.fixture()
@@ -718,7 +718,7 @@ class TestRetryLogic:
                 "https://bj80.managebac.cn/student/tasks_and_deadlines",
                 text="<html>Dashboard</html>",
             )
-            with patch("mb_crawler.client.time.sleep"):
+            with patch("mb_cli.client.time.sleep"):
                 assert client.login("a@b.com", "pass") is True
 
     def test_retries_on_503(self, tmp_path: Path):
@@ -733,7 +733,7 @@ class TestRetryLogic:
                     {"text": "<html></html>"},
                 ],
             )
-            with patch("mb_crawler.client.time.sleep"):
+            with patch("mb_cli.client.time.sleep"):
                 tasks = client.get_tasks_by_view("upcoming", max_pages=1)
                 assert tasks == []
 
@@ -746,7 +746,7 @@ class TestRetryLogic:
                 "https://bj80.managebac.cn/student/tasks_and_deadlines?view=upcoming&page=1",
                 exc=ConnectionError("fail"),
             )
-            with patch("mb_crawler.client.time.sleep"):
+            with patch("mb_cli.client.time.sleep"):
                 with pytest.raises(ConnectionError):
                     client.get_tasks_by_view("upcoming", max_pages=1)
 

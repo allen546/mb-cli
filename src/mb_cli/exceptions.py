@@ -1,4 +1,4 @@
-"""Exception types for mb-crawler."""
+"""Exception types for mb-cli."""
 
 
 class CommandError(Exception):

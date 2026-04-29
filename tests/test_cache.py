@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.cache."""
+"""Tests for mb_cli.cache."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import time
 from pathlib import Path
 
-from mb_crawler.cache import ResponseCache
+from mb_cli.cache import ResponseCache
 
 
 class TestResponseCache:

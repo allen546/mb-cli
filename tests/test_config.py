@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.config."""
+"""Tests for mb_cli.config."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from mb_crawler.config import (
+from mb_cli.config import (
     AppState,
     ProfileConfig,
     SessionConfig,
@@ -63,37 +63,45 @@ class TestLoadState:
     def test_loads_from_existing_files(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        config_path.write_text(json.dumps({
-            "active_profile": "test",
-            "profiles": {
-                "test": {
-                    "school": "bj80",
-                    "domain": "managebac.cn",
-                    "email": "test@example.com",
-                    "defaults": {
-                        "view": "upcoming",
-                        "pages": 5,
-                        "subject": "Math",
-                        "details": True,
-                        "format": "json",
-                        "cache_ttl": 600,
+        config_path.write_text(
+            json.dumps(
+                {
+                    "active_profile": "test",
+                    "profiles": {
+                        "test": {
+                            "school": "bj80",
+                            "domain": "managebac.cn",
+                            "email": "test@example.com",
+                            "defaults": {
+                                "view": "upcoming",
+                                "pages": 5,
+                                "subject": "Math",
+                                "details": True,
+                                "format": "json",
+                                "cache_ttl": 600,
+                            },
+                        }
                     },
                 }
-            }
-        }))
-        session_path.write_text(json.dumps({
-            "active_profile": "test",
-            "profiles": {
-                "test": {
-                    "school": "bj80",
-                    "domain": "managebac.cn",
-                    "email": "test@example.com",
-                    "base_url": "https://bj80.managebac.cn",
-                    "cookie": "session_cookie_123",
-                    "logged_in_at": "2026-04-29T12:00:00",
+            )
+        )
+        session_path.write_text(
+            json.dumps(
+                {
+                    "active_profile": "test",
+                    "profiles": {
+                        "test": {
+                            "school": "bj80",
+                            "domain": "managebac.cn",
+                            "email": "test@example.com",
+                            "base_url": "https://bj80.managebac.cn",
+                            "cookie": "session_cookie_123",
+                            "logged_in_at": "2026-04-29T12:00:00",
+                        }
+                    },
                 }
-            }
-        }))
+            )
+        )
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
@@ -112,12 +120,16 @@ class TestLoadState:
     def test_profile_name_override(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        config_path.write_text(json.dumps({
-            "profiles": {"alpha": {"school": "s1"}, "beta": {"school": "s2"}}
-        }))
-        session_path.write_text(json.dumps({
-            "profiles": {"alpha": {"cookie": "c1"}, "beta": {"cookie": "c2"}}
-        }))
+        config_path.write_text(
+            json.dumps(
+                {"profiles": {"alpha": {"school": "s1"}, "beta": {"school": "s2"}}}
+            )
+        )
+        session_path.write_text(
+            json.dumps(
+                {"profiles": {"alpha": {"cookie": "c1"}, "beta": {"cookie": "c2"}}}
+            )
+        )
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
@@ -147,12 +159,16 @@ class TestSaveProfile:
     def test_preserves_other_profiles(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        config_path.write_text(json.dumps({
-            "profiles": {
-                "existing": {"school": "old_school"},
-                "default": {},
-            }
-        }))
+        config_path.write_text(
+            json.dumps(
+                {
+                    "profiles": {
+                        "existing": {"school": "old_school"},
+                        "default": {},
+                    }
+                }
+            )
+        )
         session_path.write_text(json.dumps({}))
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
@@ -187,12 +203,16 @@ class TestClearSession:
     def test_clear_single_profile(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        session_path.write_text(json.dumps({
-            "profiles": {
-                "default": {"cookie": "c1"},
-                "other": {"cookie": "c2"},
-            }
-        }))
+        session_path.write_text(
+            json.dumps(
+                {
+                    "profiles": {
+                        "default": {"cookie": "c1"},
+                        "other": {"cookie": "c2"},
+                    }
+                }
+            )
+        )
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
@@ -206,9 +226,11 @@ class TestClearSession:
     def test_clear_all_profiles(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        session_path.write_text(json.dumps({
-            "profiles": {"default": {"cookie": "c1"}, "other": {"cookie": "c2"}}
-        }))
+        session_path.write_text(
+            json.dumps(
+                {"profiles": {"default": {"cookie": "c1"}, "other": {"cookie": "c2"}}}
+            )
+        )
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
@@ -219,9 +241,7 @@ class TestClearSession:
     def test_clear_last_profile_removes_file(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        session_path.write_text(json.dumps({
-            "profiles": {"default": {"cookie": "c1"}}
-        }))
+        session_path.write_text(json.dumps({"profiles": {"default": {"cookie": "c1"}}}))
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 

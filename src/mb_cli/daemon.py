@@ -1,4 +1,4 @@
-"""Webhook daemon support for mb-crawler."""
+"""Webhook daemon support for mb-cli."""
 
 from __future__ import annotations
 
@@ -198,8 +198,8 @@ def start_loop(
             pid_path.unlink()
 
 
-def _is_mb_crawler_pid(pid: int) -> bool:
-    """Check whether *pid* belongs to an mb-crawler process."""
+def _is_mb_cli_pid(pid: int) -> bool:
+    """Check whether *pid* belongs to an mb-cli process."""
     import subprocess
 
     try:
@@ -212,7 +212,7 @@ def _is_mb_crawler_pid(pid: int) -> bool:
         if result.returncode != 0:
             return False
         cmdline = result.stdout.strip()
-        return "mb-crawler" in cmdline or "mb_crawler" in cmdline
+        return "mb-cli" in cmdline or "mb_cli" in cmdline or "mb_crawler" in cmdline
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -238,11 +238,11 @@ def stop_daemon(path: str | None = None) -> dict:
         pid_path.unlink(missing_ok=True)
         return {"stopped": False, "reason": "invalid_pid", "pid_file": str(pid_path)}
 
-    if not _is_mb_crawler_pid(pid):
+    if not _is_mb_cli_pid(pid):
         pid_path.unlink(missing_ok=True)
         return {
             "stopped": False,
-            "reason": "not_mb_crawler_process",
+            "reason": "not_mb_cli_process",
             "pid": pid,
             "pid_file": str(pid_path),
         }

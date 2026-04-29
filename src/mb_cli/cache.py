@@ -1,4 +1,4 @@
-"""Disk-based HTTP response cache with TTL for mb-crawler."""
+"""Disk-based HTTP response cache with TTL for mb-cli."""
 
 from __future__ import annotations
 

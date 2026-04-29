@@ -13,7 +13,7 @@ from .client import ManageBacClient
 from .notifications import MNNHubClient, hub_for_domain
 
 mcp = FastMCP(
-    "mb-crawler",
+    "mb-cli",
     instructions=(
         "ManageBac MCP server. Provides tools to interact with ManageBac: "
         "list/view tasks, submit files, view notifications, calendar events, "

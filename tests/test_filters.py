@@ -1,10 +1,10 @@
-"""Tests for mb_crawler.filters."""
+"""Tests for mb_cli.filters."""
 
 from __future__ import annotations
 
 import pytest
 
-from mb_crawler.filters import (
+from mb_cli.filters import (
     filter_result_by_subject,
     find_task_by_id,
     matches_subject,

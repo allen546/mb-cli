@@ -1,4 +1,4 @@
-"""CLI entry-point for ``mb-crawler`` / ``python -m mb_crawler``."""
+"""CLI entry-point for ``mb`` / ``python -m mb_cli``."""
 
 from __future__ import annotations
 
@@ -485,7 +485,7 @@ def cmd_count_grade_freq(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mb-crawler",
+        prog="mb",
         description="Crawl ManageBac tasks, grades & submissions",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.formatters."""
+"""Tests for mb_cli.formatters."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
-from mb_crawler.formatters import (
+from mb_cli.formatters import (
     error,
     ok,
     print_payload,
@@ -23,12 +23,12 @@ class TestResolveFormat:
         assert resolve_format("pretty") == "pretty"
 
     def test_none_defaults_to_json_when_not_tty(self):
-        with patch("mb_crawler.formatters.sys") as mock_sys:
+        with patch("mb_cli.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             assert resolve_format(None) == "json"
 
     def test_none_defaults_to_pretty_when_tty(self):
-        with patch("mb_crawler.formatters.sys") as mock_sys:
+        with patch("mb_cli.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = True
             assert resolve_format(None) == "pretty"
 

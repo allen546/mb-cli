@@ -1,4 +1,4 @@
-"""Tests for mb_crawler.auth."""
+"""Tests for mb_cli.auth."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_crawler.auth import build_client
-from mb_crawler.exceptions import CommandError
+from mb_cli.auth import build_client
+from mb_cli.exceptions import CommandError
 
 
 class TestBuildClient:
@@ -76,7 +76,7 @@ class TestBuildClient:
         assert client.session.cookies.get("_managebac_session") == "my_cookie_value"
         assert state.profile.school == "bj80"
 
-    @patch("mb_crawler.auth.ManageBacClient")
+    @patch("mb_cli.auth.ManageBacClient")
     def test_password_auth(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = True
@@ -98,7 +98,7 @@ class TestBuildClient:
         mock_instance.login.assert_called_once_with("test@example.com", "secret")
         assert email == "test@example.com"
 
-    @patch("mb_crawler.auth.ManageBacClient")
+    @patch("mb_cli.auth.ManageBacClient")
     def test_password_auth_failure(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = False

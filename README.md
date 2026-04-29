@@ -1,4 +1,4 @@
-# mb-crawler
+# mb-cli
 
 Crawl **ManageBac** tasks, grades, submissions, notifications, calendar, and timetable from the command line or via MCP.
 
@@ -13,19 +13,19 @@ pip install .
 ## Commands
 
 ```bash
-mb-crawler login
-mb-crawler list
-mb-crawler view
-mb-crawler submit
-mb-crawler notifications
-mb-crawler calendar
-mb-crawler timetable
-mb-crawler grades
-mb-crawler count-grade-freq
-mb-crawler logout
-mb-crawler daemon start
-mb-crawler daemon stop
-mb-crawler daemon configure-webhook
+mb login
+mb list
+mb view
+mb submit
+mb notifications
+mb calendar
+mb timetable
+mb grades
+mb count-grade-freq
+mb logout
+mb daemon start
+mb daemon stop
+mb daemon configure-webhook
 ```
 
 Output defaults:
@@ -48,7 +48,7 @@ This starts the server on stdio transport with 12 tools: `list_tasks`, `view_tas
 
 ## Config files
 
-By default, `mb-crawler` stores JSON files in `~/.config/mb-crawler/`:
+By default, `mb-cli` stores JSON files in `~/.config/mb-crawler/`:
 
 - `config.json`
 - `session.json`
@@ -67,19 +67,19 @@ Override config/session paths with:
 ## Login
 
 ```bash
-mb-crawler login --school bj80 --domain managebac.cn -e you@example.com
+mb login --school bj80 --domain managebac.cn -e you@example.com
 ```
 
 Or with password inline:
 
 ```bash
-mb-crawler login --school bj80 --domain managebac.cn -e you@example.com -p yourpassword
+mb login --school bj80 --domain managebac.cn -e you@example.com -p yourpassword
 ```
 
 Or with an existing session cookie:
 
 ```bash
-mb-crawler login --school bj80 --domain managebac.cn -c "YOUR_COOKIE_VALUE"
+mb login --school bj80 --domain managebac.cn -c "YOUR_COOKIE_VALUE"
 ```
 
 Note that this will invalidate the session of the browser you obtained the cookie from.
@@ -87,18 +87,18 @@ Note that this will invalidate the session of the browser you obtained the cooki
 ## List tasks
 
 ```bash
-mb-crawler list
-mb-crawler list --view past
-mb-crawler list --subject EL
-mb-crawler list --details
-mb-crawler list --view overdue --details
+mb list
+mb list --view past
+mb list --subject EL
+mb list --details
+mb list --view overdue --details
 ```
 
 ## View one task
 
 ```bash
-mb-crawler view 27080372
-mb-crawler view "https://bj80.managebac.cn/student/classes/11460718/core_tasks/27080372"
+mb view 27080372
+mb view "https://bj80.managebac.cn/student/classes/11460718/core_tasks/27080372"
 ```
 
 ## Submit files
@@ -106,8 +106,8 @@ mb-crawler view "https://bj80.managebac.cn/student/classes/11460718/core_tasks/2
 Upload a file to a task's dropbox:
 
 ```bash
-mb-crawler submit 27254393 homework.pdf
-mb-crawler submit "https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393" homework.pdf
+mb submit 27254393 homework.pdf
+mb submit "https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393" homework.pdf
 ```
 
 ## Notifications
@@ -115,11 +115,11 @@ mb-crawler submit "https://bj80.managebac.cn/student/classes/11460711/core_tasks
 View and manage notifications via the MNN Hub API:
 
 ```bash
-mb-crawler notifications                         # list (page 1)
-mb-crawler notifications --page 2 --per-page 10  # pagination
-mb-crawler notifications --read 235151424         # mark as read
-mb-crawler notifications --read-all               # mark all as read
-mb-crawler notifications --unread 235151424       # mark as unread
+mb notifications                         # list (page 1)
+mb notifications --page 2 --per-page 10  # pagination
+mb notifications --read 235151424         # mark as read
+mb notifications --read-all               # mark all as read
+mb notifications --unread 235151424       # mark as unread
 ```
 
 Unread notifications are marked with `*`.
@@ -129,11 +129,11 @@ Unread notifications are marked with `*`.
 View calendar events via the JSON API or raw iCal feed:
 
 ```bash
-mb-crawler calendar                           # next 7 days
-mb-crawler calendar --start 2026-05-01 --end 2026-05-07
-mb-crawler calendar --today                   # today only
-mb-crawler calendar --ical                    # raw iCal feed output
-mb-crawler calendar --ical -o calendar.ics   # save iCal to file
+mb calendar                           # next 7 days
+mb calendar --start 2026-05-01 --end 2026-05-07
+mb calendar --today                   # today only
+mb calendar --ical                    # raw iCal feed output
+mb calendar --ical -o calendar.ics   # save iCal to file
 ```
 
 ## Timetable
@@ -141,9 +141,9 @@ mb-crawler calendar --ical -o calendar.ics   # save iCal to file
 View the weekly timetable (HTML scrape):
 
 ```bash
-mb-crawler timetable                          # this week
-mb-crawler timetable --date 2026-04-28        # week starting from date
-mb-crawler timetable --today                  # this week
+mb timetable                          # this week
+mb timetable --date 2026-04-28        # week starting from date
+mb timetable --today                  # this week
 ```
 
 Current day is marked with `*`.
@@ -153,9 +153,9 @@ Current day is marked with `*`.
 View all grades for a class and its expected grade:
 
 ```bash
-mb-crawler grades                              # list all classes
-mb-crawler grades --class-id 11460711          # detailed grades for one class
-mb-crawler grades --subject EL                 # fuzzy match class name
+mb grades                              # list all classes
+mb grades --class-id 11460711          # detailed grades for one class
+mb grades --subject EL                 # fuzzy match class name
 ```
 
 Shows per-task grades, category weights, and a computed expected grade.
@@ -165,8 +165,8 @@ Shows per-task grades, category weights, and a computed expected grade.
 Count how many times each grade letter appears across all or one class:
 
 ```bash
-mb-crawler count-grade-freq                    # all classes
-mb-crawler count-grade-freq --subject EL       # one class only
+mb count-grade-freq                    # all classes
+mb count-grade-freq --subject EL       # one class only
 ```
 
 ## Daemon
@@ -174,40 +174,40 @@ mb-crawler count-grade-freq --subject EL       # one class only
 Configure webhook:
 
 ```bash
-mb-crawler daemon configure-webhook http://127.0.0.1:42617/webhook
+mb daemon configure-webhook http://127.0.0.1:42617/webhook
 ```
 
 Run one daemon cycle without posting:
 
 ```bash
-mb-crawler daemon start --once --dry-run
+mb daemon start --once --dry-run
 ```
 
 Run loop mode:
 
 ```bash
-mb-crawler daemon start
-mb-crawler daemon start --interval 900
+mb daemon start
+mb daemon start --interval 900
 ```
 
 Stop loop mode:
 
 ```bash
-mb-crawler daemon stop
+mb daemon stop
 ```
 
 ## Logout
 
 ```bash
-mb-crawler logout
-mb-crawler logout --all
+mb logout
+mb logout --all
 ```
 
 ## Library usage
 
 ```python
-from mb_crawler import ManageBacClient, MNNHubClient
-from mb_crawler.notifications import hub_for_domain
+from mb_cli import ManageBacClient, MNNHubClient
+from mb_cli.notifications import hub_for_domain
 
 client = ManageBacClient("bj80", domain="managebac.cn")
 client.login("you@example.com", "password")
