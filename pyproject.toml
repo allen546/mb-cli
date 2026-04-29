@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mb-crawler"
-version = "0.1.0"
+version = "0.2.0"
 description = "Crawl ManageBac tasks, grades & submission states"
 readme = "README.md"
 license = "MIT"
@@ -22,8 +22,10 @@ classifiers = [
 dependencies = [
     "requests>=2.28",
     "beautifulsoup4>=4.12",
-    "icalendar>=5.0",
 ]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.20"]
 
 [project.scripts]
 mb-crawler = "mb_crawler.__main__:main"

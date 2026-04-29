@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
-import sys
+import time
 from datetime import datetime
 from urllib.parse import urljoin
 
@@ -11,6 +13,11 @@ import requests
 from bs4 import BeautifulSoup
 
 from .cache import ResponseCache
+
+log = logging.getLogger(__name__)
+
+# Retryable HTTP status codes (server errors that may resolve on retry)
+_RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 HEADERS = {
     "User-Agent": (
@@ -37,31 +44,32 @@ class ManageBacClient:
         school: str,
         domain: str = "managebac.com",
         cache: ResponseCache | None = None,
+        verify: bool | str = True,
+        retry: int = 3,
     ):
         self.school = school.replace(f".{domain}", "")
         self.domain = domain
         self.base = f"https://{self.school}.{domain}"
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+        self.session.verify = verify
         self.student_name: str | None = None
         self.cache = cache or ResponseCache()
+        self.retry = retry
 
     # ── Auth ────────────────────────────────────────────────────────────
 
     def login(self, email: str, password: str) -> bool:
         """Authenticate with email + password.  Returns *True* on success."""
-        r = self.session.get(f"{self.base}/login")
-        r.raise_for_status()
+        r = self._request_with_retry("GET", f"{self.base}/login")
         soup = BeautifulSoup(r.text, "html.parser")
         token_el = soup.find("input", {"name": "authenticity_token"})
         if not token_el:
-            print(
-                "Error: could not find authenticity_token on login page",
-                file=sys.stderr,
-            )
+            log.warning("could not find authenticity_token on login page")
             return False
 
-        r = self.session.post(
+        r = self._request_with_retry(
+            "POST",
             f"{self.base}/sessions",
             data={
                 "authenticity_token": token_el["value"],
@@ -70,10 +78,9 @@ class ManageBacClient:
             },
             allow_redirects=True,
         )
-        r.raise_for_status()
 
         if "/login" in r.url or "login" in r.url.split("/")[-1]:
-            print("Error: login failed — check credentials", file=sys.stderr)
+            log.warning("login failed — check credentials")
             return False
         return True
 
@@ -89,6 +96,53 @@ class ManageBacClient:
         """Clear the entire response cache."""
         self.cache.invalidate()
 
+    # ── Retry logic ─────────────────────────────────────────────────────
+
+    def _is_retryable(self, exc: Exception) -> bool:
+        if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+            return True
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            return exc.response.status_code in _RETRYABLE_STATUS_CODES
+        return False
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        last_exc: Exception | None = None
+        for attempt in range(self.retry + 1):
+            try:
+                r = self.session.request(method, url, **kwargs)
+                r.raise_for_status()
+                return r
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last_exc = exc
+                if attempt < self.retry:
+                    delay = 2**attempt
+                    log.warning(
+                        "%s %s failed (attempt %d/%d), retrying in %ds...",
+                        method,
+                        url,
+                        attempt + 1,
+                        self.retry + 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+            except requests.HTTPError as exc:
+                if self._is_retryable(exc) and attempt < self.retry:
+                    last_exc = exc
+                    delay = 2**attempt
+                    log.warning(
+                        "%s %s returned %d (attempt %d/%d), retrying in %ds...",
+                        method,
+                        url,
+                        exc.response.status_code,
+                        attempt + 1,
+                        self.retry + 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+        raise last_exc  # type: ignore[misc]
+
     # ── Internal helpers ────────────────────────────────────────────────
 
     def _get(self, path: str) -> BeautifulSoup:
@@ -101,8 +155,7 @@ class ManageBacClient:
                 raise RuntimeError("Session expired or invalid — redirected to login")
             return soup
 
-        r = self.session.get(url)
-        r.raise_for_status()
+        r = self._request_with_retry("GET", url)
         if "/login" in r.url:
             raise RuntimeError("Session expired or invalid — redirected to login")
         self.cache.put(url, r.text, r.status_code)
@@ -188,10 +241,22 @@ class ManageBacClient:
         return [t for tile in tiles if (t := self._parse_tile(tile))]
 
     def _has_next_page(self, soup: BeautifulSoup, page: int, view: str) -> bool:
-        for a in soup.find_all("a", href=re.compile(r"page=")):
-            href = a.get("href", "")
-            if f"page={page + 1}" in href and f"view={view}" in href:
-                return True
+        next_page = page + 1
+        # 1. Look for any link with page={next} (most robust — don't require view param)
+        for a in soup.find_all("a", href=re.compile(rf"page={next_page}")):
+            return True
+        # 2. Look for rel="next" link
+        if soup.find("a", rel="next"):
+            return True
+        # 3. Look for a "next" button (class or aria-label containing "next")
+        for el in soup.find_all(["a", "button"], attrs={"rel": "next"}):
+            return True
+        for el in soup.find_all(["a", "button"]):
+            classes = " ".join(el.get("class", []))
+            aria = el.get("aria-label", "")
+            if "next" in classes.lower() or "next" in aria.lower():
+                if not el.get("disabled") and "disabled" not in classes.lower():
+                    return True
         return False
 
     def _text_from_block(self, node, limit: int | None = None) -> str | None:
@@ -343,8 +408,9 @@ class ManageBacClient:
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
             }
-            r = self.session.post(upload_url, data=data, files=files, headers=headers)
-            r.raise_for_status()
+            r = self._request_with_retry(
+                "POST", upload_url, data=data, files=files, headers=headers
+            )
 
         task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
         return {
@@ -392,13 +458,13 @@ class ManageBacClient:
         cached = self.cache.get(url)
         if cached is not None:
             body, _status = cached
-            events = __import__("json").loads(body)
+            events = json.loads(body)
         else:
-            r = self.session.get(
+            r = self._request_with_retry(
+                "GET",
                 f"{self.base}/student/events.json",
                 params={"start": start, "end": end},
             )
-            r.raise_for_status()
             if "/login" in r.url:
                 raise RuntimeError("Session expired or invalid — redirected to login")
             self.cache.put(url, r.text, r.status_code)
@@ -439,8 +505,7 @@ class ManageBacClient:
         cached = self.cache.get(ical_url)
         if cached is not None:
             return cached[0]
-        r = self.session.get(ical_url)
-        r.raise_for_status()
+        r = self._request_with_retry("GET", ical_url)
         self.cache.put(ical_url, r.text, r.status_code)
         return r.text
 
@@ -564,9 +629,7 @@ class ManageBacClient:
         if chart:
             raw_labels = chart.get("data-grade-labels", "{}")
             try:
-                grade_scale = {
-                    int(k): v for k, v in __import__("json").loads(raw_labels).items()
-                }
+                grade_scale = {int(k): v for k, v in json.loads(raw_labels).items()}
             except Exception:
                 pass
 
@@ -656,8 +719,6 @@ class ManageBacClient:
 
         raw_series = chart.get("data-series", "[]")
         try:
-            import json
-
             series = json.loads(raw_series)
         except Exception:
             return None
@@ -690,6 +751,53 @@ class ManageBacClient:
             "note": "Unweighted average from chart data",
         }
 
+    # ── Grade frequency ─────────────────────────────────────────────────
+
+    def count_grade_frequencies(self, class_filter: str | None = None) -> dict:
+        """Count frequency of each grade letter across all or one class.
+
+        Returns ``{"grades": {"A": 5, "B": 3, ...}, "total": N, "classes": [...]}``.
+        """
+        result = self.crawl_all(max_pages=5, fetch_details=False)
+        seen: dict[str, str] = {}
+        for task in result["upcoming"] + result["past"] + result["overdue"]:
+            link = task.get("link", "")
+            m = re.search(r"/student/classes/(\d+)/", link)
+            cname = task.get("class_name", "")
+            if m and cname:
+                seen[m.group(1)] = cname
+
+        target_classes: list[tuple[str, str]]
+        if class_filter:
+            target_classes = [
+                (cid, cn)
+                for cid, cn in seen.items()
+                if class_filter.lower() in cn.lower()
+            ]
+            if not target_classes:
+                return {
+                    "error": f"No class matching '{class_filter}'",
+                    "available": list(seen.values()),
+                }
+        else:
+            target_classes = list(seen.items())
+
+        freq: dict[str, int] = {}
+        classes_used: list[dict] = []
+        for cid, cname in target_classes:
+            grades = self.get_class_grades(cid)
+            classes_used.append({"id": cid, "name": cname})
+            for task in grades.get("tasks", []):
+                letter = task.get("grade_letter")
+                if letter:
+                    freq[letter] = freq.get(letter, 0) + 1
+
+        return {
+            "grades": dict(sorted(freq.items())),
+            "total": sum(freq.values()),
+            "classes": classes_used,
+        }
+
     # ── Public crawl methods ────────────────────────────────────────────
 
     def get_tasks_by_view(self, view: str, max_pages: int = 10) -> list[dict]:
@@ -703,7 +811,7 @@ class ManageBacClient:
             for t in tasks:
                 t["view"] = view
             all_tasks.extend(tasks)
-            print(f"  {view} page {page}: {len(tasks)} items", file=sys.stderr)
+            log.info("%s page %d: %d items", view, page, len(tasks))
             if not self._has_next_page(soup, page, view):
                 break
         return all_tasks
@@ -777,22 +885,22 @@ class ManageBacClient:
         fetch_details: bool = False,
     ) -> dict:
         """Crawl all three views and return a single result dict."""
-        print("Crawling upcoming tasks...", file=sys.stderr)
+        log.info("Crawling upcoming tasks...")
         upcoming = self.get_tasks_by_view("upcoming", max_pages)
-        print("Crawling past tasks...", file=sys.stderr)
+        log.info("Crawling past tasks...")
         past = self.get_tasks_by_view("past", max_pages)
-        print("Crawling overdue tasks...", file=sys.stderr)
+        log.info("Crawling overdue tasks...")
         overdue = self.get_tasks_by_view("overdue", max_pages)
 
         if fetch_details:
             items = [t for t in upcoming + past + overdue if t.get("link")]
-            print(f"Fetching details for {len(items)} tasks...", file=sys.stderr)
+            log.info("Fetching details for %d tasks...", len(items))
             for i, task in enumerate(items):
                 detail = self.get_task_detail(task["link"])
                 if detail:
                     task["detail"] = detail
                 if (i + 1) % 5 == 0:
-                    print(f"  detail {i + 1}/{len(items)}", file=sys.stderr)
+                    log.info("  detail %d/%d", i + 1, len(items))
 
         return {
             "student_name": self.student_name,
