@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import time
+
 import requests
 
 HUB_ENDPOINTS = {
@@ -24,9 +27,13 @@ class MNNHubClient:
         self.session.headers["Content-Type"] = "application/json"
         self.session.verify = verify
 
+    def _jitter(self) -> None:
+        time.sleep(random.uniform(0.3, 1.5))
+
     # ── Read ────────────────────────────────────────────────────────────
 
     def stats(self) -> dict:
+        self._jitter()
         r = self.session.get(f"{self.base}/notifications/stats")
         r.raise_for_status()
         return r.json().get("stats", {})
@@ -41,6 +48,7 @@ class MNNHubClient:
         params: dict = {"page": page, "per_page": per_page}
         if filter_ and filter_ != "all":
             params["filter"] = filter_
+        self._jitter()
         r = self.session.get(f"{self.base}/notifications", params=params)
         r.raise_for_status()
         data = r.json()
@@ -52,21 +60,26 @@ class MNNHubClient:
     # ── Mutate ──────────────────────────────────────────────────────────
 
     def mark_read(self, notification_id: int) -> bool:
+        self._jitter()
         r = self.session.put(f"{self.base}/notifications/{notification_id}/read")
         return r.status_code == 204
 
     def mark_unread(self, notification_id: int) -> bool:
+        self._jitter()
         r = self.session.put(f"{self.base}/notifications/{notification_id}/unread")
         return r.status_code == 204
 
     def mark_all_read(self) -> bool:
+        self._jitter()
         r = self.session.put(f"{self.base}/notifications/mark_as_read")
         return r.status_code == 204
 
     def star(self, notification_id: int) -> bool:
+        self._jitter()
         r = self.session.put(f"{self.base}/notifications/{notification_id}/star")
         return r.status_code == 204
 
     def unstar(self, notification_id: int) -> bool:
+        self._jitter()
         r = self.session.put(f"{self.base}/notifications/{notification_id}/unstar")
         return r.status_code == 204
