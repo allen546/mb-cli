@@ -61,7 +61,7 @@ class ManageBacClient:
 
     # ── Auth ────────────────────────────────────────────────────────────
 
-    def login(self, email: str, password: str) -> bool:
+    def login(self, email: str, password: str, remember: bool = True) -> bool:
         """Authenticate with email + password.  Returns *True* on success."""
         r = self._request_with_retry("GET", f"{self.base}/login")
         soup = BeautifulSoup(r.text, "html.parser")
@@ -77,6 +77,7 @@ class ManageBacClient:
                 "authenticity_token": token_el["value"],
                 "login": email,
                 "password": password,
+                "remember_me": "1" if remember else "0",
             },
             allow_redirects=True,
         )

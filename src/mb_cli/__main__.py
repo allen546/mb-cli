@@ -53,6 +53,7 @@ def _build_client(args, command: str):
         verify=verify,
         cache_ttl=getattr(args, "cache_ttl", None),
         retry=getattr(args, "retry", 3),
+        remember=not getattr(args, "temp", False),
     )
 
 
@@ -570,6 +571,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     login = subparsers.add_parser("login", help="Authenticate and persist session")
     add_common_auth_flags(login)
+    login.add_argument(
+        "--temp",
+        action="store_true",
+        help="Do not use 'remember me' (session expires when browser closes)",
+    )
     login.set_defaults(func=cmd_login)
 
     list_parser = subparsers.add_parser("list", help="List ManageBac tasks")
