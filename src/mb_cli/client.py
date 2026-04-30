@@ -889,6 +889,41 @@ class ManageBacClient:
             detail["attachments"] = attachments
         return detail if detail else None
 
+    def crawl_index(self) -> dict:
+        """Lightweight check: upcoming page 1 + notifications hub.
+
+        Returns a minimal dict suitable for daemon diffing.  Only two HTTP
+        requests regardless of how many tasks exist.
+        """
+        upcoming = self.get_tasks_by_view("upcoming", 1)
+
+        notifications: dict = {"unread_count": 0, "items": []}
+        try:
+            hub_endpoint, token = self.get_notification_token()
+            if hub_endpoint:
+                from .notifications import MNNHubClient, hub_for_domain
+
+                if not hub_endpoint:
+                    hub_endpoint = hub_for_domain(self.domain)
+                hub = MNNHubClient(hub_endpoint, token)
+                stats = hub.stats()
+                result = hub.list(page=1, per_page=10, filter_="unread")
+                notifications = {
+                    "unread_count": stats.get("unread_count", 0),
+                    "items": result.get("items", []),
+                }
+        except Exception as exc:
+            log.warning("notifications fetch failed: %s", exc)
+
+        return {
+            "student_name": self.student_name,
+            "school": self.school,
+            "base_url": self.base,
+            "crawled_at": datetime.now().isoformat(),
+            "upcoming": upcoming,
+            "notifications": notifications,
+        }
+
     def crawl_all(
         self,
         max_pages: int = 10,

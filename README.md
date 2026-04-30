@@ -10,7 +10,7 @@ Supports both `managebac.com` and `managebac.cn` (China) instances.
 
 Faria/ManageBac's legal documents explicitly prohibit automated access:
 
-- **robots.txt** (managebac.com & managebac.cn): Disallows `/login`, `/admin`, `/api` for all user agents.
+- **robots.txt** (managebac.com): Disallows `/login`, `/admin`, `/api` for all user agents. ~~doesn’t exist for managebac.cn~~
 - **Terms of Use §1.2.6**: "Accounts registered by 'bots' or screen scrapers and/or other automated means are not permitted and access will be terminated without notice."
 - **Terms of Service §5.5**: "Misuse of the Service, including but not limited to reverse engineering... may result in permanent and/or temporary suspension or termination of the School's account."
 - **Terms of Service §1.4**: Violations may result in account termination without notice.
