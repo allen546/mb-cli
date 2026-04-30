@@ -45,6 +45,13 @@ def build_client(
 
     if cookie:
         client.set_cookie(cookie)
+    elif password:
+        if not email_val:
+            raise CommandError(
+                "missing_credentials", "Missing email for password login"
+            )
+        if not client.login(email_val, password):
+            raise CommandError("authentication_failed", "ManageBac login failed")
     elif state.session.cookie and not reauth:
         client.set_cookie(state.session.cookie)
     else:
