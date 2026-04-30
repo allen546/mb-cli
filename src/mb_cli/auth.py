@@ -20,6 +20,7 @@ def build_client(
     verify: bool | str = True,
     cache_ttl: int | None = None,
     retry: int = 3,
+    remember: bool = True,
 ) -> tuple[AppState, ManageBacClient, str]:
     """Build and authenticate a :class:`ManageBacClient`.
 
@@ -50,7 +51,7 @@ def build_client(
             raise CommandError(
                 "missing_credentials", "Missing email for password login"
             )
-        if not client.login(email_val, password):
+        if not client.login(email_val, password, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
     elif state.session.cookie and not reauth:
         client.set_cookie(state.session.cookie)
@@ -62,7 +63,7 @@ def build_client(
                 "missing_credentials",
                 "Password required — pass password= or configure a session",
             )
-        if not client.login(email_val, password):
+        if not client.login(email_val, password, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
 
     return state, client, email_val or ""
