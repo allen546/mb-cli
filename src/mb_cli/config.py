@@ -172,6 +172,19 @@ def save_session(state: AppState) -> None:
     _write_json(state.session_path, session_data)
 
 
+def load_creds(path: str | Path) -> dict | None:
+    """Load email/password from an external JSON file.
+
+    Returns a dict with ``email`` and/or ``password`` keys, or *None* if the
+    file doesn't exist or can't be parsed.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {k: data[k] for k in ("email", "password") if k in data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
 def clear_session(state: AppState, all_profiles: bool = False) -> None:
     if all_profiles:
         if state.session_path.exists():

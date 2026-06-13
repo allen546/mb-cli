@@ -3,13 +3,43 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from mb_cli.auth import build_client
+from mb_cli.config import load_creds
 from mb_cli.exceptions import CommandError
+
+
+def test_load_creds_reads_email_and_password():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"email": "test@example.com", "password": "secret123"}, f)
+        path = f.name
+    try:
+        creds = load_creds(path)
+        assert creds == {"email": "test@example.com", "password": "secret123"}
+    finally:
+        os.unlink(path)
+
+
+def test_load_creds_missing_file_returns_none():
+    creds = load_creds("/nonexistent/path.json")
+    assert creds is None
+
+
+def test_load_creds_missing_keys_returns_partial():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"email": "test@example.com"}, f)
+        path = f.name
+    try:
+        creds = load_creds(path)
+        assert creds == {"email": "test@example.com"}
+    finally:
+        os.unlink(path)
 
 
 class TestBuildClient:
@@ -95,7 +125,9 @@ class TestBuildClient:
             email="test@example.com",
             password="secret",
         )
-        mock_instance.login.assert_called_once_with("test@example.com", "secret")
+        mock_instance.login.assert_called_once_with(
+            "test@example.com", "secret", remember=True
+        )
         assert email == "test@example.com"
 
     @patch("mb_cli.auth.ManageBacClient")
