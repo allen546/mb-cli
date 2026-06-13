@@ -267,3 +267,28 @@ class TestBuildClient:
 
         state, client, email = build_client(cookie="c", retry=5)
         assert client.retry == 5
+
+
+def test_build_client_relogin_on_expired_cookie():
+    """When saved cookie fails health check, re-login with creds from mb_config.json."""
+    mock_state = MagicMock()
+    mock_state.profile.school = "bj80"
+    mock_state.profile.domain = "managebac.cn"
+    mock_state.profile.email = "allen@example.com"
+    mock_state.profile.default_cache_ttl = 1800
+    mock_state.session.cookie = "dead_cookie"
+    mock_state.session.school = "bj80"
+    mock_state.session.domain = "managebac.cn"
+    mock_state.session.email = "allen@example.com"
+
+    with patch("mb_cli.auth.load_state", return_value=mock_state), \
+         patch("mb_cli.auth.load_creds", return_value={"email": "allen@example.com", "password": "pass123"}) as mock_creds, \
+         patch("mb_cli.auth.ManageBacClient") as MockClient:
+        mock_client = MockClient.return_value
+        # Health check: GET base URL returns login redirect
+        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login")
+        mock_client.login.return_value = True
+
+        state, client, email = build_client(reauth=False)
+
+        mock_client.login.assert_called_once_with("allen@example.com", "pass123", remember=True)

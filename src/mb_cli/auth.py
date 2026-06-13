@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from .cache import ResponseCache
 from .client import ManageBacClient
-from .config import AppState, load_state
+from .config import AppState, load_creds, load_state
 from .exceptions import CommandError
+
+log = logging.getLogger(__name__)
+
+_CREDS_PATH = "/mnt/pi-data/tools/mb_config.json"
 
 
 def build_client(
@@ -54,7 +60,13 @@ def build_client(
         if not client.login(email_val, password, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
     elif state.session.cookie and not reauth:
+        # Health check: try saved cookie, re-login if stale
         client.set_cookie(state.session.cookie)
+        if _is_session_alive(client):
+            pass  # cookie is good
+        else:
+            log.info("Saved cookie expired — attempting silent re-login")
+            _relogin_from_creds(client, state)
     else:
         if not email_val:
             raise CommandError("missing_credentials", "Missing email in args or config")
@@ -67,3 +79,24 @@ def build_client(
             raise CommandError("authentication_failed", "ManageBac login failed")
 
     return state, client, email_val or ""
+
+
+def _is_session_alive(client: ManageBacClient) -> bool:
+    """Lightweight health check — GET the base URL, return True if not redirected to login."""
+    try:
+        r = client.session.get(f"{client.base}/")
+        return "/login" not in r.url
+    except Exception:
+        return False
+
+
+def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
+    """Re-login using credentials from mb_config.json. Raises CommandError on failure."""
+    creds = load_creds(_CREDS_PATH)
+    if not creds or "email" not in creds or "password" not in creds:
+        raise CommandError(
+            "missing_credentials",
+            f"Cookie expired and no creds found in {_CREDS_PATH}",
+        )
+    if not client.login(creds["email"], creds["password"], remember=True):
+        raise CommandError("authentication_failed", "Silent re-login failed")
