@@ -82,8 +82,15 @@ def build_client(
 
 
 def _is_session_alive(client: ManageBacClient) -> bool:
-    """Lightweight health check — GET the base URL, return True if not redirected to login."""
+    """Lightweight health check — GET the base URL, return True if not redirected to login.
+
+    NOTE: This check is coupled to the ``/login`` path — if ManageBac changes
+    its login URL the heuristic breaks silently.  A redirect to any other path
+    would also be treated as "alive", which is acceptable for this use-case.
+    """
     try:
+        # The GET discards cookies/state from the server's perspective; we only
+        # observe whether the response URL indicates a login redirect.
         r = client.session.get(f"{client.base}/")
         return "/login" not in r.url
     except Exception:
