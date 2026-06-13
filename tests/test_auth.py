@@ -268,27 +268,80 @@ class TestBuildClient:
         state, client, email = build_client(cookie="c", retry=5)
         assert client.retry == 5
 
+    @patch("mb_cli.auth.ManageBacClient")
+    @patch("mb_cli.auth.load_creds")
+    @patch("mb_cli.auth.load_state")
+    def test_relogin_on_expired_cookie(self, mock_load_state, mock_load_creds, MockClient):
+        """When saved cookie fails health check, re-login with creds from mb_config.json."""
+        mock_state = MagicMock()
+        mock_state.profile.school = "bj80"
+        mock_state.profile.domain = "managebac.cn"
+        mock_state.profile.email = "allen@example.com"
+        mock_state.profile.default_cache_ttl = 1800
+        mock_state.session.cookie = "dead_cookie"
+        mock_state.session.school = "bj80"
+        mock_state.session.domain = "managebac.cn"
+        mock_state.session.email = "allen@example.com"
+        mock_load_state.return_value = mock_state
+        mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
 
-def test_build_client_relogin_on_expired_cookie():
-    """When saved cookie fails health check, re-login with creds from mb_config.json."""
-    mock_state = MagicMock()
-    mock_state.profile.school = "bj80"
-    mock_state.profile.domain = "managebac.cn"
-    mock_state.profile.email = "allen@example.com"
-    mock_state.profile.default_cache_ttl = 1800
-    mock_state.session.cookie = "dead_cookie"
-    mock_state.session.school = "bj80"
-    mock_state.session.domain = "managebac.cn"
-    mock_state.session.email = "allen@example.com"
-
-    with patch("mb_cli.auth.load_state", return_value=mock_state), \
-         patch("mb_cli.auth.load_creds", return_value={"email": "allen@example.com", "password": "pass123"}) as mock_creds, \
-         patch("mb_cli.auth.ManageBacClient") as MockClient:
         mock_client = MockClient.return_value
-        # Health check: GET base URL returns login redirect
         mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login")
         mock_client.login.return_value = True
 
         state, client, email = build_client(reauth=False)
 
-        mock_client.login.assert_called_once_with("allen@example.com", "pass123", remember=True)
+        mock_load_creds.assert_called_once_with(
+            "/mnt/pi-data/tools/mb_config.json"
+        )
+        mock_client.login.assert_called_once_with(
+            "allen@example.com", "pass123", remember=True
+        )
+
+    @patch("mb_cli.auth.ManageBacClient")
+    @patch("mb_cli.auth.load_creds")
+    @patch("mb_cli.auth.load_state")
+    def test_relogin_failure_raises_error(self, mock_load_state, mock_load_creds, MockClient):
+        """Silent re-login raises CommandError when client.login() returns False."""
+        mock_state = MagicMock()
+        mock_state.profile.school = "bj80"
+        mock_state.profile.domain = "managebac.cn"
+        mock_state.profile.email = "allen@example.com"
+        mock_state.profile.default_cache_ttl = 1800
+        mock_state.session.cookie = "dead_cookie"
+        mock_state.session.school = "bj80"
+        mock_state.session.domain = "managebac.cn"
+        mock_state.session.email = "allen@example.com"
+        mock_load_state.return_value = mock_state
+        mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
+
+        mock_client = MockClient.return_value
+        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login")
+        mock_client.login.return_value = False
+
+        with pytest.raises(CommandError) as exc_info:
+            build_client(reauth=False)
+        assert exc_info.value.code == "authentication_failed"
+
+    @patch("mb_cli.auth.ManageBacClient")
+    @patch("mb_cli.auth.load_creds", return_value=None)
+    @patch("mb_cli.auth.load_state")
+    def test_relogin_missing_creds_file_raises_error(self, mock_load_state, mock_load_creds, MockClient):
+        """Silent re-login raises CommandError when creds file is missing or incomplete."""
+        mock_state = MagicMock()
+        mock_state.profile.school = "bj80"
+        mock_state.profile.domain = "managebac.cn"
+        mock_state.profile.email = "allen@example.com"
+        mock_state.profile.default_cache_ttl = 1800
+        mock_state.session.cookie = "dead_cookie"
+        mock_state.session.school = "bj80"
+        mock_state.session.domain = "managebac.cn"
+        mock_state.session.email = "allen@example.com"
+        mock_load_state.return_value = mock_state
+
+        mock_client = MockClient.return_value
+        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login")
+
+        with pytest.raises(CommandError) as exc_info:
+            build_client(reauth=False)
+        assert exc_info.value.code == "missing_credentials"
