@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date, timedelta
 
@@ -11,6 +12,8 @@ from mcp.server.fastmcp import FastMCP
 from .auth import build_client
 from .client import ManageBacClient
 from .notifications import MNNHubClient, hub_for_domain
+
+log = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "mb-cli",
@@ -60,17 +63,57 @@ def list_tasks(
         verify=verify_tls,
         retry=retry,
     )
-    result = client.crawl_all(max_pages=pages, fetch_details=details)
+    
+    upcoming = []
+    past = []
+    overdue = []
+
+    if view in ("upcoming", "all"):
+        log.info("Crawling upcoming tasks...")
+        upcoming = client.get_tasks_by_view("upcoming", max_pages=pages)
+    if view in ("past", "all"):
+        log.info("Crawling past tasks...")
+        past = client.get_tasks_by_view("past", max_pages=pages)
+    if view in ("overdue", "all"):
+        log.info("Crawling overdue tasks...")
+        overdue = client.get_tasks_by_view("overdue", max_pages=pages)
+
+    if details:
+        items = [t for t in upcoming + past + overdue if t.get("link")]
+        log.info("Fetching details for %d tasks...", len(items))
+        for i, task in enumerate(items):
+            detail = client.get_task_detail(task["link"])
+            if detail:
+                task["detail"] = detail
+            if (i + 1) % 5 == 0:
+                log.info("  detail %d/%d", i + 1, len(items))
+            if i < len(items) - 1:
+                time.sleep(random.uniform(0.5, 2.0))
 
     if subject:
-
         def _match(task, s):
             cn = task.get("class_name", "")
             return s.lower() in cn.lower() if cn else False
 
-        result["upcoming"] = [t for t in result["upcoming"] if _match(t, subject)]
-        result["past"] = [t for t in result["past"] if _match(t, subject)]
-        result["overdue"] = [t for t in result["overdue"] if _match(t, subject)]
+        upcoming = [t for t in upcoming if _match(t, subject)]
+        past = [t for t in past if _match(t, subject)]
+        overdue = [t for t in overdue if _match(t, subject)]
+
+    from datetime import datetime
+    result = {
+        "student_name": client.student_name,
+        "school": client.school,
+        "base_url": client.base,
+        "crawled_at": datetime.now().isoformat(),
+        "upcoming": upcoming,
+        "past": past,
+        "overdue": overdue,
+        "summary": {
+            "upcoming_count": len(upcoming),
+            "past_count": len(past),
+            "overdue_count": len(overdue),
+        },
+    }
 
     return json.dumps(result, indent=2, ensure_ascii=False)
 

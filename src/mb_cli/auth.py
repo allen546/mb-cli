@@ -6,7 +6,7 @@ import logging
 
 from .cache import ResponseCache
 from .client import ManageBacClient
-from .config import AppState, load_creds, load_state
+from .config import AppState, load_creds, load_state, save_session
 from .exceptions import CommandError
 
 log = logging.getLogger(__name__)
@@ -40,15 +40,30 @@ def build_client(
     if not school:
         raise CommandError("missing_credentials", "Missing school in args or config")
 
+    email_val = email or state.profile.email or state.session.email
+    if not email_val:
+        try:
+            creds = load_creds(_CREDS_PATH)
+            if creds:
+                email_val = creds.get("email")
+        except Exception:
+            pass
+
+    import hashlib
+    from .cache import DEFAULT_CACHE_DIR
+    if email_val:
+        email_hash = hashlib.sha256(email_val.encode()).hexdigest()[:16]
+        cache_dir = DEFAULT_CACHE_DIR / email_hash
+    else:
+        cache_dir = DEFAULT_CACHE_DIR
+
     resolved_ttl = (
         cache_ttl if cache_ttl is not None else state.profile.default_cache_ttl
     )
-    cache = ResponseCache(enabled=not refresh, ttl=resolved_ttl)
+    cache = ResponseCache(cache_dir=cache_dir, enabled=not refresh, ttl=resolved_ttl)
     client = ManageBacClient(
         school, domain=domain, cache=cache, verify=verify, retry=retry
     )
-
-    email_val = email or state.profile.email or state.session.email
 
     if cookie:
         client.set_cookie(cookie)
@@ -68,30 +83,37 @@ def build_client(
             log.info("Saved cookie expired — attempting silent re-login")
             _relogin_from_creds(client, state)
     else:
-        if not email_val:
-            raise CommandError("missing_credentials", "Missing email in args or config")
-        if not password:
+        # No session cookie and no explicit password — try loading from config
+        creds = load_creds(_CREDS_PATH)
+        login_email = email_val or (creds.get("email") if creds else None)
+        login_pass = password or (creds.get("password") if creds else None)
+        if not login_email or not login_pass:
             raise CommandError(
                 "missing_credentials",
-                "Password required — pass password= or configure a session",
+                "No session, no password — pass password= or configure mb_config.json",
             )
-        if not client.login(email_val, password, remember=remember):
+        if not client.login(login_email, login_pass, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
+        # Persist new session
+        state.session.cookie = client.session.cookies.get("_managebac_session")
+        state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
+        state.session.school = school
+        state.session.domain = domain
+        state.session.email = login_email
+        save_session(state)
 
     return state, client, email_val or ""
 
 
 def _is_session_alive(client: ManageBacClient) -> bool:
-    """Lightweight health check — GET the base URL, return True if not redirected to login.
+    """Lightweight health check — GET the base URL, return True if session is valid.
 
-    NOTE: This check is coupled to the ``/login`` path — if ManageBac changes
-    its login URL the heuristic breaks silently.  A redirect to any other path
-    would also be treated as "alive", which is acceptable for this use-case.
+    Checks both for login redirects (3xx → /login) and auth failures (401/403).
     """
     try:
-        # The GET discards cookies/state from the server's perspective; we only
-        # observe whether the response URL indicates a login redirect.
-        r = client.session.get(f"{client.base}/")
+        r = client.session.get(f"{client.base}/", allow_redirects=False)
+        if r.status_code in (401, 403):
+            return False
         return "/login" not in r.url
     except Exception:
         return False
@@ -107,3 +129,7 @@ def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
         )
     if not client.login(creds["email"], creds["password"], remember=True):
         raise CommandError("authentication_failed", "Silent re-login failed")
+    # Persist the new cookie so subsequent calls don't re-login
+    state.session.cookie = client.session.cookies.get("_managebac_session")
+    state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
+    save_session(state)

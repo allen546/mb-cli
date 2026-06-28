@@ -34,6 +34,8 @@ def mock_build_client():
         mock_client = MagicMock()
         mock_client.domain = "managebac.cn"
         mock_client.school = "bj80"
+        mock_client.student_name = "John"
+        mock_client.base = "https://bj80.managebac.cn"
         mock.return_value = (mock_state, mock_client, "test@example.com")
         yield mock, mock_client
 
@@ -55,15 +57,9 @@ class TestMcpServerSetup:
 class TestListTasksTool:
     def test_list_tasks(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.crawl_all.return_value = {
-            "upcoming": [{"id": "1", "title": "T1", "class_name": "Math"}],
-            "past": [],
-            "overdue": [],
-            "student_name": "John",
-            "school": "bj80",
-            "base_url": "https://bj80.managebac.cn",
-            "crawled_at": "2026-04-29T12:00:00",
-        }
+        mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
+            [{"id": "1", "title": "T1", "class_name": "Math"}] if view == "upcoming" else []
+        )
         result = list_tasks()
         data = json.loads(result)
         assert "upcoming" in data
@@ -71,18 +67,12 @@ class TestListTasksTool:
 
     def test_list_tasks_with_subject(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.crawl_all.return_value = {
-            "upcoming": [
+        mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
+            [
                 {"id": "1", "title": "T1", "class_name": "Math HL"},
                 {"id": "2", "title": "T2", "class_name": "English A"},
-            ],
-            "past": [],
-            "overdue": [],
-            "student_name": "John",
-            "school": "bj80",
-            "base_url": "https://bj80.managebac.cn",
-            "crawled_at": "2026-04-29T12:00:00",
-        }
+            ] if view == "upcoming" else []
+        )
         result = list_tasks(subject="Math")
         data = json.loads(result)
         assert len(data["upcoming"]) == 1
