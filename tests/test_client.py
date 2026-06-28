@@ -774,3 +774,22 @@ class TestGetCached:
             )
             with pytest.raises(RuntimeError, match="expired"):
                 client._get("/student/tasks")
+
+    def test_submit_file_invalidates_cache(self, client, tmp_path: Path, sample_dropbox_page_html):
+        test_file = tmp_path / "hw.pdf"
+        test_file.write_bytes(b"content")
+        client.cache.put("https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026", "cached task detail", 200)
+        
+        with rm.Mocker() as m:
+            m.get(
+                re.compile(r"/student/classes/1000023/core_tasks/1000026/dropbox$"),
+                text=sample_dropbox_page_html,
+            )
+            m.post(
+                "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026/dropbox/upload",
+                json={"ok": True},
+            )
+            client.submit_file("1000023", "1000026", str(test_file))
+        
+        assert client.cache.get("https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026") is None
+
