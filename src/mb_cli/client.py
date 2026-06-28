@@ -58,6 +58,7 @@ class ManageBacClient:
         self.cache = cache or ResponseCache()
         self.retry = retry
         self._last_url: str | None = None
+        self.last_request_cached = False
 
     # ── Auth ────────────────────────────────────────────────────────────
 
@@ -154,9 +155,11 @@ class ManageBacClient:
 
     def _get(self, path: str, bypass_cache: bool = False) -> BeautifulSoup:
         url = f"{self.base}{path}"
+        self.last_request_cached = False
         if not bypass_cache:
             cached = self.cache.get(url)
             if cached is not None:
+                self.last_request_cached = True
                 body, status = cached
                 soup = BeautifulSoup(body, "html.parser")
                 if "/login" in url:
@@ -825,7 +828,7 @@ class ManageBacClient:
             log.info("%s page %d: %d items", view, page, len(tasks))
             if not self._has_next_page(soup, page, view):
                 break
-            if page < max_pages:
+            if page < max_pages and not self.last_request_cached:
                 time.sleep(random.uniform(0.5, 2.0))
         return all_tasks
 
@@ -949,7 +952,7 @@ class ManageBacClient:
                     task["detail"] = detail
                 if (i + 1) % 5 == 0:
                     log.info("  detail %d/%d", i + 1, len(items))
-                if i < len(items) - 1:
+                if i < len(items) - 1 and not self.last_request_cached:
                     time.sleep(random.uniform(0.5, 2.0))
 
         return {
