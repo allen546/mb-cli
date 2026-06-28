@@ -152,15 +152,16 @@ class ManageBacClient:
 
     # ── Internal helpers ────────────────────────────────────────────────
 
-    def _get(self, path: str) -> BeautifulSoup:
+    def _get(self, path: str, bypass_cache: bool = False) -> BeautifulSoup:
         url = f"{self.base}{path}"
-        cached = self.cache.get(url)
-        if cached is not None:
-            body, status = cached
-            soup = BeautifulSoup(body, "html.parser")
-            if "/login" in url:
-                raise RuntimeError("Session expired or invalid — redirected to login")
-            return soup
+        if not bypass_cache:
+            cached = self.cache.get(url)
+            if cached is not None:
+                body, status = cached
+                soup = BeautifulSoup(body, "html.parser")
+                if "/login" in url:
+                    raise RuntimeError("Session expired or invalid — redirected to login")
+                return soup
 
         r = self._request_with_retry("GET", url)
         if "/login" in r.url:
@@ -390,7 +391,7 @@ class ManageBacClient:
         from pathlib import Path
 
         dropbox_path = f"/student/classes/{class_id}/core_tasks/{task_id}/dropbox"
-        soup = self._get(dropbox_path)
+        soup = self._get(dropbox_path, bypass_cache=True)
         csrf = self._get_csrf(soup)
         if not csrf:
             raise RuntimeError("Could not find CSRF token on dropbox page")
@@ -422,6 +423,7 @@ class ManageBacClient:
             )
 
         task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
+        self.invalidate_cache()
         return {
             "ok": True,
             "filename": p.name,
