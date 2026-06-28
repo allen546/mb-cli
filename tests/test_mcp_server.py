@@ -116,10 +116,24 @@ class TestSubmitFileTool:
 
     def test_submit_not_found(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.crawl_all.return_value = {"upcoming": [], "past": [], "overdue": []}
+        mock_client.get_tasks_by_view.return_value = []
         result = submit_file(task_id="99999", file_path="/tmp/hw.pdf")
         data = json.loads(result)
         assert "error" in data
+
+    def test_submit_numeric_id_resolves(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
+            [{"id": "27254393", "link": "/student/classes/11460711/core_tasks/27254393"}]
+            if view == "upcoming" else []
+        )
+        mock_client.submit_file.return_value = {"ok": True}
+        result = submit_file(task_id="27254393", file_path="/tmp/hw.pdf")
+        data = json.loads(result)
+        assert data["ok"] is True
+        mock_client.submit_file.assert_called_once_with(
+            "11460711", "27254393", "/tmp/hw.pdf"
+        )
 
 
 class TestGetNotificationsTool:

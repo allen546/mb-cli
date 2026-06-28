@@ -179,6 +179,7 @@ def submit_file(
     """Submit a file to a task's dropbox.
 
     The task_id can be a numeric ID or a full ManageBac URL.
+    PREFER passing the full task URL (e.g. from the list_tasks results) to bypass resolution.
 
     Args:
         task_id: Task ID or full URL (e.g. "27254393" or "https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393")
@@ -203,16 +204,36 @@ def submit_file(
     if m:
         class_id, tid = m.group(1), m.group(2)
     else:
-        result = client.crawl_all(max_pages=10, fetch_details=False)
-        for t in result["upcoming"] + result["past"] + result["overdue"]:
-            if t.get("id") == task_id:
-                m2 = re.search(
-                    r"/student/classes/(\d+)/core_tasks/(\d+)", t.get("link", "")
-                )
-                if m2:
-                    class_id, tid = m2.group(1), m2.group(2)
-                    break
-        else:
+        found = False
+        # Search upcoming and overdue first (most likely for submissions)
+        for view in ("upcoming", "overdue"):
+            tasks = client.get_tasks_by_view(view, max_pages=3)
+            for t in tasks:
+                if t.get("id") == task_id:
+                    m2 = re.search(
+                        r"/student/classes/(\d+)/core_tasks/(\d+)", t.get("link", "")
+                    )
+                    if m2:
+                        class_id, tid = m2.group(1), m2.group(2)
+                        found = True
+                        break
+            if found:
+                break
+
+        if not found:
+            # Fall back to past tasks
+            tasks = client.get_tasks_by_view("past", max_pages=3)
+            for t in tasks:
+                if t.get("id") == task_id:
+                    m2 = re.search(
+                        r"/student/classes/(\d+)/core_tasks/(\d+)", t.get("link", "")
+                    )
+                    if m2:
+                        class_id, tid = m2.group(1), m2.group(2)
+                        found = True
+                        break
+
+        if not found:
             return json.dumps({"error": f"Task {task_id} not found"})
 
     try:
