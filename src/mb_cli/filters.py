@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+
+
 
 def matches_subject(task: dict, subject: str) -> bool:
     """Return *True* if *task*'s class name contains *subject* (case-insensitive)."""
@@ -16,6 +19,85 @@ def filter_result_by_subject(result: dict, subject: str) -> dict:
     result["upcoming"] = [t for t in result["upcoming"] if matches_subject(t, subject)]
     result["past"] = [t for t in result["past"] if matches_subject(t, subject)]
     result["overdue"] = [t for t in result["overdue"] if matches_subject(t, subject)]
+    _update_summary_counts(result)
+    result["subject_filter"] = subject
+    return result
+
+
+def matches_graded(task: dict, graded: bool) -> bool:
+    """Return *True* if the task's graded state matches the *graded* query."""
+    has_grade = bool(task.get("grade_letter") or task.get("grade_score"))
+    return has_grade == graded
+
+
+def matches_submitted(task: dict, submitted: bool) -> bool:
+    """Return *True* if the task's submission state matches the *submitted* query."""
+    # Look at labels (badges from tiles/dashboards)
+    labels = task.get("labels") or []
+    labels_lower = [l.lower() for l in labels]
+    
+    # Check if any label indicates submission
+    has_submitted_label = any("submitted" in l for l in labels_lower)
+    
+    # Or if details were fetched and a submission object exists
+    detail = task.get("detail") or {}
+    has_submission_detail = bool(detail.get("submission"))
+    
+    is_sub = has_submitted_label or has_submission_detail
+    return is_sub == submitted
+
+
+def matches_grade_query(task: dict, query: str) -> bool:
+    """Return *True* if the task's grade matches the *query*.
+
+    Supports:
+      - Letters (e.g. "B" matches "B", "B+", "B-", whereas "B-" matches only "B-")
+      - GPA to letter mappings (e.g. "4.0" -> "A", "A+", "3.7" -> "A-", etc.)
+    """
+    gl = task.get("grade_letter") or ""
+    gs = task.get("grade_score") or ""
+    
+    # Try to find a grade code from letter or score (e.g. "A+", "B-", "A")
+    grade_val = gl.strip().upper()
+    if not grade_val:
+        # Check if score starts with a grade letter (some lists output "A+ (95/100)")
+        match = re.match(r"^([A-F][+-]?)\b", gs.strip().upper())
+        if match:
+            grade_val = match.group(1)
+
+    if not grade_val:
+        return False
+
+    q = query.strip().upper()
+
+    # Mappings from GPA to letter grades
+    gpa_mapping = {
+        "4.0": ["A", "A+"],
+        "3.7": ["A-"],
+        "3.3": ["B+"],
+        "3.0": ["B"],
+        "2.7": ["B-"],
+        "2.3": ["C+"],
+        "2.0": ["C"],
+        "1.7": ["C-"],
+        "1.3": ["D+"],
+        "1.0": ["D"],
+        "0.0": ["F"],
+    }
+    if q in gpa_mapping:
+        return grade_val in gpa_mapping[q]
+
+    # Letter matching logic:
+    # If query is a single letter (A, B, C, D, F), match any modifier (+, -)
+    if len(q) == 1 and q.isalpha():
+        return grade_val.startswith(q)
+
+    # Otherwise exact match (e.g. "B-" matches only "B-")
+    return grade_val == q
+
+
+def _update_summary_counts(result: dict) -> None:
+    """Recalculate summary counts in-place for a result dict."""
     result["summary"] = {
         "upcoming_count": len(result["upcoming"]),
         "past_count": len(result["past"]),
@@ -24,7 +106,26 @@ def filter_result_by_subject(result: dict, subject: str) -> dict:
         + len(result["past"])
         + len(result["overdue"]),
     }
-    result["subject_filter"] = subject
+
+
+def filter_result_by_status(
+    result: dict,
+    graded: bool | None = None,
+    submitted: bool | None = None,
+    grade: str | None = None,
+) -> dict:
+    """Filter a crawl result dict in-place by status/grade attributes and update counts."""
+    for section in ("upcoming", "past", "overdue"):
+        tasks = result.get(section, [])
+        if graded is not None:
+            tasks = [t for t in tasks if matches_graded(t, graded)]
+        if submitted is not None:
+            tasks = [t for t in tasks if matches_submitted(t, submitted)]
+        if grade is not None:
+            tasks = [t for t in tasks if matches_grade_query(t, grade)]
+        result[section] = tasks
+    
+    _update_summary_counts(result)
     return result
 
 

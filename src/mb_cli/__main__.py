@@ -106,9 +106,20 @@ def cmd_list(args) -> int:
     view = args.view or state.profile.default_view
     subject = args.subject or state.profile.default_subject or None
 
+    from .filters import filter_result_by_subject, filter_result_by_status
+
     result = client.crawl_all(max_pages=pages, fetch_details=details)
     if subject:
         result = filter_result_by_subject(result, subject)
+
+    # Apply status filters (graded, submitted, grade)
+    if args.graded is not None or args.submitted is not None or args.grade is not None:
+        result = filter_result_by_status(
+            result,
+            graded=args.graded,
+            submitted=args.submitted,
+            grade=args.grade,
+        )
 
     views = result_views(result, view)
     summary = {
@@ -131,6 +142,9 @@ def cmd_list(args) -> int:
                 "crawled_at": result["crawled_at"],
                 "view": view,
                 "subject_filter": subject,
+                "graded_filter": args.graded,
+                "submitted_filter": args.submitted,
+                "grade_filter": args.grade,
                 "details": details,
             },
             "summary": summary,
@@ -473,13 +487,20 @@ def cmd_grades(args) -> int:
                 print_payload(payload, args.output, args.format)
                 return 1
         else:
+            # Gather grades for ALL classes
+            all_grades = {}
+            for cid, cname in seen.items():
+                try:
+                    c_grades = client.get_class_grades(cid)
+                    c_grades["class_name"] = cname
+                    all_grades[cid] = c_grades
+                except Exception as e:
+                    log.warning("failed to fetch grades for class %s: %s", cid, e)
             payload = ok(
-                "grades.list",
+                "grades.all",
                 state.active_profile,
                 {
-                    "classes": [
-                        {"id": cid, "name": cname} for cid, cname in seen.items()
-                    ],
+                    "classes_grades": all_grades,
                 },
             )
             print_payload(payload, args.output, args.format)
@@ -600,6 +621,38 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["all", "upcoming", "past", "overdue"],
         default=None,
         help="Restrict output to one view or all views (default: from config, all)",
+    )
+    
+    graded_group = list_parser.add_mutually_exclusive_group()
+    graded_group.add_argument(
+        "--graded",
+        action="store_true",
+        default=None,
+        help="Show only graded tasks",
+    )
+    graded_group.add_argument(
+        "--not-graded",
+        action="store_false",
+        dest="graded",
+        help="Show only non-graded tasks",
+    )
+
+    submitted_group = list_parser.add_mutually_exclusive_group()
+    submitted_group.add_argument(
+        "--submitted",
+        action="store_true",
+        default=None,
+        help="Show only submitted tasks",
+    )
+    submitted_group.add_argument(
+        "--not-submitted",
+        action="store_false",
+        dest="submitted",
+        help="Show only non-submitted tasks",
+    )
+    list_parser.add_argument(
+        "--grade",
+        help="Filter tasks by grade (e.g. 'B', 'B-', '4.0')",
     )
     list_parser.set_defaults(func=cmd_list)
 
