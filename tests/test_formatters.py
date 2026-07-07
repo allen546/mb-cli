@@ -22,10 +22,10 @@ class TestResolveFormat:
     def test_explicit_pretty(self):
         assert resolve_format("pretty") == "pretty"
 
-    def test_none_defaults_to_json_when_not_tty(self):
+    def test_none_defaults_to_pretty_when_not_tty(self):
         with patch("mb_cli.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
-            assert resolve_format(None) == "json"
+            assert resolve_format(None) == "pretty"
 
     def test_none_defaults_to_pretty_when_tty(self):
         with patch("mb_cli.formatters.sys") as mock_sys:

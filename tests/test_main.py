@@ -382,6 +382,12 @@ class TestMainGrades:
             "base_url": "u",
             "crawled_at": "t",
         }
+        mock_client.get_class_grades.return_value = {
+            "tasks": [],
+            "categories": [],
+            "grade_scale": {},
+            "expected_grade": None,
+        }
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)

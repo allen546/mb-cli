@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import time
 from datetime import date, timedelta
 
 from mcp.server.fastmcp import FastMCP
@@ -32,6 +34,9 @@ mcp = FastMCP(
 def list_tasks(
     view: str = "all",
     subject: str | None = None,
+    graded: bool | None = None,
+    submitted: bool | None = None,
+    grade: str | None = None,
     details: bool = False,
     pages: int = 10,
     school: str | None = None,
@@ -46,6 +51,9 @@ def list_tasks(
     Args:
         view: "all", "upcoming", "past", or "overdue"
         subject: Filter by subject/class name (case-insensitive substring)
+        graded: Filter by graded status (True=graded only, False=not graded only)
+        submitted: Filter by submission status (True=submitted only, False=not submitted only)
+        grade: Filter by specific grade letter or GPA (e.g. 'B', 'B-', '4.0')
         details: Fetch task detail pages (slower, one request per task)
         pages: Max pages per view (default 10)
         school: School subdomain (e.g. "bj80")
@@ -98,6 +106,23 @@ def list_tasks(
         upcoming = [t for t in upcoming if _match(t, subject)]
         past = [t for t in past if _match(t, subject)]
         overdue = [t for t in overdue if _match(t, subject)]
+
+    from .filters import matches_graded, matches_submitted, matches_grade_query
+
+    if graded is not None:
+        upcoming = [t for t in upcoming if matches_graded(t, graded)]
+        past = [t for t in past if matches_graded(t, graded)]
+        overdue = [t for t in overdue if matches_graded(t, graded)]
+
+    if submitted is not None:
+        upcoming = [t for t in upcoming if matches_submitted(t, submitted)]
+        past = [t for t in past if matches_submitted(t, submitted)]
+        overdue = [t for t in overdue if matches_submitted(t, submitted)]
+
+    if grade is not None:
+        upcoming = [t for t in upcoming if matches_grade_query(t, grade)]
+        past = [t for t in past if matches_grade_query(t, grade)]
+        overdue = [t for t in overdue if matches_grade_query(t, grade)]
 
     from datetime import datetime
     result = {
@@ -594,7 +619,25 @@ def get_class_grades(
             )
 
     if not class_id:
-        return json.dumps({"error": "Provide class_id or class_name"})
+        # Default to loading grades for all classes
+        result = client.crawl_all(max_pages=5, fetch_details=False)
+        seen = {}
+        for task in result["upcoming"] + result["past"] + result["overdue"]:
+            link = task.get("link", "")
+            m = re.search(r"/student/classes/(\d+)/", link)
+            cname = task.get("class_name", "")
+            if m and cname:
+                seen[m.group(1)] = cname
+        
+        all_grades = {}
+        for cid, cname in seen.items():
+            try:
+                c_grades = client.get_class_grades(cid)
+                c_grades["class_name"] = cname
+                all_grades[cid] = c_grades
+            except Exception as e:
+                log.warning("failed to fetch grades for class %s: %s", cid, e)
+        return json.dumps({"classes_grades": all_grades}, indent=2, ensure_ascii=False)
 
     grades = client.get_class_grades(class_id)
     grades["class_id"] = class_id

@@ -60,8 +60,9 @@ class TestBuildClient:
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
-        with pytest.raises(CommandError) as exc_info:
-            build_client(school="bj80", password=None)
+        with patch("mb_cli.auth.load_creds", return_value=None):
+            with pytest.raises(CommandError) as exc_info:
+                build_client(school="bj80", password=None)
         assert exc_info.value.code == "missing_credentials"
 
     def test_missing_password_raises_error(self, tmp_path: Path, monkeypatch):
@@ -80,8 +81,9 @@ class TestBuildClient:
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
-        with pytest.raises(CommandError) as exc_info:
-            build_client(school="bj80", email="test@example.com", password=None)
+        with patch("mb_cli.auth.load_creds", return_value=None):
+            with pytest.raises(CommandError) as exc_info:
+                build_client(school="bj80", email="test@example.com", password=None)
         assert exc_info.value.code == "missing_credentials"
 
     def test_cookie_auth(self, tmp_path: Path, monkeypatch):
@@ -216,8 +218,9 @@ class TestBuildClient:
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
 
-        with pytest.raises(CommandError) as exc_info:
-            build_client(reauth=True, password=None)
+        with patch("mb_cli.auth.load_creds", return_value=None):
+            with pytest.raises(CommandError) as exc_info:
+                build_client(reauth=True, password=None)
         assert exc_info.value.code == "missing_credentials"
 
     def test_domain_from_config(self, tmp_path: Path, monkeypatch):
@@ -312,14 +315,18 @@ class TestBuildClient:
         mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
 
         mock_client = MockClient.return_value
-        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login", status_code=302)
+        # Mock redirects to /login on the new health check endpoint (/student/dashboard)
+        mock_response = MagicMock(status_code=302)
+        mock_response.headers = {"Location": "https://bj80.managebac.cn/login"}
+        mock_client.session.get.return_value = mock_response
         mock_client.login.return_value = True
         mock_client.session.cookies.get.return_value = "NEW_COOKIE"
 
         state, client, email = build_client(reauth=False)
 
+        from pathlib import Path
         mock_load_creds.assert_called_once_with(
-            "/mnt/pi-data/tools/mb_config.json"
+            str(Path.home() / ".config" / "mb-crawler" / "creds.json")
         )
         mock_client.login.assert_called_once_with(
             "allen@example.com", "pass123", remember=True
@@ -345,7 +352,7 @@ class TestBuildClient:
         mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
 
         mock_client = MockClient.return_value
-        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/", status_code=401)
+        mock_client.session.get.return_value = MagicMock(status_code=401)
         mock_client.login.return_value = True
         mock_client.session.cookies.get.return_value = "NEW_COOKIE"
 
@@ -375,7 +382,7 @@ class TestBuildClient:
         mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
 
         mock_client = MockClient.return_value
-        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/", status_code=401)
+        mock_client.session.get.return_value = MagicMock(status_code=401)
         mock_client.login.return_value = True
         # Simulate the cookie being set after login
         mock_client.session.cookies.get.return_value = "NEW_COOKIE_VALUE"
@@ -406,7 +413,9 @@ class TestBuildClient:
         mock_load_creds.return_value = {"email": "allen@example.com", "password": "pass123"}
 
         mock_client = MockClient.return_value
-        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login", status_code=302)
+        mock_response = MagicMock(status_code=302)
+        mock_response.headers = {"Location": "https://bj80.managebac.cn/login"}
+        mock_client.session.get.return_value = mock_response
         mock_client.login.return_value = False
 
         with pytest.raises(CommandError) as exc_info:
@@ -431,7 +440,9 @@ class TestBuildClient:
         mock_load_state.return_value = mock_state
 
         mock_client = MockClient.return_value
-        mock_client.session.get.return_value = MagicMock(url="https://bj80.managebac.cn/login", status_code=302)
+        mock_response = MagicMock(status_code=302)
+        mock_response.headers = {"Location": "https://bj80.managebac.cn/login"}
+        mock_client.session.get.return_value = mock_response
 
         with pytest.raises(CommandError) as exc_info:
             build_client(reauth=False)

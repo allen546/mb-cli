@@ -58,7 +58,6 @@ class ManageBacClient:
         self.cache = cache or ResponseCache()
         self.retry = retry
         self._last_url: str | None = None
-        self.last_request_cached = False
 
     # ── Auth ────────────────────────────────────────────────────────────
 
@@ -79,12 +78,20 @@ class ManageBacClient:
                 "login": email,
                 "password": password,
                 "remember_me": "1" if remember else "0",
+                "commit": "Sign in",
             },
             allow_redirects=True,
         )
 
+        log.debug("login POST final url=%s status=%d", r.url, r.status_code)
+        # A successful login always redirects away from /sessions.
+        # If we land back on /sessions (200 with no redirect) the credentials
+        # were rejected by the server (wrong password, MFA, etc.).
+        if "/sessions" in r.url and not r.history:
+            log.warning("login failed — server returned 200 on /sessions (bad credentials?)")
+            return False
         if "/login" in r.url or "login" in r.url.split("/")[-1]:
-            log.warning("login failed — check credentials")
+            log.warning("login failed — redirected back to login page")
             return False
         return True
 
@@ -155,11 +162,9 @@ class ManageBacClient:
 
     def _get(self, path: str, bypass_cache: bool = False) -> BeautifulSoup:
         url = f"{self.base}{path}"
-        self.last_request_cached = False
         if not bypass_cache:
             cached = self.cache.get(url)
             if cached is not None:
-                self.last_request_cached = True
                 body, status = cached
                 soup = BeautifulSoup(body, "html.parser")
                 if "/login" in url:
@@ -170,6 +175,7 @@ class ManageBacClient:
         if "/login" in r.url:
             raise RuntimeError("Session expired or invalid — redirected to login")
         self.cache.put(url, r.text, r.status_code)
+        time.sleep(random.uniform(0.5, 2.0))
         return BeautifulSoup(r.text, "html.parser")
 
     def _capture_student_name(self, soup: BeautifulSoup) -> None:
@@ -667,7 +673,7 @@ class ManageBacClient:
         # Tasks with grades
         tasks: list[dict] = []
         for card in soup.find_all("div", class_="fusion-card-item"):
-            title_el = card.find("h4", class_="title")
+            title_el = card.find(class_="title")
             if not title_el:
                 continue
             title = title_el.get_text(strip=True)
@@ -828,8 +834,6 @@ class ManageBacClient:
             log.info("%s page %d: %d items", view, page, len(tasks))
             if not self._has_next_page(soup, page, view):
                 break
-            if page < max_pages and not self.last_request_cached:
-                time.sleep(random.uniform(0.5, 2.0))
         return all_tasks
 
     def get_task_detail(self, task_path: str) -> dict | None:
@@ -952,8 +956,7 @@ class ManageBacClient:
                     task["detail"] = detail
                 if (i + 1) % 5 == 0:
                     log.info("  detail %d/%d", i + 1, len(items))
-                if i < len(items) - 1 and not self.last_request_cached:
-                    time.sleep(random.uniform(0.5, 2.0))
+
 
         return {
             "student_name": self.student_name,

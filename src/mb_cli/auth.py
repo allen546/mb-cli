@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from .cache import ResponseCache
 from .client import ManageBacClient
-from .config import AppState, load_creds, load_state, save_session
+from .config import AppState, load_creds, load_state, save_creds, save_session
 from .exceptions import CommandError
 
 log = logging.getLogger(__name__)
 
-_CREDS_PATH = "/mnt/pi-data/tools/mb_config.json"
+_CREDS_PATH = str(Path.home() / ".config" / "mb-crawler" / "creds.json")
 
 
 def build_client(
@@ -74,6 +75,7 @@ def build_client(
             )
         if not client.login(email_val, password, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
+        save_creds(_CREDS_PATH, email_val, password)
     elif state.session.cookie and not reauth:
         # Health check: try saved cookie, re-login if stale
         client.set_cookie(state.session.cookie)
@@ -106,15 +108,24 @@ def build_client(
 
 
 def _is_session_alive(client: ManageBacClient) -> bool:
-    """Lightweight health check — GET the base URL, return True if session is valid.
+    """Lightweight health check — GET a protected page, return True if session is valid.
 
     Checks both for login redirects (3xx → /login) and auth failures (401/403).
+    Uses a page that requires authentication so an expired session reliably redirects.
     """
     try:
-        r = client.session.get(f"{client.base}/", allow_redirects=False)
+        # Use allow_redirects=False so we can inspect the Location header directly.
+        # r.url always reflects the *request* URL, never the redirect target.
+        r = client.session.get(
+            f"{client.base}/student/dashboard", allow_redirects=False
+        )
         if r.status_code in (401, 403):
             return False
-        return "/login" not in r.url
+        if r.status_code in (301, 302, 303, 307, 308):
+            location = r.headers.get("Location", "")
+            return "/login" not in location
+        # 200 OK on an auth-required page means the session is valid
+        return True
     except Exception:
         return False
 
