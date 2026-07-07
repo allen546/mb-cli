@@ -295,9 +295,21 @@ class TestGetClassGradesTool:
         assert "error" in data
 
     def test_grades_no_params(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.crawl_all.return_value = {
+            "upcoming": [{"class_name": "Math", "link": "/student/classes/100/c/1"}],
+            "past": [],
+            "overdue": [],
+        }
+        mock_client.get_class_grades.return_value = {
+            "tasks": [],
+            "categories": [],
+            "grade_scale": {},
+            "expected_grade": None,
+        }
         result = get_class_grades()
         data = json.loads(result)
-        assert "error" in data
+        assert "classes_grades" in data
 
 
 class TestCountGradeFrequenciesTool:

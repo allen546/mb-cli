@@ -172,6 +172,17 @@ def save_session(state: AppState) -> None:
     _write_json(state.session_path, session_data)
 
 
+def save_creds(path: str | Path, email: str, password: str) -> None:
+    """Save email/password to an external JSON file for silent re-login."""
+    p = Path(path)
+    _ensure_parent(p)
+    p.write_text(
+        json.dumps({"email": email, "password": password, "version": 1}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(p, 0o600)
+
+
 def load_creds(path: str | Path) -> dict | None:
     """Load email/password from an external JSON file.
 

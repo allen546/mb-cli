@@ -10,7 +10,7 @@ from textwrap import indent
 def resolve_format(requested_format: str | None) -> str:
     if requested_format:
         return requested_format
-    return "pretty" if sys.stdout.isatty() else "json"
+    return "pretty"
 
 
 def render_pretty(payload: dict) -> str:
@@ -224,6 +224,30 @@ def render_pretty(payload: dict) -> str:
             lines.append(f"  {c.get('id', '?'):<12}  {c.get('name', '?')}")
         if not classes:
             lines.append("  (none)")
+        return "\n".join(lines)
+
+    if command == "grades.all":
+        classes_grades = data.get("classes_grades", {})
+        lines = ["Grades overview for all classes", f"  profile: {profile}\n"]
+        for cid, c in classes_grades.items():
+            expected = c.get("expected_grade") or {}
+            expected_str = "-"
+            if expected:
+                expected_str = f"{expected.get('letter_grade', '?')} (avg {expected.get('average_score', '?')})"
+            lines.append(f"=== {cid} | {c.get('class_name', 'Unknown Class')} ===")
+            lines.append(f"  Expected Grade: {expected_str}")
+            
+            tasks = c.get("tasks", [])
+            if tasks:
+                for t in tasks:
+                    grade = t.get("grade_letter") or t.get("status") or "-"
+                    pts = t.get("points") or ""
+                    lines.append(
+                        f"    - {t.get('task_id', '?'):>10}  {grade:<4}  {pts:<16}  {t.get('title', '?')}"
+                    )
+            else:
+                lines.append("    (no tasks)")
+            lines.append("")
         return "\n".join(lines)
 
     return json.dumps(payload, indent=2, ensure_ascii=False)
