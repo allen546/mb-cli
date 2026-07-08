@@ -115,7 +115,7 @@ class TestRenderPretty:
         output = render_pretty(payload)
         assert "Task list" in output
         assert "HW1" in output
-        assert "[upcoming]" in output
+        assert "Math" in output
 
     def test_list_empty(self):
         payload = ok(
