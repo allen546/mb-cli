@@ -220,6 +220,7 @@ class ManageBacClient:
                 soup = BeautifulSoup(body, "html.parser")
                 if "/login" in url:
                     raise RuntimeError("Session expired or invalid — redirected to login")
+                self._capture_student_name(soup)
                 return soup
 
         lock = self._get_url_lock(url)
@@ -231,6 +232,7 @@ class ManageBacClient:
                     soup = BeautifulSoup(body, "html.parser")
                     if "/login" in url:
                         raise RuntimeError("Session expired or invalid — redirected to login")
+                    self._capture_student_name(soup)
                     return soup
 
             try:
@@ -238,13 +240,17 @@ class ManageBacClient:
                 if "/login" in r.url:
                     raise RuntimeError("Session expired or invalid — redirected to login")
                 self.cache.put(url, r.text, r.status_code)
-                return BeautifulSoup(r.text, "html.parser")
+                soup = BeautifulSoup(r.text, "html.parser")
+                self._capture_student_name(soup)
+                return soup
             except Exception as e:
                 cached = self.cache.get(url, allow_stale=True)
                 if cached is not None:
                     body, status = cached
                     log.warning("Request to %s failed (%s) — loading stale cached content", url, e)
-                    return BeautifulSoup(body, "html.parser")
+                    soup = BeautifulSoup(body, "html.parser")
+                    self._capture_student_name(soup)
+                    return soup
                 raise
 
     def _capture_student_name(self, soup: BeautifulSoup) -> None:
