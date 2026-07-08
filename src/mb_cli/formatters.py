@@ -93,7 +93,22 @@ def render_pretty(payload: dict) -> str:
         title_w = max((get_display_width(str(t.get("title") or "")) for t in all_tasks), default=0)
         class_w = max((get_display_width(str(t.get("class_name") or "")) for t in all_tasks), default=0)
         due_w = max((get_display_width(str(t.get("due_date") or "")) for t in all_tasks), default=0)
-        grade_w = max((get_display_width(str(t.get("grade_score") or "-")) for t in all_tasks), default=0)
+        def get_grade_display(t: dict) -> str:
+            score = t.get("grade_score")
+            letter = t.get("grade_letter")
+            if score and score != "-":
+                if letter and letter != "-":
+                    if "not assessed" in letter.lower() or letter.lower() == "n/a":
+                        return score
+                    return f"{letter} ( {score} )"
+                return score
+            if letter:
+                if "not assessed" in letter.lower() or letter.lower() == "n/a":
+                    return "N/A"
+                return letter
+            return "-"
+
+        grade_w = max((get_display_width(get_grade_display(t)) for t in all_tasks), default=0)
 
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
@@ -101,7 +116,7 @@ def render_pretty(payload: dict) -> str:
                 continue
             lines.append(f"\n[{section}]")
             for task in section_tasks:
-                grade = task.get("grade_score") or "-"
+                grade = get_grade_display(task)
                 col_id = pad_string(str(task.get("id") or ""), id_w, "right")
                 col_title = pad_string(str(task.get("title") or ""), title_w, "left")
                 col_class = pad_string(str(task.get("class_name") or ""), class_w, "left")

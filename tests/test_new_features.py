@@ -195,3 +195,26 @@ def test_cmd_download(tmp_path):
         assert (out_dir / "essay.pdf").read_bytes() == b"chunk1chunk2"
 
 
+def test_tag_logic():
+    from mb_cli.filters import matches_tag
+
+    # Test single matching
+    t = {"labels": ["Summative", "Exam"]}
+    assert matches_tag(t, "summative") is True
+    assert matches_tag(t, "exam") is True
+    assert matches_tag(t, "homework") is False
+
+    # Test OR queries
+    assert matches_tag(t, "homework,exam") is True
+    assert matches_tag(t, "homework|summative") is True
+    assert matches_tag(t, "homework or exam") is True
+    assert matches_tag(t, "homework,project") is False
+
+    # Test AND queries
+    assert matches_tag(t, "summative+exam") is True
+    assert matches_tag(t, "summative&exam") is True
+    assert matches_tag(t, "summative and exam") is True
+    assert matches_tag(t, "summative+homework") is False
+
+
+
