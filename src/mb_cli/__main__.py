@@ -247,16 +247,45 @@ def cmd_list(args) -> int:
 
     from .filters import filter_result_by_subject, filter_result_by_status
 
-    # 1. Fetch fresh results
-    new_result = client.crawl_all(max_pages=pages, fetch_details=details)
-
-    # 2. Merge with local snapshot and save (isolated path using state config)
+    # Load local snapshot
     snapshot_path = state.config_path.parent / "snapshot.json"
     old_snapshot = load_snapshot(snapshot_path)
-    merged_result = merge_snapshot(old_snapshot, new_result, client=client)
-    save_snapshot(snapshot_path, merged_result)
 
-    result = merged_result
+    # Check if we can reuse the snapshot (crawled within last 15 minutes)
+    use_cached_snapshot = False
+    if old_snapshot and not args.refresh:
+        crawled_at_str = old_snapshot.get("crawled_at")
+        if crawled_at_str:
+            try:
+                from datetime import datetime
+                crawled_at = datetime.fromisoformat(crawled_at_str)
+                age = (datetime.now() - crawled_at).total_seconds()
+                if age < 900:  # 15 minutes TTL
+                    use_cached_snapshot = True
+                    log.info("Using cached snapshot (age: %d seconds)", int(age))
+            except Exception:
+                pass
+
+    if use_cached_snapshot:
+        merged_result = old_snapshot
+    else:
+        # Fetch fresh results
+        new_result = client.crawl_all(max_pages=pages, fetch_details=details)
+        # Merge with local snapshot and save
+        merged_result = merge_snapshot(old_snapshot, new_result, client=client)
+        save_snapshot(snapshot_path, merged_result)
+
+    # Filter out tasks that were deleted from the server (e.g. mock test remnants)
+    result = {
+        "student_name": merged_result.get("student_name"),
+        "school": merged_result.get("school"),
+        "base_url": merged_result.get("base_url"),
+        "crawled_at": merged_result.get("crawled_at"),
+        "upcoming": [t for t in merged_result.get("upcoming", []) if not t.get("deleted_from_server")],
+        "past": [t for t in merged_result.get("past", []) if not t.get("deleted_from_server")],
+        "overdue": [t for t in merged_result.get("overdue", []) if not t.get("deleted_from_server")]
+    }
+
     if subject:
         result = filter_result_by_subject(result, subject)
 
