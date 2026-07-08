@@ -4,7 +4,30 @@ from __future__ import annotations
 
 import json
 import sys
+import unicodedata
 from textwrap import indent
+
+
+def get_display_width(s: str) -> int:
+    """Return the terminal display width of a string, accounting for wide characters."""
+    width = 0
+    for char in s:
+        if unicodedata.east_asian_width(char) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def pad_string(s: str, width: int, align: str = "left") -> str:
+    """Pad a string to a specific terminal display width."""
+    s_width = get_display_width(s)
+    pad_len = max(0, width - s_width)
+    if align == "right":
+        return " " * pad_len + s
+    else:
+        return s + " " * pad_len
+
 
 
 def resolve_format(requested_format: str | None) -> str:
@@ -66,11 +89,11 @@ def render_pretty(payload: dict) -> str:
         for section in ("upcoming", "past", "overdue"):
             all_tasks.extend(tasks.get(section, []) or [])
 
-        id_w = max((len(str(t.get("id") or "")) for t in all_tasks), default=0)
-        title_w = max((len(str(t.get("title") or "")) for t in all_tasks), default=0)
-        class_w = max((len(str(t.get("class_name") or "")) for t in all_tasks), default=0)
-        due_w = max((len(str(t.get("due_date") or "")) for t in all_tasks), default=0)
-        grade_w = max((len(str(t.get("grade_score") or "-")) for t in all_tasks), default=0)
+        id_w = max((get_display_width(str(t.get("id") or "")) for t in all_tasks), default=0)
+        title_w = max((get_display_width(str(t.get("title") or "")) for t in all_tasks), default=0)
+        class_w = max((get_display_width(str(t.get("class_name") or "")) for t in all_tasks), default=0)
+        due_w = max((get_display_width(str(t.get("due_date") or "")) for t in all_tasks), default=0)
+        grade_w = max((get_display_width(str(t.get("grade_score") or "-")) for t in all_tasks), default=0)
 
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
@@ -79,12 +102,13 @@ def render_pretty(payload: dict) -> str:
             lines.append(f"\n[{section}]")
             for task in section_tasks:
                 grade = task.get("grade_score") or "-"
+                col_id = pad_string(str(task.get("id") or ""), id_w, "right")
+                col_title = pad_string(str(task.get("title") or ""), title_w, "left")
+                col_class = pad_string(str(task.get("class_name") or ""), class_w, "left")
+                col_due = pad_string(str(task.get("due_date") or ""), due_w, "left")
+                col_grade = pad_string(grade, grade_w, "left")
                 lines.append(
-                    f"- {str(task.get('id') or ''):>{id_w}} | "
-                    f"{str(task.get('title') or ''):<{title_w}} | "
-                    f"{str(task.get('class_name') or ''):<{class_w}} | "
-                    f"{str(task.get('due_date') or ''):<{due_w}} | "
-                    f"{grade:<{grade_w}}"
+                    f"- {col_id} | {col_title} | {col_class} | {col_due} | {col_grade}"
                 )
         return "\n".join(lines)
 

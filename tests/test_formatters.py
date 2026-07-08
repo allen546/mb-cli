@@ -364,3 +364,28 @@ class TestPrintPayload:
         content = (tmp_path / "output.json").read_text()
         parsed = json.loads(content)
         assert parsed["ok"] is True
+
+
+class TestDisplayWidthAndPadding:
+    def test_get_display_width_ascii(self):
+        from mb_cli.formatters import get_display_width
+        assert get_display_width("hello") == 5
+
+    def test_get_display_width_cjk(self):
+        from mb_cli.formatters import get_display_width
+        # Chinese characters take 2 columns each
+        assert get_display_width("期末考试") == 8
+        assert get_display_width("Math期末考试") == 12
+
+    def test_pad_string_left(self):
+        from mb_cli.formatters import pad_string
+        padded = pad_string("期末考试", 12, "left")
+        # 8 columns of CJK + 4 spaces = 12 columns
+        assert padded == "期末考试    "
+
+    def test_pad_string_right(self):
+        from mb_cli.formatters import pad_string
+        padded = pad_string("期末考试", 10, "right")
+        # 2 spaces + 8 columns of CJK = 10 columns
+        assert padded == "  期末考试"
+
