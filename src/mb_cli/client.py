@@ -812,11 +812,11 @@ class ManageBacClient:
                         grade_letter = "N/A"
 
             if not grade_letter:
-                not_submitted_el = assessment_cell.find(class_=re.compile(r"not-submitted"))
-                if not_submitted_el:
-                    txt = not_submitted_el.get_text(strip=True)
-                    if txt and txt.lower() == "incomplete":
-                        grade_letter = "Incomplete"
+                status_el = assessment_cell.find(class_=re.compile(r"\b(submitted|not-submitted)\b"))
+                if status_el:
+                    txt = status_el.get_text(strip=True)
+                    if txt and txt.lower() in ("complete", "incomplete"):
+                        grade_letter = txt
 
             # Points
             points_el = card.find("div", class_="points")
@@ -1065,11 +1065,11 @@ class ManageBacClient:
                         grade_letter = "N/A"
 
             if not grade_letter:
-                not_submitted_el = assessment_cell.find(class_=re.compile(r"not-submitted"))
-                if not_submitted_el:
-                    txt = not_submitted_el.get_text(strip=True)
-                    if txt and txt.lower() == "incomplete":
-                        grade_letter = "Incomplete"
+                status_el = assessment_cell.find(class_=re.compile(r"\b(submitted|not-submitted)\b"))
+                if status_el:
+                    txt = status_el.get_text(strip=True)
+                    if txt and txt.lower() in ("complete", "incomplete"):
+                        grade_letter = txt
             detail["grade_letter"] = grade_letter
 
             # Parse points
@@ -1113,6 +1113,18 @@ class ManageBacClient:
 
             comments = []
             seen_comment_texts: set[str] = set()
+
+            # Parse official teacher/assessment evaluation comments
+            assessment_comments_div = main_content.find(class_="assessment-comments")
+            if assessment_comments_div:
+                for body in assessment_comments_div.find_all(
+                    "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
+                ):
+                    text = self._text_from_block(body, limit=2000)
+                    if text and text not in seen_comment_texts:
+                        seen_comment_texts.add(text)
+                        comments.append(text)
+
             for discussion in main_content.find_all(
                 "div", class_=re.compile(r"\bdiscussion\b", re.IGNORECASE)
             )[:5]:
