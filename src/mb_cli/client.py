@@ -8,7 +8,7 @@ import random
 import re
 import time
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -338,23 +338,25 @@ class ManageBacClient:
             )
             if not name:
                 continue
+            name = unquote(name)
             if source == "description":
                 data_name = link.get("data-name")
                 if data_name:
-                    name = data_name
+                    name = unquote(data_name)
                 elif (
                     text
                     and "\n" not in text
                     and re.search(r"\.[a-z0-9]{2,8}(?:\s|$)", text, re.IGNORECASE)
                 ):
-                    name = text.splitlines()[0].strip()
+                    name = unquote(text.splitlines()[0].strip())
             elif source == "submission" and text.casefold() in {
                 "view teacher feedback",
                 "view feedback",
             }:
                 continue
 
-            key = (name, url)
+            base_url = url.split("?")[0]
+            key = (name, base_url)
             if key in seen:
                 continue
             seen.add(key)
