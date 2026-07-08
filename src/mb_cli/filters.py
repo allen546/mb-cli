@@ -108,13 +108,23 @@ def _update_summary_counts(result: dict) -> None:
     }
 
 
+def matches_tag(task: dict, tag_query: str) -> bool:
+    """Return *True* if any of the task's labels contains *tag_query* (case-insensitive)."""
+    labels = task.get("labels") or []
+    if not labels:
+        return False
+    tag_lower = tag_query.casefold()
+    return any(tag_lower in lbl.casefold() for lbl in labels)
+
+
 def filter_result_by_status(
     result: dict,
     graded: bool | None = None,
     submitted: bool | None = None,
     grade: str | None = None,
+    tag: str | None = None,
 ) -> dict:
-    """Filter a crawl result dict in-place by status/grade attributes and update counts."""
+    """Filter a crawl result dict in-place by status/grade/tag attributes and update counts."""
     for section in ("upcoming", "past", "overdue"):
         tasks = result.get(section, [])
         if graded is not None:
@@ -123,10 +133,13 @@ def filter_result_by_status(
             tasks = [t for t in tasks if matches_submitted(t, submitted)]
         if grade is not None:
             tasks = [t for t in tasks if matches_grade_query(t, grade)]
+        if tag is not None:
+            tasks = [t for t in tasks if matches_tag(t, tag)]
         result[section] = tasks
     
     _update_summary_counts(result)
     return result
+
 
 
 def result_views(result: dict, requested_view: str) -> dict:
