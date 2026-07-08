@@ -274,6 +274,32 @@ class TestGetTaskDetail:
             )
             assert detail is not None
 
+    def test_duplicate_url_encoded_attachments(self, client):
+        html = """
+        <html>
+        <body>
+          <main>
+            <h3>Description</h3>
+            <div class="fr-view">
+              <a href="/student/classes/11460711/attachments/123/%E5%A4%8D%E4%B9%A0%E6%8F%90%E7%BA%B2_%E4%B9%9D%E5%B9%B4%E7%BA%A7%E4%B8%8B.doc" class="fr-file">复习提纲_九年级下.doc</a>
+              <a href="/student/classes/11460711/attachments/123/%E5%A4%8D%E4%B9%A0%E6%8F%90%E7%BA%B2_%E4%B9%9D%E5%B9%B4%E7%BA%A7%E4%B8%8B.doc" class="fr-file"></a>
+            </div>
+          </main>
+        </body>
+        </html>
+        """
+        with rm.Mocker() as m:
+            m.get(
+                re.compile(r"https://bj80\.managebac\.cn/student/classes/.+/core_tasks/.+"),
+                text=html,
+            )
+            detail = client.get_task_detail(
+                "https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393"
+            )
+            assert detail is not None
+            assert len(detail["attachments"]) == 1
+            assert detail["attachments"][0]["name"] == "复习提纲_九年级下.doc"
+
 
 class TestCrawlAll:
     def test_combines_views(self, client, sample_tasks_page_html_no_next):
