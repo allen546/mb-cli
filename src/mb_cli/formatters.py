@@ -390,6 +390,25 @@ def render_pretty(payload: dict) -> str:
             lines.append("")
         return "\n".join(lines)
 
+    if command == "count-grade-freq":
+        grades = data.get("grades", {})
+        total = data.get("total", 0)
+        num_classes = len(data.get("classes", []))
+        lines = [
+            "Grade Frequency Summary",
+            f"  profile: {profile}",
+            f"  classes counted: {num_classes}",
+            f"  total tasks: {total}",
+            "",
+            f"  {'Grade':<20} {'Count':<5}",
+            "  " + "-" * 26
+        ]
+        # Sort by count descending, then alphabetically by grade name
+        sorted_grades = sorted(grades.items(), key=lambda x: (-x[1], x[0]))
+        for grade, count in sorted_grades:
+            lines.append(f"  {grade:<20} {count:<5}")
+        return "\n".join(lines)
+
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
