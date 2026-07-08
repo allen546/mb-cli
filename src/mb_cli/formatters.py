@@ -60,6 +60,18 @@ def render_pretty(payload: dict) -> str:
             f"  overdue: {summary.get('overdue_count', 0)}",
             f"  total: {summary.get('total_count', 0)}",
         ]
+
+        # Gather all tasks to compute maximum width of columns
+        all_tasks = []
+        for section in ("upcoming", "past", "overdue"):
+            all_tasks.extend(tasks.get(section, []) or [])
+
+        id_w = max((len(str(t.get("id") or "")) for t in all_tasks), default=0)
+        title_w = max((len(str(t.get("title") or "")) for t in all_tasks), default=0)
+        class_w = max((len(str(t.get("class_name") or "")) for t in all_tasks), default=0)
+        due_w = max((len(str(t.get("due_date") or "")) for t in all_tasks), default=0)
+        grade_w = max((len(str(t.get("grade_score") or "-")) for t in all_tasks), default=0)
+
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
             if not section_tasks:
@@ -68,8 +80,11 @@ def render_pretty(payload: dict) -> str:
             for task in section_tasks:
                 grade = task.get("grade_score") or "-"
                 lines.append(
-                    f"- {task.get('id')} | {task.get('title')} | "
-                    f"{task.get('class_name')} | {task.get('due_date')} | {grade}"
+                    f"- {str(task.get('id') or ''):>{id_w}} | "
+                    f"{str(task.get('title') or ''):<{title_w}} | "
+                    f"{str(task.get('class_name') or ''):<{class_w}} | "
+                    f"{str(task.get('due_date') or ''):<{due_w}} | "
+                    f"{grade:<{grade_w}}"
                 )
         return "\n".join(lines)
 
