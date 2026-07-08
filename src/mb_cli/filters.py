@@ -109,12 +109,41 @@ def _update_summary_counts(result: dict) -> None:
 
 
 def matches_tag(task: dict, tag_query: str) -> bool:
-    """Return *True* if any of the task's labels contains *tag_query* (case-insensitive)."""
+    """Return *True* if the task's labels match the logical tag query (case-insensitive).
+
+    Supports:
+      - OR operators: 'tagA,tagB', 'tagA|tagB', 'tagA or tagB'
+      - AND operators: 'tagA+tagB', 'tagA&tagB', 'tagA and tagB'
+    """
     labels = task.get("labels") or []
     if not labels:
         return False
-    tag_lower = tag_query.casefold()
-    return any(tag_lower in lbl.casefold() for lbl in labels)
+    
+    label_set = {lbl.casefold() for lbl in labels}
+    query = tag_query.casefold()
+
+    # Check for OR operators first
+    or_splitters = [",", "|", " or "]
+    for splitter in or_splitters:
+        if splitter in query:
+            parts = [p.strip() for p in query.split(splitter) if p.strip()]
+            return any(
+                any(part in lbl for lbl in label_set)
+                for part in parts
+            )
+
+    # Check for AND operators
+    and_splitters = ["+", "&", " and "]
+    for splitter in and_splitters:
+        if splitter in query:
+            parts = [p.strip() for p in query.split(splitter) if p.strip()]
+            return all(
+                any(part in lbl for lbl in label_set)
+                for part in parts
+            )
+
+    # Single tag fallback
+    return any(query in lbl for lbl in label_set)
 
 
 def matches_completed(task: dict, completed: bool) -> bool:
