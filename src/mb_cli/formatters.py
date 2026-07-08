@@ -86,13 +86,19 @@ def render_pretty(payload: dict) -> str:
 
         # Gather all tasks to compute maximum width of columns
         all_tasks = []
-        for section in ("upcoming", "past", "overdue"):
-            all_tasks.extend(tasks.get(section, []) or [])
+        for s in ("upcoming", "past", "overdue"):
+            all_tasks.extend(tasks.get(s, []) or [])
 
-        id_w = max((get_display_width(str(t.get("id") or "")) for t in all_tasks), default=0)
-        title_w = max((get_display_width(str(t.get("title") or "")) for t in all_tasks), default=0)
-        class_w = max((get_display_width(str(t.get("class_name") or "")) for t in all_tasks), default=0)
-        due_w = max((get_display_width(str(t.get("due_date") or "")) for t in all_tasks), default=0)
+        if not all_tasks:
+            lines.append("  (no tasks)")
+            return "\n".join(lines)
+
+        from mb_cli.client import parse_due_date
+        from datetime import datetime
+        def task_sort_key(t):
+            dt = parse_due_date(t.get("due_date"))
+            return dt or datetime.max
+
         def get_grade_display(t: dict) -> str:
             score = t.get("grade_score")
             letter = t.get("grade_letter")
@@ -108,23 +114,49 @@ def render_pretty(payload: dict) -> str:
                 return letter
             return "Ungraded"
 
-        grade_w = max((get_display_width(get_grade_display(t)) for t in all_tasks), default=0)
-
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
             if not section_tasks:
                 continue
+
             lines.append(f"\n[{section}]")
-            for task in section_tasks:
-                grade = get_grade_display(task)
-                col_id = pad_string(str(task.get("id") or ""), id_w, "right")
-                col_title = pad_string(str(task.get("title") or ""), title_w, "left")
-                col_class = pad_string(str(task.get("class_name") or ""), class_w, "left")
-                col_due = pad_string(str(task.get("due_date") or ""), due_w, "left")
-                col_grade = pad_string(grade, grade_w, "left")
-                lines.append(
-                    f"- {col_id} | {col_title} | {col_class} | {col_due} | {col_grade}"
-                )
+
+            from collections import defaultdict
+            class_groups = defaultdict(list)
+            for t in section_tasks:
+                class_groups[t.get("class_name") or "Unknown Class"].append(t)
+
+            sorted_classes = sorted(class_groups.keys())
+            class_displays = []
+            is_single_class = len(sorted_classes) == 1
+
+            for class_name in sorted_classes:
+                class_tasks = sorted(class_groups[class_name], key=task_sort_key)
+                id_w = max((get_display_width(str(t.get("id") or "")) for t in class_tasks), default=0)
+                title_w = max((get_display_width(str(t.get("title") or "")) for t in class_tasks), default=0)
+                due_w = max((get_display_width(str(t.get("due_date") or "")) for t in class_tasks), default=0)
+                grade_w = max((get_display_width(get_grade_display(t)) for t in class_tasks), default=0)
+
+                class_lines = []
+                if is_single_class:
+                    class_lines.append(class_name)
+                else:
+                    class_lines.append(f"=== {class_name} ===")
+
+                for task in class_tasks:
+                    grade = get_grade_display(task)
+                    col_id = pad_string(str(task.get("id") or ""), id_w, "right")
+                    col_title = pad_string(str(task.get("title") or ""), title_w, "left")
+                    col_due = pad_string(str(task.get("due_date") or ""), due_w, "left")
+                    col_grade = pad_string(grade, grade_w, "left")
+                    class_lines.append(
+                        f"- {col_id} | {col_title} | {col_due} | {col_grade}"
+                    )
+                class_displays.append("\n".join(class_lines))
+
+            separator = "\n---"
+            lines.append(separator.join(class_displays))
+
         return "\n".join(lines)
 
     if command == "view":
