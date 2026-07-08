@@ -811,6 +811,13 @@ class ManageBacClient:
                     if na_el:
                         grade_letter = "N/A"
 
+            if not grade_letter:
+                not_submitted_el = assessment_cell.find(class_=re.compile(r"not-submitted"))
+                if not_submitted_el:
+                    txt = not_submitted_el.get_text(strip=True)
+                    if txt and txt.lower() == "incomplete":
+                        grade_letter = "Incomplete"
+
             # Points
             points_el = card.find("div", class_="points")
             points_text = points_el.get_text(strip=True) if points_el else None
@@ -1056,6 +1063,13 @@ class ManageBacClient:
                     na_el = assessment_cell.find(lambda tag: tag.name in {"div", "span"} and tag.get_text(strip=True) == "N/A")
                     if na_el:
                         grade_letter = "N/A"
+
+            if not grade_letter:
+                not_submitted_el = assessment_cell.find(class_=re.compile(r"not-submitted"))
+                if not_submitted_el:
+                    txt = not_submitted_el.get_text(strip=True)
+                    if txt and txt.lower() == "incomplete":
+                        grade_letter = "Incomplete"
             detail["grade_letter"] = grade_letter
 
             # Parse points
