@@ -112,13 +112,19 @@ def cmd_list(args) -> int:
     if subject:
         result = filter_result_by_subject(result, subject)
 
-    # Apply status filters (graded, submitted, grade)
-    if args.graded is not None or args.submitted is not None or args.grade is not None:
+    # Apply status and tag filters (graded, submitted, grade, tag)
+    if (
+        args.graded is not None
+        or args.submitted is not None
+        or args.grade is not None
+        or args.tag is not None
+    ):
         result = filter_result_by_status(
             result,
             graded=args.graded,
             submitted=args.submitted,
             grade=args.grade,
+            tag=args.tag,
         )
 
     views = result_views(result, view)
@@ -145,6 +151,7 @@ def cmd_list(args) -> int:
                 "graded_filter": args.graded,
                 "submitted_filter": args.submitted,
                 "grade_filter": args.grade,
+                "tag_filter": args.tag,
                 "details": details,
             },
             "summary": summary,
@@ -653,6 +660,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--grade",
         help="Filter tasks by grade (e.g. 'B', 'B-', '4.0')",
+    )
+    list_parser.add_argument(
+        "--tag", "-t",
+        help="Filter tasks by tag/label (e.g. 'Exam', 'Summative')",
     )
     list_parser.set_defaults(func=cmd_list)
 
