@@ -24,7 +24,7 @@ class ProfileConfig:
     default_subject: str = ""
     default_details: bool = False
     default_format: str = "pretty"
-    default_cache_ttl: int = 1800
+    default_cache_ttl: int = 900
 
 
 @dataclass
@@ -115,7 +115,7 @@ def load_state(
         default_subject=defaults.get("subject", ""),
         default_details=defaults.get("details", False),
         default_format=defaults.get("format", "pretty"),
-        default_cache_ttl=defaults.get("cache_ttl", 1800),
+        default_cache_ttl=defaults.get("cache_ttl", 900),
     )
     session = SessionConfig(
         name=active_profile,

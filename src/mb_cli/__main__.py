@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import logging
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from .auth import build_client
 from .client import ManageBacClient
@@ -74,6 +76,143 @@ def _authenticate_client(state, client, email: str) -> str:
     return email or state.profile.email or ""
 
 
+DEFAULT_SNAPSHOT_PATH = Path.home() / ".config" / "mb-crawler" / "snapshot.json"
+
+
+def load_snapshot(path: Path) -> dict:
+    if not path.exists():
+        return {"upcoming": [], "past": [], "overdue": []}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"upcoming": [], "past": [], "overdue": []}
+
+
+def save_snapshot(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning("Failed to save snapshot: %s", e)
+
+
+def merge_snapshot(old: dict, new: dict, client=None) -> dict:
+    """Merge new crawl results into the old snapshot.
+
+    1. Tasks present in new crawl overwrite those in the old snapshot.
+    2. Tasks present in old snapshot but missing in the new crawl are preserved,
+       and marked with "deleted_from_server": True.
+    3. If client is provided, invalidate cache for task details if grade or status changes.
+    """
+    merged_map = {}
+
+    # Determine reference datetime for date classifications
+    now_ref = datetime.now()
+    crawled_at_str = new.get("crawled_at") or old.get("crawled_at")
+    if crawled_at_str:
+        try:
+            now_ref = datetime.fromisoformat(crawled_at_str)
+        except Exception:
+            pass
+
+    # helper to build map from snapshot sections
+    for section in ("upcoming", "past", "overdue"):
+        for t in old.get(section, []):
+            tid = t.get("id")
+            if tid:
+                merged_map[tid] = t
+
+    # Update with new results
+    new_tids = set()
+    for section in ("upcoming", "past", "overdue"):
+        for t in new.get(section, []):
+            tid = t.get("id")
+            if tid:
+                new_tids.add(tid)
+                old_t = merged_map.get(tid)
+                if old_t:
+                    # Opportunistic cache invalidation
+                    # Check if grade or status/labels changed
+                    grade_changed = old_t.get("grade_letter") != t.get("grade_letter") or old_t.get("grade_score") != t.get("grade_score")
+                    old_labels = old_t.get("labels") or []
+                    new_labels = t.get("labels") or []
+                    labels_changed = set(old_labels) != set(new_labels) or old_t.get("status") != t.get("status")
+
+                    if (grade_changed or labels_changed) and client:
+                        class_link = t.get("link") or ""
+                        m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", class_link)
+                        if m:
+                            cid, task_id = m.group(1), m.group(2)
+                            detail_url = f"{client.base}/student/classes/{cid}/core_tasks/{task_id}"
+                            hint_url = f"{client.base}/student/classes/{cid}/events/{task_id}/hint"
+                            dropbox_url = f"{client.base}/student/classes/{cid}/core_tasks/{task_id}/dropbox"
+                            client.cache.invalidate(detail_url)
+                            client.cache.invalidate(hint_url)
+                            client.cache.invalidate(dropbox_url)
+                            log.info("Task %s state changed; invalidated cached details.", task_id)
+                merged_map[tid] = t
+
+    # Mark tasks in snapshot that were NOT in the new crawl as deleted from server
+    for tid, t in merged_map.items():
+        if tid not in new_tids:
+            t["deleted_from_server"] = True
+
+    # Reclassify all merged tasks into upcoming, past, overdue based on due_date and status
+    upcoming = []
+    past = []
+    overdue = []
+
+    from .client import parse_due_date
+
+    for t in merged_map.values():
+        due_date = t.get("due_date")
+        due_dt = parse_due_date(due_date, now_ref=now_ref)
+
+        labels = t.get("labels") or []
+        status = t.get("status")
+        labels_lower = [l.lower() for l in labels]
+        is_submitted = False
+        if "submitted" in labels_lower or status == "submitted":
+            is_submitted = True
+
+        grade_letter = t.get("grade_letter")
+        grade_score = t.get("grade_score")
+
+        is_zero_score = False
+        if grade_score:
+            if re.match(r"^\s*0\s*/", grade_score):
+                is_zero_score = True
+
+        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
+        has_letter = bool(grade_letter and grade_letter.strip())
+        has_completed_grade = (has_score or has_letter) and not is_zero_score
+
+        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
+        has_submit_btn = bool(t.get("has_submit_button", False))
+        t["has_submit_button"] = has_submit_btn
+        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
+
+        if due_dt and due_dt > now_ref:
+            t["view"] = "upcoming"
+            upcoming.append(t)
+        elif is_unfinished:
+            t["view"] = "overdue"
+            overdue.append(t)
+        else:
+            t["view"] = "past"
+            past.append(t)
+
+    return {
+        "student_name": new.get("student_name") or old.get("student_name"),
+        "school": new.get("school") or old.get("school"),
+        "base_url": new.get("base_url") or old.get("base_url"),
+        "crawled_at": new.get("crawled_at") or old.get("crawled_at"),
+        "upcoming": upcoming,
+        "past": past,
+        "overdue": overdue,
+    }
+
+
 # ── Commands ────────────────────────────────────────────────────────────
 
 
@@ -108,16 +247,32 @@ def cmd_list(args) -> int:
 
     from .filters import filter_result_by_subject, filter_result_by_status
 
-    result = client.crawl_all(max_pages=pages, fetch_details=details)
+    # 1. Fetch fresh results
+    new_result = client.crawl_all(max_pages=pages, fetch_details=details)
+
+    # 2. Merge with local snapshot and save (isolated path using state config)
+    snapshot_path = state.config_path.parent / "snapshot.json"
+    old_snapshot = load_snapshot(snapshot_path)
+    merged_result = merge_snapshot(old_snapshot, new_result, client=client)
+    save_snapshot(snapshot_path, merged_result)
+
+    result = merged_result
     if subject:
         result = filter_result_by_subject(result, subject)
 
-    # Apply status and tag filters (graded, submitted, grade, tag)
+    # Apply status and tag filters (graded, submitted, grade, tag, completed)
+    completed_val = None
+    if args.completed:
+        completed_val = True
+    elif args.todo:
+        completed_val = False
+
     if (
         args.graded is not None
         or args.submitted is not None
         or args.grade is not None
         or args.tag is not None
+        or completed_val is not None
     ):
         result = filter_result_by_status(
             result,
@@ -125,6 +280,7 @@ def cmd_list(args) -> int:
             submitted=args.submitted,
             grade=args.grade,
             tag=args.tag,
+            completed=completed_val,
         )
 
     views = result_views(result, view)
@@ -152,6 +308,8 @@ def cmd_list(args) -> int:
                 "submitted_filter": args.submitted,
                 "grade_filter": args.grade,
                 "tag_filter": args.tag,
+                "todo_filter": args.todo,
+                "completed_filter": args.completed,
                 "details": details,
             },
             "summary": summary,
@@ -175,23 +333,51 @@ def cmd_view(args) -> int:
         or target.startswith("https://")
         or "/core_tasks/" in target
     ):
-        detail = client.get_task_detail(target)
-        task = {"id": target.split("core_tasks/")[-1].split("/")[0], "link": target}
+        task_id = target.split("core_tasks/")[-1].split("/")[0]
+        # Search local snapshot first to populate standard fields
+        snapshot_path = state.config_path.parent / "snapshot.json"
+        snapshot = load_snapshot(snapshot_path)
+        task = find_task_by_id(snapshot, task_id)
+
+        detail = client.get_task_detail(target, bypass_cache=args.refresh)
+        if not task:
+            task = {"id": task_id, "link": target}
     else:
         task_id = args.id or args.target
         if not task_id:
             payload = error("view", "missing_target", "Provide a task id or task url")
             print_payload(payload, args.output, args.format)
             return 1
-        result = client.crawl_all(max_pages=args.pages, fetch_details=False)
-        if args.subject:
-            result = filter_result_by_subject(result, args.subject)
-        task = find_task_by_id(result, task_id)
+
+        # 1. Search local snapshot first
+        snapshot_path = state.config_path.parent / "snapshot.json"
+        snapshot = load_snapshot(snapshot_path)
+        task = find_task_by_id(snapshot, task_id)
+
+        # 2. Fall back to sequential web crawl scan if not found
+        if not task:
+            log.info("Task %s not found in local snapshot. Performing sequential web crawl fallback...", task_id)
+            fallback_task = client.find_task_by_id(task_id, max_pages=args.pages or 20)
+            if isinstance(fallback_task, dict):
+                task = fallback_task
+
         if not task:
             payload = error("view", "task_not_found", f"No task found for id {task_id}")
             print_payload(payload, args.output, args.format)
             return 1
-        detail = client.get_task_detail(task["link"])
+        detail = client.get_task_detail(task["link"], from_hint=False, bypass_cache=args.refresh)
+
+    # Merge parsed card details from detail page back into task metadata
+    if detail and isinstance(detail, dict):
+        for k, dest_key in (
+            ("grade_letter", "grade_letter"),
+            ("grade_score", "grade_score"),
+            ("status", "status"),
+            ("labels", "labels"),
+            ("has_submit_button", "has_submit_button")
+        ):
+            if k in detail and task.get(dest_key) is None:
+                task[dest_key] = detail[k]
 
     payload = ok(
         "view",
@@ -535,6 +721,103 @@ def cmd_count_grade_freq(args) -> int:
     return 0
 
 
+def slugify(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9_\-]+", "_", text)
+    return text.strip("_")
+
+
+def cmd_download(args) -> int:
+    state, client, email = _build_client(args, "download")
+    _authenticate_client(state, client, email)
+
+    task_id = args.task_id
+
+    # 1. Look up task in snapshot first
+    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot = load_snapshot(snapshot_path)
+
+    task = find_task_by_id(snapshot, task_id)
+
+    if not task:
+        log.info("Task %s not found in local snapshot. Searching server...", task_id)
+        task = client.find_task_by_id(task_id)
+        if not task:
+            log.error("Task %s not found on ManageBac.", task_id)
+            return 1
+
+    link = task.get("link")
+    if not link:
+        log.error("Task %s has no detail link.", task_id)
+        return 1
+
+    # 2. Fetch task details
+    log.info("Fetching details for task %s...", task_id)
+    detail = client.get_task_detail(link, from_hint=False)
+    if not detail:
+        log.error("Failed to fetch details for task %s.", task_id)
+        return 1
+
+    # 3. Determine output directory
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+    else:
+        title = task.get("title") or "task"
+        slug = slugify(title)
+        out_dir = Path(f"task_{task_id}_{slug}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. Collect files to download
+    files_to_download = []
+    attachments = detail.get("attachments", [])
+
+    for att in attachments:
+        source = att.get("source")
+        name = att.get("name")
+        url = att.get("url")
+        if not name or not url:
+            continue
+
+        if source == "submission":
+            if not args.no_submissions:
+                files_to_download.append((name, url, "submission"))
+        else:
+            if not args.no_attachments:
+                files_to_download.append((name, url, "attachment"))
+
+    if not files_to_download:
+        log.info("No matching attachments or submissions found to download.")
+        return 0
+
+    log.info("Downloading %d file(s) to %s...", len(files_to_download), out_dir)
+    success_count = 0
+    for name, url, source_type in files_to_download:
+        dest_path = out_dir / name
+        stem = Path(name).stem
+        suffix = Path(name).suffix
+        counter = 1
+        while dest_path.exists():
+            dest_path = out_dir / f"{stem} ({counter}){suffix}"
+            counter += 1
+
+        log.info("  [%s] Downloading %s...", source_type, name)
+        try:
+            with client.session.get(url, stream=True) as r:
+                r.raise_for_status()
+                with open(dest_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            log.info("    Saved as %s", dest_path.name)
+            success_count += 1
+        except Exception as e:
+            log.error("    Failed to download %s: %s", name, e)
+
+    log.info("Successfully downloaded %d/%d file(s).", success_count, len(files_to_download))
+    return 0 if success_count > 0 else 1
+
+
 # ── CLI parser ──────────────────────────────────────────────────────────
 
 
@@ -575,7 +858,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--cache-ttl",
             type=int,
             default=None,
-            help="Cache TTL in seconds (default: 1800, i.e. 30 min)",
+            help="Cache TTL in seconds (default: 900, i.e. 15 min)",
         )
         subparser.add_argument(
             "--no-verify-tls",
@@ -664,6 +947,19 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--tag", "-t",
         help="Filter tasks by tag/label (e.g. 'Exam', 'Summative')",
+    )
+    completed_group = list_parser.add_mutually_exclusive_group()
+    completed_group.add_argument(
+        "--completed",
+        action="store_true",
+        default=None,
+        help="Show only completed tasks (either submitted or passing grade)",
+    )
+    completed_group.add_argument(
+        "--todo",
+        action="store_true",
+        default=None,
+        help="Show only uncompleted/todo tasks (not submitted and ungraded/F)",
     )
     list_parser.set_defaults(func=cmd_list)
 
@@ -848,6 +1144,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--subject", "-s", help="Restrict to one class (fuzzy match)"
     )
     count_freq_p.set_defaults(func=cmd_count_grade_freq)
+
+    download_p = subparsers.add_parser(
+        "download", help="Download all attachments and submissions for a task"
+    )
+    add_common_auth_flags(download_p)
+    download_p.add_argument("task_id", help="The ID of the task to download attachments/submissions from")
+    download_p.add_argument(
+        "--output-dir",
+        help="Directory to save the files (defaults to task_<id>_<title_slug> in current directory)",
+    )
+    download_p.add_argument(
+        "--no-submissions",
+        action="store_true",
+        help="Do not download student submissions",
+    )
+    download_p.add_argument(
+        "--no-attachments",
+        action="store_true",
+        help="Do not download teacher attachments",
+    )
+    download_p.set_defaults(func=cmd_download)
 
     return parser
 

@@ -117,14 +117,53 @@ def matches_tag(task: dict, tag_query: str) -> bool:
     return any(tag_lower in lbl.casefold() for lbl in labels)
 
 
+def matches_completed(task: dict, completed: bool) -> bool:
+    """Return *True* if the task's completion state matches the *completed* query.
+
+    A task is considered UNFINISHED (todo) if:
+      - It is NOT submitted (i.e. status is "not-submitted" or has labels like "Pending", "Not Submitted" without "Submitted")
+      - AND it has no grade or a grade of "F"
+      - AND it is NOT explicitly marked "Not Assessed yet"
+    Otherwise, it is considered FINISHED.
+    """
+    labels = task.get("labels") or []
+    status = task.get("status")
+    labels_lower = [l.lower() for l in labels]
+
+    is_submitted = False
+    if "submitted" in labels_lower or status == "submitted":
+        is_submitted = True
+
+    grade_letter = task.get("grade_letter")
+    grade_score = task.get("grade_score")
+
+    is_zero_score = False
+    if grade_score:
+        import re
+        if re.match(r"^\s*0\s*/", grade_score):
+            is_zero_score = True
+
+    has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
+    has_letter = bool(grade_letter and grade_letter.strip())
+    has_completed_grade = (has_score or has_letter) and not is_zero_score
+
+    is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
+    has_submit_btn = bool(task.get("has_submit_button", False))
+    is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
+    is_completed = not is_unfinished
+
+    return is_completed == completed
+
+
 def filter_result_by_status(
     result: dict,
     graded: bool | None = None,
     submitted: bool | None = None,
     grade: str | None = None,
     tag: str | None = None,
+    completed: bool | None = None,
 ) -> dict:
-    """Filter a crawl result dict in-place by status/grade/tag attributes and update counts."""
+    """Filter a crawl result dict in-place by status/grade/tag/completed attributes and update counts."""
     for section in ("upcoming", "past", "overdue"):
         tasks = result.get(section, [])
         if graded is not None:
@@ -135,8 +174,10 @@ def filter_result_by_status(
             tasks = [t for t in tasks if matches_grade_query(t, grade)]
         if tag is not None:
             tasks = [t for t in tasks if matches_tag(t, tag)]
+        if completed is not None:
+            tasks = [t for t in tasks if matches_completed(t, completed)]
         result[section] = tasks
-    
+
     _update_summary_counts(result)
     return result
 
