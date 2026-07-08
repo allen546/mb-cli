@@ -146,3 +146,31 @@ class TestFindTaskById:
         result = make_crawl_result()
         found = find_task_by_id(result, "123")
         assert found is None
+
+
+class TestMatchesTag:
+    def test_matches_tag_exact(self):
+        from mb_cli.filters import matches_tag
+        task = {"labels": ["Summative", "Exam"]}
+        assert matches_tag(task, "Exam") is True
+
+    def test_matches_tag_case_insensitive(self):
+        from mb_cli.filters import matches_tag
+        task = {"labels": ["Summative", "Exam"]}
+        assert matches_tag(task, "exam") is True
+
+    def test_matches_tag_partial(self):
+        from mb_cli.filters import matches_tag
+        task = {"labels": ["Summative", "Exam"]}
+        assert matches_tag(task, "Sum") is True
+
+    def test_matches_tag_no_match(self):
+        from mb_cli.filters import matches_tag
+        task = {"labels": ["Summative", "Exam"]}
+        assert matches_tag(task, "Quiz") is False
+
+    def test_matches_tag_no_labels(self):
+        from mb_cli.filters import matches_tag
+        task = {}
+        assert matches_tag(task, "Exam") is False
+
