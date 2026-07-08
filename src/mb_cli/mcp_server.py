@@ -37,6 +37,7 @@ def list_tasks(
     graded: bool | None = None,
     submitted: bool | None = None,
     grade: str | None = None,
+    tag: str | None = None,
     details: bool = False,
     pages: int = 10,
     school: str | None = None,
@@ -123,6 +124,12 @@ def list_tasks(
         upcoming = [t for t in upcoming if matches_grade_query(t, grade)]
         past = [t for t in past if matches_grade_query(t, grade)]
         overdue = [t for t in overdue if matches_grade_query(t, grade)]
+
+    if tag is not None:
+        from .filters import matches_tag
+        upcoming = [t for t in upcoming if matches_tag(t, tag)]
+        past = [t for t in past if matches_tag(t, tag)]
+        overdue = [t for t in overdue if matches_tag(t, tag)]
 
     from datetime import datetime
     result = {
