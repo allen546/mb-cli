@@ -275,15 +275,16 @@ def cmd_list(args) -> int:
         merged_result = merge_snapshot(old_snapshot, new_result, client=client)
         save_snapshot(snapshot_path, merged_result)
 
-    # Filter out tasks that were deleted from the server (e.g. mock test remnants)
+    # Filter out tasks that were deleted from the server (unless --deleted is specified)
+    show_deleted = getattr(args, "deleted", False)
     result = {
         "student_name": merged_result.get("student_name"),
         "school": merged_result.get("school"),
         "base_url": merged_result.get("base_url"),
         "crawled_at": merged_result.get("crawled_at"),
-        "upcoming": [t for t in merged_result.get("upcoming", []) if not t.get("deleted_from_server")],
-        "past": [t for t in merged_result.get("past", []) if not t.get("deleted_from_server")],
-        "overdue": [t for t in merged_result.get("overdue", []) if not t.get("deleted_from_server")]
+        "upcoming": [t for t in merged_result.get("upcoming", []) if show_deleted or not t.get("deleted_from_server")],
+        "past": [t for t in merged_result.get("past", []) if show_deleted or not t.get("deleted_from_server")],
+        "overdue": [t for t in merged_result.get("overdue", []) if show_deleted or not t.get("deleted_from_server")]
     }
 
     if subject:
@@ -989,6 +990,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Show only uncompleted/todo tasks (not submitted and ungraded/F)",
+    )
+    list_parser.add_argument(
+        "--deleted",
+        action="store_true",
+        help="Include tasks that were deleted from the server",
     )
     list_parser.set_defaults(func=cmd_list)
 
