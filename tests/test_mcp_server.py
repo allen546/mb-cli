@@ -78,6 +78,19 @@ class TestListTasksTool:
         assert len(data["upcoming"]) == 1
         assert data["upcoming"][0]["title"] == "T1"
 
+    def test_list_tasks_with_tag(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
+            [
+                {"id": "1", "title": "T1", "class_name": "Math HL", "labels": ["Summative"]},
+                {"id": "2", "title": "T2", "class_name": "English A", "labels": ["Formative"]},
+            ] if view == "upcoming" else []
+        )
+        result = list_tasks(tag="Summative")
+        data = json.loads(result)
+        assert len(data["upcoming"]) == 1
+        assert data["upcoming"][0]["title"] == "T1"
+
 
 class TestViewTaskTool:
     def test_view_task_by_url(self, mock_build_client):
