@@ -395,7 +395,10 @@ def cmd_view(args) -> int:
             payload = error("view", "task_not_found", f"No task found for id {task_id}")
             print_payload(payload, args.output, args.format)
             return 1
-        detail = client.get_task_detail(task["link"], from_hint=False, bypass_cache=args.refresh)
+        if task.get("link"):
+            detail = client.get_task_detail(task["link"], from_hint=False, bypass_cache=args.refresh)
+        else:
+            detail = {}
 
     # Merge parsed card details from detail page back into task metadata
     if detail and isinstance(detail, dict):
