@@ -61,6 +61,14 @@ class TestBuildParser:
         assert args.view is None
         assert args.details is None
         assert args.pages is None
+        assert args.tag is None
+
+    def test_list_tag_option(self):
+        parser = build_parser()
+        args1 = parser.parse_args(["list", "--tag", "Exam"])
+        assert args1.tag == "Exam"
+        args2 = parser.parse_args(["list", "-t", "Quiz"])
+        assert args2.tag == "Quiz"
 
     def test_view_with_target(self):
         parser = build_parser()
@@ -226,6 +234,43 @@ class TestMainList:
                         printed = mock_print.call_args[0][0]
                         data = json.loads(printed)
                         assert data["ok"] is True
+
+    def test_list_with_tag_filter(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+
+        mock_client = MagicMock()
+        mock_client.domain = "managebac.cn"
+        mock_client.crawl_all.return_value = {
+            "student_name": "John",
+            "school": "bj80",
+            "base_url": "https://bj80.managebac.cn",
+            "crawled_at": "2026-04-29T12:00:00",
+            "upcoming": [
+                {"id": "1", "title": "HW1", "class_name": "Math", "due_date": "May 1", "labels": ["Summative"]},
+                {"id": "2", "title": "HW2", "class_name": "English", "due_date": "May 2", "labels": ["Formative"]}
+            ],
+            "past": [],
+            "overdue": [],
+            "summary": {"upcoming_count": 2, "past_count": 0, "overdue_count": 0},
+        }
+
+        with patch("mb_cli.__main__._build_client") as mock_bc:
+            mock_bc.return_value = _mock_build_client_result(mock_client)
+            with patch("mb_cli.__main__.save_profile"):
+                with patch("mb_cli.__main__.save_session"):
+                    with patch("builtins.print") as mock_print:
+                        with pytest.raises(SystemExit) as exc_info:
+                            main(["list", "--tag", "Summative", "--format", "json"])
+                        assert exc_info.value.code == 0
+                        printed = mock_print.call_args[0][0]
+                        data = json.loads(printed)
+                        assert data["ok"] is True
+                        tasks = data["data"]["tasks"]
+                        # HW2 should be filtered out
+                        assert len(tasks["upcoming"]) == 1
+                        assert tasks["upcoming"][0]["id"] == "1"
+                        assert data["data"]["meta"]["tag_filter"] == "Summative"
 
 
 class TestMainView:
