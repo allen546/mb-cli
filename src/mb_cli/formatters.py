@@ -139,9 +139,9 @@ def render_pretty(payload: dict) -> str:
 
                 class_lines = []
                 if is_single_class:
-                    class_lines.append(class_name)
+                    class_lines.append(f"\n{class_name}")
                 else:
-                    class_lines.append(f"=== {class_name} ===")
+                    class_lines.append(f"\n=== {class_name} ===")
 
                 for task in class_tasks:
                     grade = get_grade_display(task)
