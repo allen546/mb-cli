@@ -32,6 +32,7 @@ class TestBuildParser:
             "timetable",
             "grades",
             "count-grade-freq",
+            "download",
         }
         assert set(choices.keys()) == expected
 

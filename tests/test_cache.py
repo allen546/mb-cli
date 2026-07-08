@@ -697,7 +697,7 @@ class TestDefaults:
     def test_default_ttl(self):
         from mb_cli.cache import DEFAULT_TTL
 
-        assert DEFAULT_TTL == 1800
+        assert DEFAULT_TTL == 900
 
     def test_default_cache_dir(self):
         from mb_cli.cache import DEFAULT_CACHE_DIR
@@ -710,7 +710,7 @@ class TestDefaults:
 
     def test_default_ttl_value(self, tmp_path: Path):
         cache = ResponseCache(cache_dir=tmp_path)
-        assert cache.ttl == 1800
+        assert cache.ttl == 900
 
     def test_none_cache_dir_uses_default(self):
         cache = ResponseCache(cache_dir=None)

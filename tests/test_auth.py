@@ -179,7 +179,8 @@ class TestBuildClient:
             )
         assert exc_info.value.code == "authentication_failed"
 
-    def test_session_cookie_reuse(self, tmp_path: Path, monkeypatch):
+    @patch("mb_cli.auth._is_session_alive", return_value=True)
+    def test_session_cookie_reuse(self, mock_alive, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
         config_path.write_text(json.dumps({}))

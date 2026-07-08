@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 DEFAULT_CACHE_DIR = Path.home() / ".config" / "mb-crawler" / "cache"
-DEFAULT_TTL = 1800  # 30 minutes
+DEFAULT_TTL = 900  # 15 minutes
 
 
 class ResponseCache:
@@ -34,8 +34,11 @@ class ResponseCache:
     def _path(self, url: str) -> Path:
         return self.cache_dir / f"{self._key(url)}.json"
 
-    def get(self, url: str) -> tuple[str, int] | None:
-        """Return ``(body, status)`` if cached and fresh, else ``None``."""
+    def get(self, url: str, allow_stale: bool = False) -> tuple[str, int] | None:
+        """Return ``(body, status)`` if cached and fresh, else ``None``.
+        
+        If ``allow_stale`` is True, returns the cached value even if expired or invalidated.
+        """
         if not self.enabled:
             return None
         p = self._path(url)
@@ -45,7 +48,11 @@ class ResponseCache:
             data = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
-        if time.time() - data.get("ts", 0) > self.ttl:
+        
+        is_expired = time.time() - data.get("ts", 0) > self.ttl
+        is_invalidated = bool(data.get("invalidated", False))
+
+        if (is_expired or is_invalidated) and not allow_stale:
             return None
         return data["body"], data["status"]
 
@@ -55,17 +62,40 @@ class ResponseCache:
             return
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
-        data = {"url": url, "body": body, "status": status, "ts": time.time()}
+        data = {
+            "url": url,
+            "body": body,
+            "status": status,
+            "ts": time.time()
+        }
         p = self._path(url)
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.chmod(p, 0o600)
 
     def invalidate(self, url: str | None = None) -> None:
-        """Remove one entry, or flush the entire cache if *url* is ``None``."""
+        """Mark one entry as invalidated (setting ts=0 and invalidated=True), or mark all entries if *url* is ``None``."""
         if url:
             p = self._path(url)
             if p.exists():
-                p.unlink()
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    data["ts"] = 0
+                    data["invalidated"] = True
+                    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
         elif self.cache_dir.exists():
             for f in self.cache_dir.glob("*.json"):
-                f.unlink()
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    data["ts"] = 0
+                    data["invalidated"] = True
+                    f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass

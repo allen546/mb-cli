@@ -819,3 +819,63 @@ class TestGetCached:
         
         assert client.cache.get("https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393") is None
 
+
+class TestClientConcurrency:
+    def test_concurrent_get_coalescing(self, tmp_path: Path):
+        import threading
+        import time
+        from unittest.mock import MagicMock, patch
+        from mb_cli.client import ManageBacClient
+        from mb_cli.cache import ResponseCache
+
+        cache = ResponseCache(cache_dir=tmp_path / "cache", enabled=True, ttl=1800)
+        client = ManageBacClient("bj80", domain="managebac.cn", cache=cache)
+        client.set_cookie("c")
+
+        call_count = 0
+        first_thread_entered_request = threading.Event()
+        resume_first_thread = threading.Event()
+
+        def mock_request(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            first_thread_entered_request.set()
+            resume_first_thread.wait(timeout=5)
+            r = MagicMock()
+            r.url = url
+            r.status_code = 200
+            r.text = "<html><body>Response content</body></html>"
+            return r
+
+        client._request_with_retry = mock_request
+
+        results = []
+        threads = []
+
+        def worker():
+            with patch("mb_cli.client.time.sleep"):
+                soup = client._get("/student/tasks_and_deadlines")
+                results.append(soup)
+
+        t1 = threading.Thread(target=worker)
+        t1.start()
+
+        assert first_thread_entered_request.wait(timeout=2)
+
+        t2 = threading.Thread(target=worker)
+        t2.start()
+
+        # Small sleep to ensure t2 has started and is blocked on lock
+        time.sleep(0.05)
+
+        resume_first_thread.set()
+
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert len(results) == 2
+        assert call_count == 1
+        assert results[0].find("body").text == "Response content"
+        assert results[1].find("body").text == "Response content"
+
+

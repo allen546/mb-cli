@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import re
+import threading
 import time
 from datetime import datetime
 from urllib.parse import urljoin, unquote
@@ -28,6 +29,36 @@ HEADERS = {
 }
 
 
+def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
+    """Parse due date string with year wrapping correction."""
+    if not due_date_str:
+        return None
+    try:
+        cleaned = re.sub(r"^[A-Za-z]+,\s*", "", due_date_str).strip()
+        ref = now_ref or datetime.now()
+        current_year = ref.year
+
+        dt = None
+        for fmt in ("%b %d, %I:%M %p", "%b %d"):
+            try:
+                parsed = datetime.strptime(f"{cleaned} {current_year}", f"{fmt} %Y")
+                dt = parsed
+                break
+            except ValueError:
+                continue
+
+        if dt:
+            diff = dt - ref
+            if diff.days > 180:
+                dt = dt.replace(year=current_year - 1)
+            elif diff.days < -180:
+                dt = dt.replace(year=current_year + 1)
+            return dt
+    except Exception:
+        pass
+    return None
+
+
 class ManageBacClient:
     """HTTP client for ManageBac with session-based auth.
 
@@ -47,6 +78,7 @@ class ManageBacClient:
         cache: ResponseCache | None = None,
         verify: bool | str = True,
         retry: int = 3,
+        request_delay: float = 1.0,
     ):
         self.school = school.replace(f".{domain}", "")
         self.domain = domain
@@ -57,7 +89,11 @@ class ManageBacClient:
         self.student_name: str | None = None
         self.cache = cache or ResponseCache()
         self.retry = retry
+        self.request_delay = request_delay
+        self._last_request_time: float = 0.0
         self._last_url: str | None = None
+        self._url_locks: dict[str, threading.Lock] = {}
+        self._url_locks_mutex = threading.Lock()
 
     # ── Auth ────────────────────────────────────────────────────────────
 
@@ -117,6 +153,15 @@ class ManageBacClient:
         return False
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        # Enforce rate limit / delay between requests
+        now = time.time()
+        elapsed = now - getattr(self, "_last_request_time", 0.0)
+        min_delay = getattr(self, "request_delay", 1.0)
+        if elapsed < min_delay:
+            sleep_time = (min_delay - elapsed) * random.uniform(0.75, 1.25)
+            time.sleep(max(0.0, sleep_time))
+        self._last_request_time = time.time()
+
         headers = kwargs.pop("headers", {}) or {}
         if self._last_url and "Referer" not in headers:
             headers["Referer"] = self._last_url
@@ -160,6 +205,12 @@ class ManageBacClient:
 
     # ── Internal helpers ────────────────────────────────────────────────
 
+    def _get_url_lock(self, url: str) -> threading.Lock:
+        with self._url_locks_mutex:
+            if url not in self._url_locks:
+                self._url_locks[url] = threading.Lock()
+            return self._url_locks[url]
+
     def _get(self, path: str, bypass_cache: bool = False) -> BeautifulSoup:
         url = f"{self.base}{path}"
         if not bypass_cache:
@@ -171,12 +222,30 @@ class ManageBacClient:
                     raise RuntimeError("Session expired or invalid — redirected to login")
                 return soup
 
-        r = self._request_with_retry("GET", url)
-        if "/login" in r.url:
-            raise RuntimeError("Session expired or invalid — redirected to login")
-        self.cache.put(url, r.text, r.status_code)
-        time.sleep(random.uniform(0.5, 2.0))
-        return BeautifulSoup(r.text, "html.parser")
+        lock = self._get_url_lock(url)
+        with lock:
+            if not bypass_cache:
+                cached = self.cache.get(url)
+                if cached is not None:
+                    body, status = cached
+                    soup = BeautifulSoup(body, "html.parser")
+                    if "/login" in url:
+                        raise RuntimeError("Session expired or invalid — redirected to login")
+                    return soup
+
+            try:
+                r = self._request_with_retry("GET", url)
+                if "/login" in r.url:
+                    raise RuntimeError("Session expired or invalid — redirected to login")
+                self.cache.put(url, r.text, r.status_code)
+                return BeautifulSoup(r.text, "html.parser")
+            except Exception as e:
+                cached = self.cache.get(url, allow_stale=True)
+                if cached is not None:
+                    body, status = cached
+                    log.warning("Request to %s failed (%s) — loading stale cached content", url, e)
+                    return BeautifulSoup(body, "html.parser")
+                raise
 
     def _capture_student_name(self, soup: BeautifulSoup) -> None:
         if self.student_name:
@@ -330,7 +399,10 @@ class ManageBacClient:
             source = "description"
             if link.find_parent(class_=re.compile(r"discussion", re.IGNORECASE)):
                 source = "discussion"
-            elif link.find_parent("tr", class_=re.compile(r"file", re.IGNORECASE)):
+            elif (
+                link.find_parent(class_=re.compile(r"dropbox|submission|coursework", re.IGNORECASE))
+                or link.find_parent("tr", class_=re.compile(r"file", re.IGNORECASE))
+            ):
                 source = "submission"
 
             name = (
@@ -482,15 +554,22 @@ class ManageBacClient:
             body, _status = cached
             events = json.loads(body)
         else:
-            r = self._request_with_retry(
-                "GET",
-                f"{self.base}/student/events.json",
-                params={"start": start, "end": end},
-            )
-            if "/login" in r.url:
-                raise RuntimeError("Session expired or invalid — redirected to login")
-            self.cache.put(url, r.text, r.status_code)
-            events = r.json()
+            lock = self._get_url_lock(url)
+            with lock:
+                cached = self.cache.get(url)
+                if cached is not None:
+                    body, _status = cached
+                    events = json.loads(body)
+                else:
+                    r = self._request_with_retry(
+                        "GET",
+                        f"{self.base}/student/events.json",
+                        params={"start": start, "end": end},
+                    )
+                    if "/login" in r.url:
+                        raise RuntimeError("Session expired or invalid — redirected to login")
+                    self.cache.put(url, r.text, r.status_code)
+                    events = r.json()
         return [
             {
                 "id": e.get("id"),
@@ -527,9 +606,14 @@ class ManageBacClient:
         cached = self.cache.get(ical_url)
         if cached is not None:
             return cached[0]
-        r = self._request_with_retry("GET", ical_url)
-        self.cache.put(ical_url, r.text, r.status_code)
-        return r.text
+        lock = self._get_url_lock(ical_url)
+        with lock:
+            cached = self.cache.get(ical_url)
+            if cached is not None:
+                return cached[0]
+            r = self._request_with_retry("GET", ical_url)
+            self.cache.put(ical_url, r.text, r.status_code)
+            return r.text
 
     # ── Timetable ───────────────────────────────────────────────────────
 
@@ -638,12 +722,26 @@ class ManageBacClient:
 
     # ── Class grades ────────────────────────────────────────────────────
 
-    def get_class_grades(self, class_id: str) -> dict:
+    def get_classes(self) -> dict[str, str]:
+        """Fetch dashboard and extract all class IDs and class names."""
+        soup = self._get("/student/dashboard")
+        seen: dict[str, str] = {}
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            match = re.search(r"^/student/classes/(\d+)/?$", href.split("?")[0].rstrip("/"))
+            if match:
+                class_id = match.group(1)
+                name = a.get_text(" ", strip=True)
+                if name and not any(kw in name.lower() for kw in ("all classes", "browse", "view")):
+                    seen[class_id] = name
+        return seen
+
+    def get_class_grades(self, class_id: str, bypass_cache: bool = False) -> dict:
         """Fetch all grades for a class and compute expected grade.
 
         Returns ``{"tasks": [...], "categories": [...], "grade_scale": {...}, "expected_grade": ...}``.
         """
-        soup = self._get(f"/student/classes/{class_id}/core_tasks")
+        soup = self._get(f"/student/classes/{class_id}/core_tasks", bypass_cache=bypass_cache)
 
         # Grade scale
         chart = soup.find("div", class_="assignments-progress-chart")
@@ -684,8 +782,28 @@ class ManageBacClient:
             task_id_match = re.search(r"/core_tasks/(\d+)", href)
 
             # Grade
-            grade_el = card.find("span", class_="grade")
-            grade_letter = grade_el.get_text(strip=True) if grade_el else None
+            grade_letter = None
+            assessment_cell = card.find(class_=re.compile(r"assessment-cell|task-score")) or card
+            grade_el = assessment_cell.find(class_=re.compile(r"\bgrade\b"))
+            if grade_el:
+                grade_letter = grade_el.get_text(strip=True)
+            
+            if not grade_letter:
+                not_assessed_els = assessment_cell.find_all(class_=re.compile(r"not-assessed"))
+                for el in not_assessed_els:
+                    txt = el.get_text(strip=True)
+                    if txt:
+                        grade_letter = txt
+                        break
+
+            if not grade_letter:
+                not_applicable_el = assessment_cell.find(class_=re.compile(r"not-applicable"))
+                if not_applicable_el:
+                    grade_letter = not_applicable_el.get_text(strip=True)
+                else:
+                    na_el = assessment_cell.find(lambda tag: tag.name in {"div", "span"} and tag.get_text(strip=True) == "N/A")
+                    if na_el:
+                        grade_letter = "N/A"
 
             # Points
             points_el = card.find("div", class_="points")
@@ -697,7 +815,7 @@ class ManageBacClient:
             )
             status = status_el.get_text(strip=True) if status_el else None
 
-            # Category labels
+            # Category and badge labels
             labels: list[str] = []
             labels_set = card.find("div", class_="labels-set")
             if labels_set:
@@ -705,17 +823,59 @@ class ManageBacClient:
                     t = lbl.get_text(strip=True)
                     if t:
                         labels.append(t)
+                for badge in labels_set.find_all("span", class_="badge-label"):
+                    t = badge.get_text(strip=True)
+                    if t:
+                        labels.append(t)
+
+            # Robust status detection from labels if status element is absent or generic
+            if not status:
+                labels_lower = [l.lower() for l in labels]
+                if "submitted" in labels_lower:
+                    status = "submitted"
+                elif "pending" in labels_lower or "not submitted" in labels_lower:
+                    status = "not-submitted"
+
+            # Parse submit button
+            dropbox_link = card.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
+            has_submit_btn = bool(dropbox_link)
+
+            # Parse due date
+            due_date = None
+            date_badge = card.find(class_="date-badge")
+            if date_badge:
+                m_el = date_badge.find(class_="month")
+                d_el = date_badge.find(class_="day")
+                if m_el and d_el:
+                    month = m_el.get_text(strip=True)
+                    day = d_el.get_text(strip=True)
+                    due_date_base = f"{month} {day}"
+
+                    due_el = card.find(class_="due-date")
+                    time_str = ""
+                    if due_el:
+                        due_text = due_el.get_text(" ", strip=True)
+                        time_match = re.search(r"(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm))", due_text)
+                        if time_match:
+                            time_str = time_match.group(1)
+
+                    if time_str:
+                        due_date = f"{due_date_base}, {time_str}"
+                    else:
+                        due_date = due_date_base
 
             tasks.append(
                 {
                     "title": title,
                     "task_id": task_id_match.group(1) if task_id_match else None,
                     "url": f"{self.base}{href}" if href.startswith("/") else href,
+                    "due_date": due_date,
                     "grade_letter": grade_letter,
                     "points": points_text,
                     "status": status,
                     "category": labels[0] if labels else None,
                     "labels": labels or None,
+                    "has_submit_button": has_submit_btn,
                 }
             )
 
@@ -838,60 +998,137 @@ class ManageBacClient:
                 break
         return all_tasks
 
-    def get_task_detail(self, task_path: str) -> dict | None:
-        """Fetch one task's detail page for task body, attachments, and submission info."""
+    def get_task_detail(self, task_path: str, from_hint: bool = False, bypass_cache: bool = False) -> dict | None:
+        """Fetch one task's detail page for task body, attachments, and submission info.
+        
+        If from_hint is True, hits the event popover hint page instead of the full detail page.
+        """
         if task_path.startswith("http"):
             task_path = task_path.replace(self.base, "")
 
         task_match = re.search(r"(/student/classes/\d+/core_tasks/\d+)", task_path)
         if task_match:
             task_path = task_match.group(1)
+
+        if from_hint:
+            m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", task_path)
+            if m:
+                class_id, task_id = m.group(1), m.group(2)
+                task_path = f"/student/classes/{class_id}/events/{task_id}/hint"
+
         try:
-            soup = self._get(task_path)
+            soup = self._get(task_path, bypass_cache=bypass_cache)
         except Exception as e:
             return {"error": str(e)}
 
         detail: dict = {}
         main_content = soup.find("main") or soup
 
-        dropbox = main_content.find(class_=re.compile(r"dropbox|submission|coursework"))
-        submission_text = self._text_from_block(dropbox)
-        if submission_text:
-            detail["submission"] = submission_text
+        # Parse card details from the detail page if present
+        card = soup.find(class_="fusion-card-item")
+        if card:
+            # Parse grade_letter
+            grade_letter = None
+            assessment_cell = card.find(class_=re.compile(r"assessment-cell|task-score")) or card
+            grade_el = assessment_cell.find(class_=re.compile(r"\bgrade\b"))
+            if grade_el:
+                grade_letter = grade_el.get_text(strip=True)
+            
+            if not grade_letter:
+                not_assessed_els = assessment_cell.find_all(class_=re.compile(r"not-assessed"))
+                for el in not_assessed_els:
+                    txt = el.get_text(strip=True)
+                    if txt:
+                        grade_letter = txt
+                        break
 
-        comments = []
-        seen_comment_texts: set[str] = set()
-        for discussion in main_content.find_all(
-            "div", class_=re.compile(r"\bdiscussion\b", re.IGNORECASE)
-        )[:5]:
-            body = discussion.find(
-                "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
-            )
-            if not body:
-                continue
-            text = self._text_from_block(body, limit=2000)
-            if text and text not in seen_comment_texts:
-                seen_comment_texts.add(text)
-                comments.append(text)
-        if comments:
-            detail["comments"] = comments
+            if not grade_letter:
+                not_applicable_el = assessment_cell.find(class_=re.compile(r"not-applicable"))
+                if not_applicable_el:
+                    grade_letter = not_applicable_el.get_text(strip=True)
+                else:
+                    na_el = assessment_cell.find(lambda tag: tag.name in {"div", "span"} and tag.get_text(strip=True) == "N/A")
+                    if na_el:
+                        grade_letter = "N/A"
+            detail["grade_letter"] = grade_letter
 
-        desc_heading = main_content.find(
-            lambda tag: (
-                tag.name in {"h3", "h4", "h5", "th"}
-                and tag.get_text(" ", strip=True) == "Description"
-            )
-        )
+            # Parse points
+            points_el = card.find("div", class_="points")
+            if points_el:
+                detail["grade_score"] = points_el.get_text(strip=True)
+
+            # Parse submit button
+            dropbox_link = soup.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
+            has_submit_btn = bool(dropbox_link)
+            detail["has_submit_button"] = has_submit_btn
+
+            # Parse status
+            status_el = card.find("span", class_=re.compile(r"\b(submitted|not-submitted)\b"))
+            status = status_el.get_text(strip=True) if status_el else None
+            labels = []
+            labels_set = card.find("div", class_="labels-set")
+            if labels_set:
+                for lbl in labels_set.find_all("div", class_="label"):
+                    t = lbl.get_text(strip=True)
+                    if t and t not in labels:
+                        labels.append(t)
+                for badge in labels_set.find_all("span", class_="badge-label"):
+                    t = badge.get_text(strip=True)
+                    if t and t not in labels:
+                        labels.append(t)
+            if not status:
+                labels_lower = [l.lower() for l in labels]
+                if "submitted" in labels_lower:
+                    status = "submitted"
+                elif "pending" in labels_lower or "not submitted" in labels_lower:
+                    status = "not-submitted"
+            detail["status"] = status
+            detail["labels"] = labels
+
+        if not from_hint:
+            dropbox = main_content.find(class_=re.compile(r"dropbox|submission|coursework"))
+            submission_text = self._text_from_block(dropbox)
+            if submission_text:
+                detail["submission"] = submission_text
+
+            comments = []
+            seen_comment_texts: set[str] = set()
+            for discussion in main_content.find_all(
+                "div", class_=re.compile(r"\bdiscussion\b", re.IGNORECASE)
+            )[:5]:
+                body = discussion.find(
+                    "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
+                )
+                if not body:
+                    continue
+                text = self._text_from_block(body, limit=2000)
+                if text and text not in seen_comment_texts:
+                    seen_comment_texts.add(text)
+                    comments.append(text)
+            if comments:
+                detail["comments"] = comments
+
+        # Description parsing
         desc = None
-        if desc_heading:
-            desc = desc_heading.find_next(
-                "div",
-                class_=re.compile(r"fr-view|fix-body-margins|show-more", re.IGNORECASE),
+        if from_hint:
+            desc = main_content.find(class_="fr-view") or main_content.find(class_="fix-body-margins")
+        else:
+            desc_heading = main_content.find(
+                lambda tag: (
+                    tag.name in {"h3", "h4", "h5", "th"}
+                    and tag.get_text(" ", strip=True) == "Description"
+                )
             )
-        if not desc:
-            desc = main_content.find(
-                class_=re.compile(r"description|task-body", re.IGNORECASE)
-            )
+            if desc_heading:
+                desc = desc_heading.find_next(
+                    "div",
+                    class_=re.compile(r"fr-view|fix-body-margins|show-more", re.IGNORECASE),
+                )
+            if not desc:
+                desc = main_content.find(
+                    class_=re.compile(r"description|task-body", re.IGNORECASE)
+                )
+
         description_text = self._text_from_block(desc)
         if description_text:
             detail["description"] = description_text
@@ -900,6 +1137,24 @@ class ManageBacClient:
         if attachments:
             detail["attachments"] = attachments
         return detail if detail else None
+
+    def find_task_by_id(self, task_id: str, max_pages: int = 50) -> dict | None:
+        """Search page-by-page across all views for a specific task ID, stopping as soon as found."""
+        for view in ("overdue", "upcoming", "past"):
+            for page in range(1, max_pages + 1):
+                soup = self._get(f"/student/tasks_and_deadlines?view={view}&page={page}")
+                tasks = self._parse_tasks_page(soup)
+                if not tasks:
+                    break
+                for t in tasks:
+                    t_id_match = re.search(r"(\d+)$", t.get("link", "").split("?")[0].rstrip("/"))
+                    t_id = t_id_match.group(1) if t_id_match else None
+                    if t_id == task_id or t.get("id") == task_id:
+                        t["view"] = view
+                        return t
+                if not self._has_next_page(soup, page, view):
+                    break
+        return None
 
     def crawl_index(self) -> dict:
         """Lightweight check: upcoming page 1 + notifications hub.
@@ -941,24 +1196,113 @@ class ManageBacClient:
         max_pages: int = 10,
         fetch_details: bool = False,
     ) -> dict:
-        """Crawl all three views and return a single result dict."""
-        log.info("Crawling upcoming tasks...")
-        upcoming = self.get_tasks_by_view("upcoming", max_pages)
-        log.info("Crawling past tasks...")
-        past = self.get_tasks_by_view("past", max_pages)
-        log.info("Crawling overdue tasks...")
-        overdue = self.get_tasks_by_view("overdue", max_pages)
+        """Crawl all tasks by compiling from active classes core_tasks pages."""
+        log.info("Discovering classes from dashboard...")
+        classes = {}
+        try:
+            classes = self.get_classes()
+        except Exception as e:
+            log.warning("Failed to discover classes from dashboard: %s", e)
+
+        upcoming = []
+        past = []
+        overdue = []
+
+        if not classes:
+            log.warning("No classes found. Falling back to paginated dashboard crawling...")
+            upcoming = self.get_tasks_by_view("upcoming", max_pages)
+            past = self.get_tasks_by_view("past", max_pages)
+            overdue = self.get_tasks_by_view("overdue", max_pages)
+        else:
+            log.info("Fetching tasks from %d classes...", len(classes))
+            for class_id, class_name in classes.items():
+                try:
+                    class_data = self.get_class_grades(class_id, bypass_cache=False)
+                    for t in class_data.get("tasks", []):
+                        task_id = t.get("task_id")
+                        if not task_id:
+                            continue
+
+                        labels = t.get("labels") or []
+                        status = t.get("status")
+
+                        labels_lower = [l.lower() for l in labels]
+                        is_submitted = False
+                        if "submitted" in labels_lower or status == "submitted":
+                            is_submitted = True
+
+                        grade_letter = t.get("grade_letter")
+                        grade_score = t.get("points")
+
+                        is_zero_score = False
+                        if grade_score:
+                            if re.match(r"^\s*0\s*/", grade_score):
+                                is_zero_score = True
+
+                        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
+                        has_letter = bool(grade_letter and grade_letter.strip())
+                        has_completed_grade = (has_score or has_letter) and not is_zero_score
+
+                        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
+                        has_submit_btn = bool(t.get("has_submit_button", False))
+                        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
+
+                        due_date = t.get("due_date")
+                        due_dt = parse_due_date(due_date)
+
+                        reconstructed_task = {
+                            "id": task_id,
+                            "title": t.get("title"),
+                            "class_name": class_name,
+                            "due_date": due_date,
+                            "link": t.get("url"),
+                            "grade_letter": grade_letter,
+                            "grade_score": t.get("points"),
+                            "labels": labels or None,
+                            "status": "submitted" if is_submitted else "not-submitted",
+                            "has_submit_button": has_submit_btn,
+                        }
+
+                        if due_dt and due_dt > datetime.now():
+                            reconstructed_task["view"] = "upcoming"
+                            upcoming.append(reconstructed_task)
+                        elif is_unfinished:
+                            reconstructed_task["view"] = "overdue"
+                            overdue.append(reconstructed_task)
+                        else:
+                            reconstructed_task["view"] = "past"
+                            past.append(reconstructed_task)
+                except Exception as e:
+                    log.warning("Failed to crawl tasks for class %s: %s", class_name, e)
+
+        # Retrieve notifications
+        notifications: dict = {"unread_count": 0, "items": []}
+        try:
+            hub_endpoint, token = self.get_notification_token()
+            if hub_endpoint:
+                from .notifications import MNNHubClient, hub_for_domain
+
+                if not hub_endpoint:
+                    hub_endpoint = hub_for_domain(self.domain)
+                hub = MNNHubClient(hub_endpoint, token)
+                stats = hub.stats()
+                result = hub.list(page=1, per_page=10, filter_="unread")
+                notifications = {
+                    "unread_count": stats.get("unread_count", 0),
+                    "items": result.get("items", []),
+                }
+        except Exception as exc:
+            log.warning("notifications fetch failed: %s", exc)
 
         if fetch_details:
             items = [t for t in upcoming + past + overdue if t.get("link")]
-            log.info("Fetching details for %d tasks...", len(items))
+            log.info("Fetching details for %d tasks via /hint...", len(items))
             for i, task in enumerate(items):
-                detail = self.get_task_detail(task["link"])
+                detail = self.get_task_detail(task["link"], from_hint=True)
                 if detail:
                     task["detail"] = detail
                 if (i + 1) % 5 == 0:
                     log.info("  detail %d/%d", i + 1, len(items))
-
 
         return {
             "student_name": self.student_name,
@@ -968,6 +1312,7 @@ class ManageBacClient:
             "upcoming": upcoming,
             "past": past,
             "overdue": overdue,
+            "notifications": notifications,
             "summary": {
                 "upcoming_count": len(upcoming),
                 "past_count": len(past),

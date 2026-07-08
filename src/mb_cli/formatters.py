@@ -115,6 +115,49 @@ def render_pretty(payload: dict) -> str:
     if command == "view":
         task = data.get("task", {}) or {}
         detail = data.get("detail", {}) or {}
+
+        # Format Grade Display
+        grade_letter = task.get("grade_letter") or detail.get("grade_letter")
+        grade_score = task.get("grade_score") or detail.get("grade_score")
+        grade_display = "None"
+        if grade_letter and grade_score:
+            grade_display = f"{grade_letter} ({grade_score})"
+        elif grade_letter:
+            grade_display = grade_letter
+        elif grade_score:
+            grade_display = grade_score
+
+        # Format Status/Completion Display
+        labels = task.get("labels") or detail.get("labels") or []
+        labels_lower = [l.lower() for l in labels]
+        is_submitted = False
+        if "submitted" in labels_lower or task.get("status") == "submitted" or detail.get("status") == "submitted":
+            is_submitted = True
+
+        has_submit_btn = bool(task.get("has_submit_button") or detail.get("has_submit_button"))
+        
+        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
+        is_zero_score = False
+        if grade_score:
+            import re
+            if re.match(r"^\s*0\s*/", grade_score):
+                is_zero_score = True
+
+        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
+        has_letter = bool(grade_letter and grade_letter.strip())
+        has_completed_grade = (has_score or has_letter) and not is_zero_score
+
+        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
+
+        if is_unfinished:
+            status_display = "Incomplete (Todo)"
+        else:
+            status_display = "Complete"
+            if is_submitted:
+                status_display += " (Submitted)"
+            elif is_not_assessed:
+                status_display += " (Not Assessed Yet)"
+
         lines = [
             "Task detail",
             f"  profile: {profile}",
@@ -122,7 +165,9 @@ def render_pretty(payload: dict) -> str:
             f"  title: {task.get('title')}",
             f"  class: {task.get('class_name')}",
             f"  due: {task.get('due_date')}",
-            f"  grade: {task.get('grade_score')}",
+            f"  grade: {grade_display}",
+            f"  status: {status_display}",
+            f"  submit button: {'Yes' if has_submit_btn else 'No'}",
             f"  link: {task.get('link')}",
         ]
         if detail.get("description"):
@@ -133,11 +178,20 @@ def render_pretty(payload: dict) -> str:
             for idx, comment in enumerate(detail["comments"], start=1):
                 lines.append(f"  ({idx})")
                 lines.append(indent(comment, "    "))
-        if detail.get("attachments"):
+        submissions = [a for a in detail.get("attachments", []) if a.get("source") == "submission"]
+        if submissions or detail.get("submission"):
+            lines.append("\n[submissions]")
+            if detail.get("submission"):
+                lines.append(f"  {detail['submission']}")
+            for sub in submissions:
+                lines.append(f"  - {sub.get('name')} -> {sub.get('url')}")
+
+        other_attachments = [a for a in detail.get("attachments", []) if a.get("source") != "submission"]
+        if other_attachments:
             lines.append("\n[attachments]")
-            for attachment in detail["attachments"]:
+            for attachment in other_attachments:
                 lines.append(
-                    f"- {attachment.get('source')}: {attachment.get('name')} "
+                    f"  - {attachment.get('source')}: {attachment.get('name')} "
                     f"-> {attachment.get('url')}"
                 )
         return "\n".join(lines)
