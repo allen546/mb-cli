@@ -106,7 +106,7 @@ def render_pretty(payload: dict) -> str:
                 if "not assessed" in letter.lower() or letter.lower() == "n/a":
                     return "N/A"
                 return letter
-            return "-"
+            return "Ungraded"
 
         grade_w = max((get_display_width(get_grade_display(t)) for t in all_tasks), default=0)
 
