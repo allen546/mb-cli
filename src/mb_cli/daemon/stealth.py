@@ -1,0 +1,110 @@
+"""Stealth task crawler simulating realistic human navigation."""
+
+from __future__ import annotations
+
+import logging
+import random
+import time
+from typing import Any
+from bs4 import BeautifulSoup
+
+from ..client import ManageBacClient
+from .events import StealthConfig
+
+log = logging.getLogger(__name__)
+
+
+class StealthTaskCrawler:
+    """Enriches tasks with detailed metadata while adhering to human-like browsing hierarchy."""
+
+    def __init__(self, client: ManageBacClient, config: StealthConfig | None = None):
+        self.client = client
+        self.config = config or StealthConfig()
+
+    def _jitter(self) -> None:
+        if self.config.enabled:
+            delay = random.uniform(
+                self.config.min_jitter_seconds, self.config.max_jitter_seconds
+            )
+            time.sleep(delay)
+
+    def fetch_task_details(
+        self, class_id: int | str, task_id: int | str
+    ) -> dict[str, Any] | None:
+        """Fetch full task details by navigating class workspace -> task page."""
+        class_id_str = str(class_id)
+        task_id_str = str(task_id)
+
+        # 1. Stealthily visit class parent context first if configured
+        if self.config.enabled and self.config.fetch_parent_context:
+            try:
+                cal_path = f"/student/classes/{class_id_str}/calendar"
+                log.debug("Stealth visiting parent class calendar: %s", cal_path)
+                self.client._get(cal_path, bypass_cache=True)
+                self._jitter()
+            except Exception as exc:
+                log.debug("Parent calendar fetch skipped: %s", exc)
+
+        # 2. Fetch the target task page
+        task_path = f"/student/classes/{class_id_str}/core_tasks/{task_id_str}"
+        try:
+            log.debug("Fetching task details from %s", task_path)
+            soup = self.client._get(task_path, bypass_cache=True)
+            self._jitter()
+        except Exception as exc:
+            log.warning("Failed to fetch task %s: %s", task_path, exc)
+            return None
+
+        # 3. Parse task metadata
+        title_el = soup.find("h3", class_="title") or soup.find("h1") or soup.find("h2")
+        title = title_el.get_text(strip=True) if title_el else f"Task {task_id_str}"
+
+        # Class name
+        class_name = ""
+        class_el = soup.find("a", href=lambda h: h and f"/student/classes/{class_id_str}" in h)
+        if class_el:
+            class_name = class_el.get_text(strip=True)
+
+        # Due date
+        due_date_str = ""
+        due_el = soup.find(lambda el: el.name in ("p", "div", "span") and "Due" in el.get_text())
+        if due_el:
+            due_date_str = due_el.get_text(strip=True)
+
+        # Check submission button & status
+        has_submit_btn = bool(
+            soup.find("a", href=lambda h: h and "dropbox" in h)
+            or soup.find("input", {"type": "submit"})
+        )
+
+        status = "not-submitted"
+        # Check for submitted indicators
+        badges = [el.get_text(strip=True).lower() for el in soup.find_all(class_=lambda c: c and any(k in c for k in ["badge", "label", "status"]))]
+        if any("submitted" in b for b in badges):
+            status = "submitted"
+
+        # Check if dropbox shows a file uploaded
+        if has_submit_btn and status != "submitted":
+            try:
+                dropbox_path = f"/student/classes/{class_id_str}/core_tasks/{task_id_str}/dropbox"
+                db_soup = self.client._get(dropbox_path, bypass_cache=True)
+                self._jitter()
+                if db_soup.find("table") or db_soup.find(class_=lambda c: c and "submission" in c):
+                    # Check for submitted file links
+                    file_links = db_soup.find_all("a", href=lambda h: h and "/attachments/" in h)
+                    if file_links:
+                        status = "submitted"
+            except Exception:
+                pass
+
+        return {
+            "id": task_id_str,
+            "task_id": task_id_str,
+            "title": title,
+            "class_id": class_id_str,
+            "class_name": class_name,
+            "due_date": due_date_str,
+            "status": status,
+            "has_submit_button": has_submit_btn,
+            "url": f"{self.client.base}{task_path}",
+        }

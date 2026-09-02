@@ -30,18 +30,42 @@ HEADERS = {
 
 
 def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
-    """Parse due date string with year wrapping correction."""
+    """Parse due date string with multi-format and year wrapping correction."""
     if not due_date_str:
         return None
     try:
-        cleaned = re.sub(r"^[A-Za-z]+,\s*", "", due_date_str).strip()
+        cleaned = re.sub(r"^[A-Za-z]+,\s*", "", str(due_date_str)).strip()
+        cleaned_no_at = re.sub(r"\s+at\s+", " ", cleaned)
+
+        # 1. Try direct ISO format if it looks like ISO
+        if "-" in cleaned and ("T" in cleaned or ":" in cleaned):
+            try:
+                import datetime as _std_dt
+                return _std_dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        # 2. Try formats with explicit year
+        for fmt in (
+            "%B %d, %Y %I:%M %p",
+            "%b %d, %Y %I:%M %p",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                return datetime.strptime(cleaned_no_at, fmt)
+            except ValueError:
+                continue
+
+        # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
         current_year = ref.year
 
         dt = None
-        for fmt in ("%b %d, %I:%M %p", "%b %d"):
+        for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
-                parsed = datetime.strptime(f"{cleaned} {current_year}", f"{fmt} %Y")
+                parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
                 dt = parsed
                 break
             except ValueError:
@@ -456,12 +480,12 @@ class ManageBacClient:
 
     # ── Notifications ───────────────────────────────────────────────────
 
-    def get_notification_token(self) -> tuple[str, str]:
+    def get_notification_token(self, bypass_cache: bool = False) -> tuple[str, str]:
         """Extract MNN hub endpoint and JWT from the notifications page.
 
         Returns ``(hub_endpoint, jwt_token)``.
         """
-        soup = self._get("/student/notifications")
+        soup = self._get("/student/notifications", bypass_cache=bypass_cache)
         trigger = soup.find("a", class_="js-messages-and-notifications-trigger")
         if not trigger:
             raise RuntimeError("Could not find notification trigger on page")

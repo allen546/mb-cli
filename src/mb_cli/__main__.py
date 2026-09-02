@@ -14,6 +14,11 @@ from .auth import build_client
 from .client import ManageBacClient
 from .config import clear_session, load_state, save_profile, save_session
 from .daemon import (
+    DaemonConfig,
+    DaemonService,
+    ServiceManager,
+    WebhookConfig,
+    WebhookDispatcher,
     configure_channel_send,
     configure_webhook,
     load_daemon_config,
@@ -439,7 +444,39 @@ def cmd_logout(args) -> int:
     return 0
 
 
+def cmd_daemon_run(args) -> int:
+    state, client, email = _build_client(args, "daemon")
+    _authenticate_client(state, client, email)
+    daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
+    if getattr(args, "webhook_url", None):
+        daemon_config["webhooks"] = [
+            {"url": args.webhook_url, "secret": getattr(args, "secret", None), "events": ["*"], "enabled": True}
+        ]
+        daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
+    if getattr(args, "poll_interval", None) is not None:
+        daemon_config["poll_interval_seconds"] = args.poll_interval
+    config = DaemonConfig.from_dict(daemon_config)
+    service = DaemonService(client, config=config)
+    if getattr(args, "once", False):
+        res = service.run_check_cycle()
+        payload = ok("daemon.run", state.active_profile, res)
+        print_payload(payload, args.output, args.format)
+        return 0
+    service.run_forever()
+    return 0
+
+
 def cmd_daemon_start(args) -> int:
+    if getattr(args, "background", False):
+        mgr = ServiceManager(
+            pid_path=getattr(args, "pid_file", None),
+            log_path=getattr(args, "log_file", None),
+        )
+        res = mgr.start_background()
+        payload = ok("daemon.start", "default", res)
+        print_payload(payload, args.output, args.format)
+        return 0 if res.get("started") else 1
+
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(args.daemon_config)
@@ -448,6 +485,9 @@ def cmd_daemon_start(args) -> int:
             "mode": "webhook",
             "webhook_url": args.webhook_url,
         }
+        daemon_config["webhooks"] = [
+            {"url": args.webhook_url, "secret": getattr(args, "secret", None), "events": ["*"], "enabled": True}
+        ]
     if args.channel_id and args.recipient:
         daemon_config["delivery"] = {
             "mode": "channel_send",
@@ -469,10 +509,61 @@ def cmd_daemon_start(args) -> int:
 
 
 def cmd_daemon_stop(args) -> int:
-    result = stop_daemon(args.daemon_config)
+    mgr = ServiceManager(pid_path=getattr(args, "pid_file", None))
+    result = mgr.stop_background()
+    if not result.get("stopped") and result.get("reason") == "not_running":
+        # Fall back to legacy stop_daemon logic
+        result = stop_daemon(getattr(args, "daemon_config", None))
     payload = ok("daemon.stop", "default", result)
     print_payload(payload, args.output, args.format)
     return 0
+
+
+def cmd_daemon_status(args) -> int:
+    mgr = ServiceManager(
+        pid_path=getattr(args, "pid_file", None),
+        log_path=getattr(args, "log_file", None),
+    )
+    res = mgr.status()
+    payload = ok("daemon.status", "default", res)
+    print_payload(payload, args.output, args.format)
+    return 0
+
+
+def cmd_daemon_test_webhook(args) -> int:
+    url = getattr(args, "url", None)
+    secret = getattr(args, "secret", None)
+    if not url:
+        config = load_daemon_config(getattr(args, "daemon_config", None))
+        webhooks = config.get("webhooks", [])
+        if webhooks:
+            url = webhooks[0].get("url")
+            secret = secret or webhooks[0].get("secret")
+        else:
+            url = config.get("delivery", {}).get("webhook_url")
+    if not url:
+        raise CommandError("missing_argument", "No webhook URL provided or configured")
+    dispatcher = WebhookDispatcher()
+    res = dispatcher.test_ping(url, secret=secret)
+    payload = ok("daemon.test-webhook", "default", res)
+    print_payload(payload, args.output, args.format)
+    return 0 if res.get("success") else 1
+
+
+def cmd_daemon_install(args) -> int:
+    mgr = ServiceManager(log_path=getattr(args, "log_file", None))
+    res = mgr.install_service()
+    payload = ok("daemon.install", "default", res)
+    print_payload(payload, args.output, args.format)
+    return 0 if res.get("installed") else 1
+
+
+def cmd_daemon_uninstall(args) -> int:
+    mgr = ServiceManager()
+    res = mgr.uninstall_service()
+    payload = ok("daemon.uninstall", "default", res)
+    print_payload(payload, args.output, args.format)
+    return 0 if res.get("uninstalled") else 1
 
 
 def cmd_daemon_configure_webhook(args) -> int:
@@ -1032,6 +1123,17 @@ def build_parser() -> argparse.ArgumentParser:
     daemon = subparsers.add_parser("daemon", help="Manage webhook daemon")
     daemon_subparsers = daemon.add_subparsers(dest="daemon_command", required=True)
 
+    daemon_run = daemon_subparsers.add_parser(
+        "run", help="Run real-time notification daemon loop in foreground"
+    )
+    add_common_auth_flags(daemon_run)
+    daemon_run.add_argument("--daemon-config", help="Path to daemon JSON config")
+    daemon_run.add_argument("--webhook-url", help="Webhook destination URL")
+    daemon_run.add_argument("--secret", help="HMAC secret for webhook signatures")
+    daemon_run.add_argument("--poll-interval", type=int, help="Poll interval in seconds")
+    daemon_run.add_argument("--once", action="store_true", help="Run one cycle and exit")
+    daemon_run.set_defaults(func=cmd_daemon_run)
+
     daemon_start = daemon_subparsers.add_parser(
         "start", help="Start daemon loop or run one cycle"
     )
@@ -1067,10 +1169,16 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start.add_argument(
         "--once", action="store_true", help="Run one cycle and exit"
     )
+    daemon_start.add_argument(
+        "--background", "-b", action="store_true", help="Run as detached background process"
+    )
+    daemon_start.add_argument("--pid-file", help="Custom PID file path")
+    daemon_start.add_argument("--log-file", help="Custom log file path")
     daemon_start.set_defaults(func=cmd_daemon_start)
 
     daemon_stop = daemon_subparsers.add_parser("stop", help="Stop daemon loop")
     daemon_stop.add_argument("--daemon-config", help="Path to daemon JSON config")
+    daemon_stop.add_argument("--pid-file", help="Custom PID file path")
     daemon_stop.add_argument("--output", "-o", help="Write output to file")
     daemon_stop.add_argument(
         "--format",
@@ -1079,6 +1187,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: pretty for TTY, json otherwise)",
     )
     daemon_stop.set_defaults(func=cmd_daemon_stop)
+
+    daemon_status = daemon_subparsers.add_parser("status", help="Show daemon process status")
+    daemon_status.add_argument("--pid-file", help="Custom PID file path")
+    daemon_status.add_argument("--log-file", help="Custom log file path")
+    daemon_status.add_argument("--output", "-o", help="Write output to file")
+    daemon_status.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default=None,
+        help="Output format (default: pretty for TTY, json otherwise)",
+    )
+    daemon_status.set_defaults(func=cmd_daemon_status)
+
+    daemon_test_wh = daemon_subparsers.add_parser("test-webhook", help="Test webhook endpoint with ping event")
+    daemon_test_wh.add_argument("url", nargs="?", help="Webhook URL to test")
+    daemon_test_wh.add_argument("--secret", help="Optional HMAC secret")
+    daemon_test_wh.add_argument("--daemon-config", help="Path to daemon JSON config")
+    daemon_test_wh.add_argument("--output", "-o", help="Write output to file")
+    daemon_test_wh.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default=None,
+        help="Output format (default: pretty for TTY, json otherwise)",
+    )
+    daemon_test_wh.set_defaults(func=cmd_daemon_test_webhook)
+
+    daemon_install = daemon_subparsers.add_parser("install", help="Install auto-start system service (launchd/systemd)")
+    daemon_install.add_argument("--log-file", help="Custom log file path")
+    daemon_install.add_argument("--output", "-o", help="Write output to file")
+    daemon_install.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default=None,
+        help="Output format (default: pretty for TTY, json otherwise)",
+    )
+    daemon_install.set_defaults(func=cmd_daemon_install)
+
+    daemon_uninstall = daemon_subparsers.add_parser("uninstall", help="Uninstall auto-start system service")
+    daemon_uninstall.add_argument("--output", "-o", help="Write output to file")
+    daemon_uninstall.add_argument(
+        "--format",
+        choices=["pretty", "json"],
+        default=None,
+        help="Output format (default: pretty for TTY, json otherwise)",
+    )
+    daemon_uninstall.set_defaults(func=cmd_daemon_uninstall)
 
     daemon_configure = daemon_subparsers.add_parser(
         "configure-webhook", help="Persist daemon webhook URL"
