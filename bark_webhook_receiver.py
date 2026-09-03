@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Lightweight Webhook Receiver Adapter for Bark push notifications.
 
-Receives ManageBac MBEvent webhooks on port 42617 and pushes notifications
-to phone and mac via the Bark CLI script.
+Receives ManageBac MBEvent webhooks on port 42617 and pushes compact
+notifications (max 4 short lines) to phone and mac via the Bark CLI script.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Any
@@ -25,114 +26,172 @@ logging.basicConfig(
 )
 log = logging.getLogger("bark_webhook_receiver")
 
-
 DEFAULT_BARK_BIN = "/srv/data/tools/bark"
 DEFAULT_BARK_CONFIG = "/srv/data/tools/bark_config.json"
 DEFAULT_PORT = 42617
 DEFAULT_HOST = "127.0.0.1"
+MAX_LINE_LEN = 20
+
+
+def truncate_line(s: str | None, max_len: int = MAX_LINE_LEN) -> str:
+    """Clean and truncate a string to maximum length."""
+    if not s:
+        return ""
+    cleaned = re.sub(r"\s+", " ", str(s)).strip()
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[: max_len - 2] + ".."
+
+
+def format_compact_date(date_str: str | None) -> str:
+    """Format diverse ManageBac date strings to compact MM-DD HH:MM."""
+    if not date_str:
+        return ""
+    s = str(date_str).strip()
+    for prefix in ("due:", "when:", "due", "when", "when :", "due :"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :].strip()
+
+    # ISO format: 2026-09-10T08:25:00 or 2026-09-10 08:25:00
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", s)
+    if m:
+        return f"{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}"
+
+    # English format: September 10, 2026 at 9:10 AM or Sep 2 at 2:20 PM
+    months = {
+        "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
+        "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+    }
+    m2 = re.search(
+        r"([A-Za-z]{3})[a-z]*\s+(\d{1,2}),?\s*(?:\d{4})?\s*(?:at\s*)?(\d{1,2}):(\d{2})\s*(AM|PM)?",
+        s,
+        re.IGNORECASE,
+    )
+    if m2:
+        mon_str = m2.group(1).lower()
+        mon = months.get(mon_str, "01")
+        day = f"{int(m2.group(2)):02d}"
+        hr = int(m2.group(3))
+        minute = m2.group(4)
+        ampm = (m2.group(5) or "").upper()
+        if ampm == "PM" and hr < 12:
+            hr += 12
+        elif ampm == "AM" and hr == 12:
+            hr = 0
+        return f"{mon}-{day} {hr:02d}:{minute}"
+
+    # Fallback to truncated text
+    return s[:14]
 
 
 def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int]:
     """Format an MBEvent payload into (title, message, sound, priority).
 
-    Returns:
-        tuple of (title, message, sound, priority)
+    Enforces:
+    - Maximum 4 lines of body
+    - Maximum line length equal to the date line (~20 chars)
     """
     event = payload.get("event") or payload.get("type") or "notification"
     data = payload.get("data") or {}
 
-    # Extract common fields
-    task_title = (
+    raw_title = (
         data.get("title")
         or (data.get("task") or {}).get("title")
         or (data.get("enriched_task") or {}).get("title")
-        or "未命名任务"
+        or ""
     )
-    class_name = (
+    raw_class = (
         data.get("class_name")
         or (data.get("task") or {}).get("class_name")
         or (data.get("origin") or {}).get("name")
         or ""
     )
-    due_date = (
+    raw_due = (
         data.get("due_date")
         or (data.get("task") or {}).get("due_date")
         or (data.get("enriched_task") or {}).get("due_date")
         or ""
     )
-    link = (
-        data.get("task_url")
-        or (data.get("task") or {}).get("link")
-        or (data.get("enriched_task") or {}).get("url")
-        or ""
-    )
+    date_formatted = format_compact_date(raw_due)
+    if not date_formatted:
+        date_formatted = datetime.now().strftime("%m-%d %H:%M")
 
-    class_tag = f"【{class_name}】" if class_name else ""
+    # Clean class name (strip noisy boilerplate like "2026-2027 (Grade 10)")
+    clean_class = re.sub(r"\b20\d{2}-20\d{2}\b", "", raw_class)
+    clean_class = re.sub(r"\(Grade \d+\)", "", clean_class)
+    clean_class = re.sub(r"\s+", " ", clean_class).strip()
+    if not clean_class:
+        clean_class = "ManageBac"
+
+    line1 = truncate_line(clean_class, MAX_LINE_LEN)
+    line2 = truncate_line(raw_title or "新消息", MAX_LINE_LEN)
 
     if event == "deadline_approaching":
-        threshold = data.get("reminder_threshold") or "即将到期"
-        title = f"⏰ ManageBac DDL提醒: {task_title}"
-        lines = [
-            f"{class_tag}{task_title}",
-            f"⚠️ 距离截止时间仅剩: {threshold}",
-        ]
-        if due_date:
-            lines.append(f"📅 截止时间: {due_date}")
-        if link:
-            lines.append(f"🔗 链接: {link}")
-        return title, "\n".join(lines), "alarm", 10
+        threshold = data.get("reminder_threshold") or "到期"
+        title = truncate_line(f"⏰ DDL: {raw_title}", 22)
+        line3 = truncate_line(f"剩余: {threshold}", MAX_LINE_LEN)
+        line4 = f"截止: {date_formatted}"
+        sound = "alarm"
+        priority = 10
 
     elif event == "task_created":
-        title = f"📝 ManageBac 新作业: {task_title}"
-        lines = [f"{class_tag}{task_title}"]
-        if due_date:
-            lines.append(f"📅 截止时间: {due_date}")
-        sender = (data.get("sender") or {}).get("name")
-        if sender:
-            lines.append(f"👤 教师: {sender}")
-        if link:
-            lines.append(f"🔗 链接: {link}")
-        return title, "\n".join(lines), "bell", 6
+        title = truncate_line(f"📝 新作业: {raw_title}", 22)
+        teacher = (data.get("sender") or {}).get("name") or ""
+        line3 = truncate_line(f"教师: {teacher}" if teacher else "新布置作业", MAX_LINE_LEN)
+        line4 = f"截止: {date_formatted}" if raw_due else f"发布: {date_formatted}"
+        sound = "bell"
+        priority = 6
 
     elif event == "task_updated":
-        title = f"✏️ ManageBac 作业更新: {task_title}"
-        lines = [f"{class_tag}{task_title}"]
-        if due_date:
-            lines.append(f"📅 截止时间: {due_date}")
-        if link:
-            lines.append(f"🔗 链接: {link}")
-        return title, "\n".join(lines), "bell", 5
+        title = truncate_line(f"✏️ 更新: {raw_title}", 22)
+        status = (data.get("enriched_task") or {}).get("status")
+        status_str = "已提交" if status == "submitted" else "未提交"
+        line3 = truncate_line(f"状态: {status_str}", MAX_LINE_LEN)
+        line4 = f"截止: {date_formatted}" if raw_due else f"时间: {date_formatted}"
+        sound = "bell"
+        priority = 5
 
     elif event == "assignment_graded":
+        title = truncate_line(f"📊 成绩: {raw_title}", 22)
         grade_letter = data.get("grade_letter") or ""
         grade_score = data.get("grade_score") or data.get("points") or ""
         grade_str = f"{grade_letter} {grade_score}".strip() or "已批改"
-        title = f"📊 ManageBac 成绩发布: {task_title}"
-        lines = [
-            f"{class_tag}{task_title}",
-            f"🎯 获得成绩: {grade_str}",
-        ]
-        if link:
-            lines.append(f"🔗 链接: {link}")
-        return title, "\n".join(lines), "chime", 7
+        line3 = truncate_line(f"得分: {grade_str}", MAX_LINE_LEN)
+        line4 = f"时间: {date_formatted}"
+        sound = "chime"
+        priority = 7
 
     elif event == "announcement_created":
-        title = f"📢 ManageBac 新公告: {task_title}"
-        lines = [f"{class_tag}{task_title}"]
-        preview = data.get("body_preview") or data.get("message")
-        if preview:
-            lines.append(f"\n{preview[:200]}")
-        return title, "\n".join(lines), "bell", 5
+        title = truncate_line(f"📢 公告: {raw_title}", 22)
+        author = (data.get("sender") or {}).get("name") or ""
+        line3 = truncate_line(f"发布: {author}" if author else "新公告", MAX_LINE_LEN)
+        line4 = f"时间: {date_formatted}"
+        sound = "bell"
+        priority = 5
 
     elif event == "test_ping":
-        title = "🔔 ManageBac Webhook 测试"
-        msg = data.get("message") or "ManageBac 实时推送服务连接正常！"
-        return title, msg, "bell", 5
+        title = "🔔 ManageBac 测试"
+        line1 = "实时推送测试"
+        line2 = "设备: Mac & iPhone"
+        line3 = "服务状态: 正常"
+        line4 = f"时间: {date_formatted}"
+        sound = "bell"
+        priority = 5
 
-    # Fallback for general alert/notification
-    title = f"ManageBac 通知: {event}"
-    msg = data.get("message") or json.dumps(data, ensure_ascii=False, indent=2)
-    return title, str(msg), "bell", 5
+    else:
+        title = truncate_line(f"ManageBac: {raw_title or event}", 22)
+        preview = data.get("body_preview") or data.get("message") or ""
+        line3 = truncate_line(preview or "新通知", MAX_LINE_LEN)
+        line4 = f"时间: {date_formatted}"
+        sound = "bell"
+        priority = 5
+
+    # Strictly assemble at most 4 lines
+    lines = [line1, line2, line3, line4]
+    final_lines = [l for l in lines if l][:4]
+    message = "\n".join(final_lines)
+
+    return title, message, sound, priority
 
 
 class BarkPusher:
@@ -196,7 +255,7 @@ def make_request_handler(pusher: BarkPusher):
             log.info("Received event: %s", event_name)
 
             title, message, sound, priority = format_event_for_bark(payload)
-            log.info("Dispatching to Bark: title=%r, sound=%r, priority=%d", title, sound, priority)
+            log.info("Dispatching to Bark:\nTitle: %r\nMessage:\n%s\nSound: %r, Priority: %d", title, message, sound, priority)
             ok = pusher.push(title, message, sound=sound, priority=priority)
 
             self.send_response(200 if ok else 500)
@@ -206,7 +265,6 @@ def make_request_handler(pusher: BarkPusher):
             self.wfile.write(resp.encode("utf-8"))
 
         def log_message(self, format, *args):
-            # Suppress default BaseHTTPRequestHandler access log line noise
             pass
 
     return WebhookHandler
