@@ -47,6 +47,7 @@ def test_daemon_service_check_cycle(tmp_path: Path):
         state_manager=state_mgr,
         provider=provider,
     )
+    service.dispatcher.dispatch = MagicMock(return_value=[{"success": True, "url": "http://localhost:9999/wh"}])
 
     res = service.run_check_cycle()
     assert res["new_notifications"] == 1

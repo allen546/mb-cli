@@ -456,7 +456,17 @@ def cmd_daemon_run(args) -> int:
     if getattr(args, "poll_interval", None) is not None:
         daemon_config["poll_interval_seconds"] = args.poll_interval
     config = DaemonConfig.from_dict(daemon_config)
-    service = DaemonService(client, config=config)
+
+    def refresh_fn() -> bool:
+        from .auth import _relogin_from_creds
+        try:
+            _relogin_from_creds(client, state)
+            return True
+        except Exception as err:
+            log.warning("Silent re-login failed: %s", err)
+            return False
+
+    service = DaemonService(client, config=config, auth_refresh_fn=refresh_fn)
     if getattr(args, "once", False):
         res = service.run_check_cycle()
         payload = ok("daemon.run", state.active_profile, res)
@@ -472,8 +482,36 @@ def cmd_daemon_start(args) -> int:
             pid_path=getattr(args, "pid_file", None),
             log_path=getattr(args, "log_file", None),
         )
-        res = mgr.start_background()
-        payload = ok("daemon.start", "default", res)
+        extra_args = []
+        if getattr(args, "profile", None):
+            extra_args.extend(["--profile", args.profile])
+        if getattr(args, "config", None):
+            extra_args.extend(["--config", args.config])
+        if getattr(args, "session_file", None):
+            extra_args.extend(["--session-file", args.session_file])
+        if getattr(args, "school", None):
+            extra_args.extend(["--school", args.school])
+        if getattr(args, "domain", None):
+            extra_args.extend(["--domain", args.domain])
+        if getattr(args, "email", None):
+            extra_args.extend(["--email", args.email])
+        if getattr(args, "password", None):
+            extra_args.extend(["--password", args.password])
+        if getattr(args, "cookie", None):
+            extra_args.extend(["--cookie", args.cookie])
+        if getattr(args, "daemon_config", None):
+            extra_args.extend(["--daemon-config", args.daemon_config])
+        if getattr(args, "webhook_url", None):
+            extra_args.extend(["--webhook-url", args.webhook_url])
+        if getattr(args, "secret", None):
+            extra_args.extend(["--secret", args.secret])
+        if getattr(args, "interval", None) is not None:
+            extra_args.extend(["--poll-interval", str(args.interval)])
+        if getattr(args, "no_verify_tls", False):
+            extra_args.append("--no-verify-tls")
+
+        res = mgr.start_background(extra_args=extra_args)
+        payload = ok("daemon.start", getattr(args, "profile", "default") or "default", res)
         print_payload(payload, args.output, args.format)
         return 0 if res.get("started") else 1
 

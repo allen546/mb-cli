@@ -31,6 +31,8 @@ class MBEvent:
         }
 
     def to_json(self, indent: int | None = None) -> str:
+        if indent is None:
+            return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
 

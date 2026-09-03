@@ -20,12 +20,19 @@ def hub_for_domain(domain: str) -> str:
 class MNNHubClient:
     """REST client for the ManageBac Notification Network hub."""
 
-    def __init__(self, endpoint: str, token: str, verify: bool | str = True):
+    def __init__(
+        self,
+        endpoint: str,
+        token: str,
+        verify: bool | str = True,
+        timeout: float = 15.0,
+    ):
         self.base = f"{endpoint}/api/frontend/v2"
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
         self.session.headers["Content-Type"] = "application/json"
         self.session.verify = verify
+        self.timeout = timeout
 
     def _jitter(self) -> None:
         time.sleep(random.uniform(1.0, 3.0))
@@ -34,7 +41,7 @@ class MNNHubClient:
 
     def stats(self) -> dict:
         self._jitter()
-        r = self.session.get(f"{self.base}/notifications/stats")
+        r = self.session.get(f"{self.base}/notifications/stats", timeout=self.timeout)
         r.raise_for_status()
         return r.json().get("stats", {})
 
@@ -49,7 +56,9 @@ class MNNHubClient:
         if filter_ and filter_ != "all":
             params["filter"] = filter_
         self._jitter()
-        r = self.session.get(f"{self.base}/notifications", params=params)
+        r = self.session.get(
+            f"{self.base}/notifications", params=params, timeout=self.timeout
+        )
         r.raise_for_status()
         data = r.json()
         return {
@@ -60,21 +69,33 @@ class MNNHubClient:
     # ── Mutate ──────────────────────────────────────────────────────────
 
     def mark_read(self, notification_id: int) -> bool:
-        r = self.session.put(f"{self.base}/notifications/{notification_id}/read")
+        r = self.session.put(
+            f"{self.base}/notifications/{notification_id}/read", timeout=self.timeout
+        )
         return r.status_code == 204
 
     def mark_unread(self, notification_id: int) -> bool:
-        r = self.session.put(f"{self.base}/notifications/{notification_id}/unread")
+        r = self.session.put(
+            f"{self.base}/notifications/{notification_id}/unread",
+            timeout=self.timeout,
+        )
         return r.status_code == 204
 
     def mark_all_read(self) -> bool:
-        r = self.session.put(f"{self.base}/notifications/mark_as_read")
+        r = self.session.put(
+            f"{self.base}/notifications/mark_as_read", timeout=self.timeout
+        )
         return r.status_code == 204
 
     def star(self, notification_id: int) -> bool:
-        r = self.session.put(f"{self.base}/notifications/{notification_id}/star")
+        r = self.session.put(
+            f"{self.base}/notifications/{notification_id}/star", timeout=self.timeout
+        )
         return r.status_code == 204
 
     def unstar(self, notification_id: int) -> bool:
-        r = self.session.put(f"{self.base}/notifications/{notification_id}/unstar")
+        r = self.session.put(
+            f"{self.base}/notifications/{notification_id}/unstar",
+            timeout=self.timeout,
+        )
         return r.status_code == 204

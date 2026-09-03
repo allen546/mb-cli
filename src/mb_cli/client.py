@@ -34,7 +34,8 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
     if not due_date_str:
         return None
     try:
-        cleaned = re.sub(r"^[A-Za-z]+,\s*", "", str(due_date_str)).strip()
+        cleaned = re.sub(r"^(Due:?\s*|When:?\s*)", "", str(due_date_str), flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"^[A-Za-z]+,\s*", "", cleaned).strip()
         cleaned_no_at = re.sub(r"\s+at\s+", " ", cleaned)
 
         # 1. Try direct ISO format if it looks like ISO

@@ -19,6 +19,26 @@ DEFAULT_PID_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.pid"
 DEFAULT_LOG_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.log"
 
 
+def _is_mb_cli_process(pid: int) -> bool:
+    """Verify PID corresponds to an mb-cli process to prevent terminating recycled PIDs."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        cmdline = result.stdout.strip()
+        return any(
+            k in cmdline
+            for k in ("mb-cli", "mb_cli", "mb_crawler", "pytest", "mb")
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 class ServiceManager:
     """Manages background daemon processes and OS-level service integrations."""
 
@@ -95,12 +115,20 @@ class ServiceManager:
             "log_file": str(self.log_path),
         }
 
-    def stop_background(self) -> dict[str, Any]:
+    def stop_background(self, verify_process: bool = True) -> dict[str, Any]:
         """Gracefully terminate the background daemon process."""
         pid = self.get_running_pid()
         if not pid:
             self.clean_pid()
             return {"stopped": False, "reason": "not_running"}
+
+        if verify_process and not _is_mb_cli_process(pid):
+            self.clean_pid()
+            return {
+                "stopped": False,
+                "reason": "not_mb_cli_process",
+                "pid": pid,
+            }
 
         try:
             os.kill(pid, signal.SIGTERM)
@@ -164,6 +192,7 @@ class ServiceManager:
     def _install_macos_launchd(self) -> dict[str, Any]:
         plist_path = Path.home() / "Library" / "LaunchAgents" / "com.managebac.crawler.plist"
         plist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         python_bin = sys.executable
         mb_bin = shutil.which("mb") or f"{python_bin} -m mb_cli"
@@ -215,6 +244,7 @@ class ServiceManager:
     def _install_linux_systemd(self) -> dict[str, Any]:
         unit_dir = Path.home() / ".config" / "systemd" / "user"
         unit_dir.mkdir(parents=True, exist_ok=True)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         service_path = unit_dir / "mb-daemon.service"
 
         python_bin = sys.executable

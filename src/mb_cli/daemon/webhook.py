@@ -40,10 +40,7 @@ class WebhookDispatcher:
     def dispatch(self, event: MBEvent) -> list[dict[str, Any]]:
         """Dispatch an event to all matching enabled webhooks."""
         results: list[dict[str, Any]] = []
-        payload_dict = event.to_dict()
-        payload_bytes = json.dumps(
-            payload_dict, ensure_ascii=False, separators=(",", ":")
-        ).encode("utf-8")
+        payload_bytes = event.to_json().encode("utf-8")
 
         for webhook in self.webhooks:
             if not webhook.matches_event(event.event):

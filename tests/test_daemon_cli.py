@@ -45,3 +45,27 @@ def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["daemon", "run", "--once", "--format", "json"])
                     assert exc_info.value.code == 0
+
+
+def test_cli_daemon_start_background_arg_forwarding():
+    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+        mgr_instance = MockMgr.return_value
+        mgr_instance.start_background.return_value = {"started": True, "pid": 12345}
+        with patch("builtins.print"):
+            with pytest.raises(SystemExit) as exc_info:
+                main([
+                    "daemon", "start", "-b",
+                    "--profile", "work",
+                    "--webhook-url", "https://hook.example.com",
+                    "--interval", "45",
+                    "--format", "json",
+                ])
+            assert exc_info.value.code == 0
+            call_kwargs = mgr_instance.start_background.call_args[1]
+            extra_args = call_kwargs.get("extra_args", [])
+            assert "--profile" in extra_args
+            assert "work" in extra_args
+            assert "--webhook-url" in extra_args
+            assert "https://hook.example.com" in extra_args
+            assert "--poll-interval" in extra_args
+            assert "45" in extra_args
