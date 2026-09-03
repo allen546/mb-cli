@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from mcp.server.fastmcp import FastMCP
 
 from .auth import build_client
-from .client import ManageBacClient
+from .client import ManageBacClient, parse_task_url
 from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)
@@ -232,9 +232,9 @@ def submit_file(
         retry=retry,
     )
 
-    m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", task_id)
-    if m:
-        class_id, tid = m.group(1), m.group(2)
+    cid, tid = parse_task_url(task_id)
+    if cid and tid:
+        class_id, tid = cid, tid
     else:
         found = False
         # Search upcoming and overdue first (most likely for submissions)
@@ -242,11 +242,9 @@ def submit_file(
             tasks = client.get_tasks_by_view(view, max_pages=3)
             for t in tasks:
                 if t.get("id") == task_id:
-                    m2 = re.search(
-                        r"/student/classes/(\d+)/core_tasks/(\d+)", t.get("link", "")
-                    )
-                    if m2:
-                        class_id, tid = m2.group(1), m2.group(2)
+                    c_id, t_id = parse_task_url(t.get("link", ""))
+                    if c_id and t_id:
+                        class_id, tid = c_id, t_id
                         found = True
                         break
             if found:
@@ -257,11 +255,9 @@ def submit_file(
             tasks = client.get_tasks_by_view("past", max_pages=3)
             for t in tasks:
                 if t.get("id") == task_id:
-                    m2 = re.search(
-                        r"/student/classes/(\d+)/core_tasks/(\d+)", t.get("link", "")
-                    )
-                    if m2:
-                        class_id, tid = m2.group(1), m2.group(2)
+                    c_id, t_id = parse_task_url(t.get("link", ""))
+                    if c_id and t_id:
+                        class_id, tid = c_id, t_id
                         found = True
                         break
 

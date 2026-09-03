@@ -4,14 +4,31 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
+
+# Ensure worktree src is prioritized over editable installs in venv
+worktree_src = str(Path(__file__).resolve().parent.parent / "src")
+if sys.path[0] != worktree_src:
+    sys.path.insert(0, worktree_src)
+
+import importlib
+import mb_cli
+
+mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
+if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
+    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+
+if "mb_cli.client" in sys.modules:
+    importlib.reload(sys.modules["mb_cli.client"])
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests_mock as rm
 
 from mb_cli.cache import ResponseCache
-from mb_cli.client import HEADERS, ManageBacClient
+from mb_cli.client import HEADERS, ManageBacClient, parse_task_url
 
 
 @pytest.fixture()
@@ -877,5 +894,32 @@ class TestClientConcurrency:
         assert call_count == 1
         assert results[0].find("body").text == "Response content"
         assert results[1].find("body").text == "Response content"
+
+
+class TestParseTaskUrl:
+    def test_empty_or_none(self):
+        assert parse_task_url("") == (None, None)
+        assert parse_task_url(None) == (None, None)
+
+    def test_full_url(self):
+        url = "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026"
+        assert parse_task_url(url) == ("1000023", "1000026")
+
+    def test_full_url_with_subpath(self):
+        url = "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026/dropbox"
+        assert parse_task_url(url) == ("1000023", "1000026")
+
+    def test_path_only(self):
+        path = "/student/classes/1000023/core_tasks/1000026"
+        assert parse_task_url(path) == ("1000023", "1000026")
+
+    def test_bare_task_id(self):
+        assert parse_task_url("1000026") == (None, "1000026")
+
+    def test_task_id_with_trailing_slash(self):
+        assert parse_task_url("tasks/1000026/") == (None, "1000026")
+
+    def test_slashes_only(self):
+        assert parse_task_url("///") == (None, None)
 
 
