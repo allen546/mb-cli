@@ -7,6 +7,8 @@ import sys
 import unicodedata
 from textwrap import indent
 
+from .filters import is_task_submitted, is_task_unfinished
+
 
 def get_display_width(s: str) -> int:
     """Return the terminal display width of a string, accounting for wide characters."""
@@ -175,26 +177,19 @@ def render_pretty(payload: dict) -> str:
             grade_display = grade_score
 
         # Format Status/Completion Display
-        labels = task.get("labels") or detail.get("labels") or []
-        labels_lower = [l.lower() for l in labels]
-        is_submitted = False
-        if "submitted" in labels_lower or task.get("status") == "submitted" or detail.get("status") == "submitted":
-            is_submitted = True
+        task_data = {**task}
+        if detail:
+            task_data["detail"] = {**(task.get("detail") or {}), **detail}
 
+        is_submitted = is_task_submitted(task_data) or (bool(detail) and is_task_submitted(detail))
+        is_unfinished = is_task_unfinished(task_data)
         has_submit_btn = bool(task.get("has_submit_button") or detail.get("has_submit_button"))
-        
-        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
-        is_zero_score = False
-        if grade_score:
-            import re
-            if re.match(r"^\s*0\s*/", grade_score):
-                is_zero_score = True
 
-        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
-        has_letter = bool(grade_letter and grade_letter.strip())
-        has_completed_grade = (has_score or has_letter) and not is_zero_score
-
-        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
+        labels = (task.get("labels") or []) + (detail.get("labels") or [])
+        labels_lower = [str(l).lower() for l in labels]
+        is_not_assessed = "not assessed yet" in labels_lower or (
+            bool(grade_letter) and "not assessed" in str(grade_letter).lower()
+        )
 
         if is_unfinished:
             status_display = "Incomplete (Todo)"
