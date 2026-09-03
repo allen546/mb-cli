@@ -40,7 +40,11 @@ class DaemonService:
             self.client, auth_refresh_fn=self.auth_refresh_fn
         )
         self.stealth_crawler = StealthTaskCrawler(self.client, self.config.stealth)
-        self.scheduler = DDLScheduler(self.state_manager, self.config.reminders)
+        self.scheduler = DDLScheduler(
+            self.state_manager,
+            self.config.reminders,
+            submission_checker=self._check_is_task_submitted,
+        )
         self.dispatcher = WebhookDispatcher(
             webhooks=self.config.webhooks, verify_tls=self.config.verify_tls
         )
@@ -99,6 +103,23 @@ class DaemonService:
         for th in self.scheduler.reminders:
             if minutes_left < th.threshold_minutes:
                 self.state_manager.mark_reminder_dispatched(task_id, th.name)
+
+    def _check_is_task_submitted(self, class_id: str, task_id: str) -> bool:
+        """Targeted check: ONLY verify this specific task's dropbox when an alarm is about to fire."""
+        task = self.state_manager.get_task(task_id)
+        if task and task.get("status") == "submitted":
+            return True
+        if task and not task.get("has_submit_button", True):
+            return False
+
+        try:
+            submissions = self.client.get_submissions(class_id, task_id)
+            if submissions and not submissions[0].get("error"):
+                return True
+        except Exception as e:
+            log.debug("Targeted dropbox check error for task %s: %s", task_id, e)
+
+        return False
 
     def run_check_cycle(self) -> dict[str, Any]:
         """Run a single check cycle: poll notifications, enrich tasks, evaluate deadlines, and dispatch."""
@@ -169,12 +190,12 @@ class DaemonService:
             "total_dispatched": len(dispatched_events),
         }
 
-    def run_forever(self) -> None:
-        """Run the main daemon loop continuously until interrupted."""
+    def start(self) -> None:
+        """Start the background daemon loop."""
         self._running = True
 
-        def _handle_signal(signum, frame):
-            log.info("Signal %d received — shutting down daemon cleanly...", signum)
+        def _handle_signal(sig, frame):
+            log.info("Signal %s received — initiating graceful shutdown...", sig)
             self._running = False
 
         try:
@@ -186,16 +207,26 @@ class DaemonService:
         log.info("ManageBac Notification Daemon started (provider=%s)", self.config.provider)
         self.provider.start()
 
-        # Initial task synchronization
-        self.sync_upcoming_tasks()
+        # Initial task synchronization only if cache is empty
+        if not self.state_manager.tasks_cache:
+            self.sync_upcoming_tasks()
+        else:
+            log.info(
+                "Loaded %d active tasks from state cache — skipping initial full crawl",
+                len(self.state_manager.tasks_cache),
+            )
+            self._last_full_sync = time.time()
 
         full_sync_interval_sec = self.config.full_sync_interval_minutes * 60
 
         while self._running:
             start_time = time.time()
 
-            # Periodic full sync if interval elapsed
-            if time.time() - self._last_full_sync >= full_sync_interval_sec:
+            # Only fallback recrawl if cache became empty or long fallback interval (12h) elapsed
+            if not self.state_manager.tasks_cache or (
+                full_sync_interval_sec > 0
+                and time.time() - self._last_full_sync >= max(43200, full_sync_interval_sec)
+            ):
                 self.sync_upcoming_tasks()
 
             # Run check cycle
