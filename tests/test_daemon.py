@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests_mock as rm
+
+# Ensure local src takes precedence over editable installs
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from mb_cli.daemon import (
     DEFAULT_WEBHOOK_URL,
@@ -115,6 +119,63 @@ class TestDiffSnapshots:
         new = make_crawl_result(overdue=[task])
         alerts = _diff_snapshots_full(old, new)
         assert alerts == []
+
+
+def test_canonical_snapshot_io_and_diff(tmp_path: Path):
+    from mb_cli.__main__ import load_snapshot, save_snapshot
+    from mb_cli.daemon import _diff_snapshots_full, diff_index
+
+    # Snapshot save & load
+    snap_file = tmp_path / "snap.json"
+    save_snapshot(snap_file, {"upcoming": [{"id": "10", "title": "Math"}]})
+    loaded = load_snapshot(snap_file)
+    assert loaded["upcoming"][0]["id"] == "10"
+
+    # diff_index detects new_upcoming
+    old = {"upcoming": []}
+    new = {"upcoming": [{"id": "10", "title": "Math"}]}
+    alerts, changed_ids = diff_index(old, new)
+    assert len(alerts) == 1
+    assert alerts[0]["type"] == "new_upcoming"
+    assert changed_ids == ["10"]
+    assert _diff_snapshots_full(old, new) == alerts
+
+    # diff_index detects new_overdue
+    old_ov = {"overdue": []}
+    new_ov = {"overdue": [{"id": "11", "title": "History", "class_name": "Hist"}]}
+    alerts_ov, changed_ov = diff_index(old_ov, new_ov)
+    assert len(alerts_ov) == 1
+    assert alerts_ov[0]["type"] == "new_overdue"
+    assert changed_ov == ["11"]
+    assert _diff_snapshots_full(old_ov, new_ov) == alerts_ov
+
+    # diff_index detects new_grade
+    old_gr = {"upcoming": [{"id": "12", "title": "Science", "grade_letter": None}]}
+    new_gr = {
+        "upcoming": [
+            {
+                "id": "12",
+                "title": "Science",
+                "grade_letter": "A",
+                "grade_score": "98",
+            }
+        ]
+    }
+    alerts_gr, changed_gr = diff_index(old_gr, new_gr)
+    assert len(alerts_gr) == 1
+    assert alerts_gr[0]["type"] == "new_grade"
+    assert changed_gr == ["12"]
+    assert _diff_snapshots_full(old_gr, new_gr) == alerts_gr
+
+    # diff_index detects new_notifications
+    old_notif = {"notifications": {"unread_count": 1}}
+    new_notif = {"notifications": {"unread_count": 3}}
+    alerts_notif, changed_notif = diff_index(old_notif, new_notif)
+    assert len(alerts_notif) == 1
+    assert alerts_notif[0]["type"] == "new_notifications"
+    assert "2 new notification(s)" in alerts_notif[0]["message"]
+    assert changed_notif == []
+    assert _diff_snapshots_full(old_notif, new_notif) == alerts_notif
 
 
 class TestConfigureWebhook:
