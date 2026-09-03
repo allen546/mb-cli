@@ -190,6 +190,10 @@ class DaemonService:
             "total_dispatched": len(dispatched_events),
         }
 
+    def run_forever(self) -> None:
+        """Run the main daemon loop continuously until interrupted."""
+        self.start()
+
     def start(self) -> None:
         """Start the background daemon loop."""
         self._running = True
