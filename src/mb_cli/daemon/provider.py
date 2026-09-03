@@ -174,11 +174,17 @@ class MNNHubProvider(AbstractNotificationProvider):
                 when_text = when_p.get_text(strip=True)
                 when_str = re.sub(r"^When:\s*", "", when_text)
 
-        event_type = self._map_event_type(raw_event)
+        event_type = self._map_event_type(raw_event, title)
+        
+        # Clean task title if prefixed with "New Task: " or "Updated Task: "
+        clean_task_title = re.sub(r"^(?:New\s+Task|Updated\s+Task|Task):\s*", "", title, flags=re.I).strip()
+
         event_data: dict[str, Any] = {
             "notification_id": notif_id,
             "raw_event_name": raw_event,
             "title": title,
+            "task_title": clean_task_title or title,
+            "class_name": (origin.get("name") if origin else "") or "",
             "created_at": created_at,
             "body_preview": body_preview,
             "sender": sender,
@@ -201,16 +207,38 @@ class MNNHubProvider(AbstractNotificationProvider):
         )
 
     @staticmethod
-    def _map_event_type(raw_event: str) -> str:
+    def _map_event_type(raw_event: str, title: str = "") -> str:
         mapping = {
             "task_created": "task_created",
+            "new_task": "task_created",
             "task_updated": "task_updated",
+            "updated_task": "task_updated",
             "assignment_graded": "assignment_graded",
             "grade_posted": "assignment_graded",
+            "new_file_uploaded": "file_uploaded",
+            "file_uploaded": "file_uploaded",
             "announcement_created": "announcement_created",
+            "new_announcement": "announcement_created",
             "message_created": "announcement_created",
         }
-        return mapping.get(raw_event, "notification")
+        mapped = mapping.get(raw_event)
+        if mapped:
+            return mapped
+
+        # Fallback based on title keywords
+        t_low = title.lower()
+        if "new task" in t_low or "task added" in t_low or "task created" in t_low:
+            return "task_created"
+        if "updated task" in t_low or "task updated" in t_low:
+            return "task_updated"
+        if "file uploaded" in t_low or "new file" in t_low:
+            return "file_uploaded"
+        if "graded" in t_low or "grade" in t_low:
+            return "assignment_graded"
+        if "announcement" in t_low:
+            return "announcement_created"
+
+        return "notification"
 
 
 class MobilePushProvider(AbstractNotificationProvider):

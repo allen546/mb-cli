@@ -106,6 +106,12 @@ class DaemonService:
                     if task_info:
                         self.state_manager.update_task(task_info)
                         event.data["enriched_task"] = task_info
+                        if task_info.get("title"):
+                            event.data["task_title"] = task_info["title"]
+                        if task_info.get("class_name"):
+                            event.data["class_name"] = task_info["class_name"]
+                        if task_info.get("due_date"):
+                            event.data["due_date"] = task_info["due_date"]
 
                 # Dispatch event to webhooks
                 results = self.dispatcher.dispatch(event)
