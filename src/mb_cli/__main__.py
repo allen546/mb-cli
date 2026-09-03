@@ -27,6 +27,7 @@ from .daemon import (
 )
 from .exceptions import CommandError
 from .filters import (
+    classify_task_view,
     filter_result_by_subject,
     find_task_by_id,
     result_views,
@@ -163,59 +164,44 @@ def merge_snapshot(old: dict, new: dict, client=None) -> dict:
             t["deleted_from_server"] = True
 
     # Reclassify all merged tasks into upcoming, past, overdue based on due_date and status
-    upcoming = []
-    past = []
-    overdue = []
-
-    from .client import parse_due_date
-
-    for t in merged_map.values():
-        due_date = t.get("due_date")
-        due_dt = parse_due_date(due_date, now_ref=now_ref)
-
-        labels = t.get("labels") or []
-        status = t.get("status")
-        labels_lower = [l.lower() for l in labels]
-        is_submitted = False
-        if "submitted" in labels_lower or status == "submitted":
-            is_submitted = True
-
-        grade_letter = t.get("grade_letter")
-        grade_score = t.get("grade_score")
-
-        is_zero_score = False
-        if grade_score:
-            if re.match(r"^\s*0\s*/", grade_score):
-                is_zero_score = True
-
-        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
-        has_letter = bool(grade_letter and grade_letter.strip())
-        has_completed_grade = (has_score or has_letter) and not is_zero_score
-
-        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
-        has_submit_btn = bool(t.get("has_submit_button", False))
-        t["has_submit_button"] = has_submit_btn
-        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
-
-        if due_dt and due_dt > now_ref:
-            t["view"] = "upcoming"
-            upcoming.append(t)
-        elif is_unfinished:
-            t["view"] = "overdue"
-            overdue.append(t)
-        else:
-            t["view"] = "past"
-            past.append(t)
+    reclassified = _reclassify_tasks(merged_map, now_ref=now_ref)
 
     return {
         "student_name": new.get("student_name") or old.get("student_name"),
         "school": new.get("school") or old.get("school"),
         "base_url": new.get("base_url") or old.get("base_url"),
         "crawled_at": new.get("crawled_at") or old.get("crawled_at"),
+        "upcoming": reclassified["upcoming"],
+        "past": reclassified["past"],
+        "overdue": reclassified["overdue"],
+    }
+
+
+def _reclassify_tasks(
+    tasks: dict[str, dict] | list[dict], now_ref: datetime | None = None
+) -> dict[str, list[dict]]:
+    """Reclassify tasks into upcoming, past, overdue based on due_date and status."""
+    upcoming = []
+    past = []
+    overdue = []
+
+    task_list = tasks.values() if isinstance(tasks, dict) else tasks
+    for t in task_list:
+        view = classify_task_view(t, now_ref=now_ref)
+        t["view"] = view
+        if view == "upcoming":
+            upcoming.append(t)
+        elif view == "overdue":
+            overdue.append(t)
+        else:
+            past.append(t)
+
+    return {
         "upcoming": upcoming,
         "past": past,
         "overdue": overdue,
     }
+
 
 
 # ── Commands ────────────────────────────────────────────────────────────

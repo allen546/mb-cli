@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .cache import ResponseCache
+from .filters import classify_task_view, is_task_submitted
 
 log = logging.getLogger(__name__)
 
@@ -1281,31 +1282,10 @@ class ManageBacClient:
                             continue
 
                         labels = t.get("labels") or []
-                        status = t.get("status")
-
-                        labels_lower = [l.lower() for l in labels]
-                        is_submitted = False
-                        if "submitted" in labels_lower or status == "submitted":
-                            is_submitted = True
-
                         grade_letter = t.get("grade_letter")
-                        grade_score = t.get("points")
-
-                        is_zero_score = False
-                        if grade_score:
-                            if re.match(r"^\s*0\s*/", grade_score):
-                                is_zero_score = True
-
-                        has_score = bool(grade_score and grade_score.strip() and grade_score.strip() != "-")
-                        has_letter = bool(grade_letter and grade_letter.strip())
-                        has_completed_grade = (has_score or has_letter) and not is_zero_score
-
-                        is_not_assessed = "not assessed yet" in labels_lower or (bool(grade_letter) and "not assessed" in grade_letter.lower())
-                        has_submit_btn = bool(t.get("has_submit_button", False))
-                        is_unfinished = has_submit_btn and (not is_submitted) and (not has_completed_grade) and (not is_not_assessed)
-
                         due_date = t.get("due_date")
-                        due_dt = parse_due_date(due_date)
+                        has_submit_btn = bool(t.get("has_submit_button", False))
+                        is_submitted = is_task_submitted(t)
 
                         reconstructed_task = {
                             "id": task_id,
@@ -1320,14 +1300,13 @@ class ManageBacClient:
                             "has_submit_button": has_submit_btn,
                         }
 
-                        if due_dt and due_dt > datetime.now():
-                            reconstructed_task["view"] = "upcoming"
+                        view = classify_task_view(reconstructed_task)
+                        reconstructed_task["view"] = view
+                        if view == "upcoming":
                             upcoming.append(reconstructed_task)
-                        elif is_unfinished:
-                            reconstructed_task["view"] = "overdue"
+                        elif view == "overdue":
                             overdue.append(reconstructed_task)
                         else:
-                            reconstructed_task["view"] = "past"
                             past.append(reconstructed_task)
                 except Exception as e:
                     log.warning("Failed to crawl tasks for class %s: %s", class_name, e)
