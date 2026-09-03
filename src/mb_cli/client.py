@@ -85,6 +85,17 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
     return None
 
 
+def parse_task_url(target: str) -> tuple[str | None, str | None]:
+    """Extract (class_id, task_id) from a ManageBac URL or task identifier string."""
+    if not target:
+        return None, None
+    m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", target)
+    if m:
+        return m.group(1), m.group(2)
+    clean = target.rstrip("/").split("/")[-1]
+    return None, clean if clean else None
+
+
 class ManageBacClient:
     """HTTP client for ManageBac with session-based auth.
 
