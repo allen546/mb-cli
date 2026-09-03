@@ -105,7 +105,7 @@ class DaemonService:
                 self.state_manager.mark_reminder_dispatched(task_id, th.name)
 
     def _check_is_task_submitted(self, class_id: str, task_id: str) -> bool:
-        """Targeted check: ONLY verify this specific task's dropbox when an alarm is about to fire."""
+        """Targeted check: verify task page badge and submission status before firing an alarm."""
         task = self.state_manager.get_task(task_id)
         if task and task.get("status") == "submitted":
             return True
@@ -113,6 +113,15 @@ class DaemonService:
             return False
 
         try:
+            # 1. Check live task page via stealth crawler (finds 'Submitted' badge)
+            details = self.stealth_crawler.fetch_task_details(class_id, task_id)
+            if details and details.get("status") == "submitted":
+                return True
+        except Exception as e:
+            log.debug("Live task page check error for task %s: %s", task_id, e)
+
+        try:
+            # 2. Check dropbox table as fallback
             submissions = self.client.get_submissions(class_id, task_id)
             if submissions and not submissions[0].get("error"):
                 return True
