@@ -134,11 +134,47 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
     alerts: list[dict] = []
     changed_ids: list[str] = []
 
+    old_overdue = _task_index(old.get("overdue", []))
+    new_overdue = _task_index(new.get("overdue", []))
     old_upcoming = _task_index(old.get("upcoming", []))
     new_upcoming = _task_index(new.get("upcoming", []))
 
+    all_old = {**old_overdue, **old_upcoming, **_task_index(old.get("past", []))}
+    all_new = {**new_overdue, **new_upcoming, **_task_index(new.get("past", []))}
+
+    # Overdue tasks
+    for tid, task in new_overdue.items():
+        if tid not in old_overdue:
+            alerts.append(
+                {
+                    "type": "new_overdue",
+                    "severity": "high",
+                    "task": task,
+                    "message": f"Task is now overdue: {task['title']} ({task.get('class_name', '')})",
+                }
+            )
+            changed_ids.append(tid)
+
+    # Overdue transitions within upcoming view
     for tid, task in new_upcoming.items():
-        if tid not in old_upcoming:
+        if tid in new_overdue:
+            continue
+        if task.get("view") == "overdue" and (
+            tid not in old_upcoming or old_upcoming[tid].get("view") != "overdue"
+        ):
+            alerts.append(
+                {
+                    "type": "new_overdue",
+                    "severity": "high",
+                    "task": task,
+                    "message": f"Task is now overdue: {task['title']} ({task.get('class_name', '')})",
+                }
+            )
+            changed_ids.append(tid)
+
+    # New upcoming tasks
+    for tid, task in new_upcoming.items():
+        if tid not in old_upcoming and task.get("view") != "overdue":
             alerts.append(
                 {
                     "type": "new_upcoming",
@@ -149,8 +185,9 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             )
             changed_ids.append(tid)
 
-    for tid, task in new_upcoming.items():
-        old_task = old_upcoming.get(tid)
+    # Grade updates across all views
+    for tid, task in all_new.items():
+        old_task = all_old.get(tid)
         if not old_task:
             continue
         if task.get("grade_letter") and task.get("grade_letter") != old_task.get(
@@ -166,23 +203,7 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             )
             changed_ids.append(tid)
 
-    for tid, task in new_upcoming.items():
-        if task.get("view") == "overdue" or (
-            old_upcoming.get(tid) and old_upcoming[tid].get("view") != "overdue"
-        ):
-            if task.get("view") == "overdue" and tid not in _task_index(
-                old.get("upcoming", [])
-            ):
-                alerts.append(
-                    {
-                        "type": "new_overdue",
-                        "severity": "high",
-                        "task": task,
-                        "message": f"Task is now overdue: {task['title']} ({task.get('class_name', '')})",
-                    }
-                )
-                changed_ids.append(tid)
-
+    # Notifications
     old_unread = old.get("notifications", {}).get("unread_count", 0)
     new_unread = new.get("notifications", {}).get("unread_count", 0)
     if new_unread > old_unread:
@@ -200,65 +221,19 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
 
 
 def _diff_snapshots_full(old: dict, new: dict) -> list[dict]:
-    alerts = []
-    old_overdue = _task_index(old.get("overdue", []))
-    new_overdue = _task_index(new.get("overdue", []))
-    old_upcoming = _task_index(old.get("upcoming", []))
-    new_upcoming = _task_index(new.get("upcoming", []))
-    all_old = {**old_overdue, **old_upcoming, **_task_index(old.get("past", []))}
-    all_new = {**new_overdue, **new_upcoming, **_task_index(new.get("past", []))}
-
-    for tid, task in new_overdue.items():
-        if tid not in old_overdue:
-            alerts.append(
-                {
-                    "type": "new_overdue",
-                    "severity": "high",
-                    "task": task,
-                    "message": f"Task is now overdue: {task['title']} ({task.get('class_name', '')})",
-                }
-            )
-    for tid, task in new_upcoming.items():
-        if tid not in old_upcoming:
-            alerts.append(
-                {
-                    "type": "new_upcoming",
-                    "severity": "medium",
-                    "task": task,
-                    "message": f"New upcoming task: {task['title']} due {task.get('due_date', '?')} ({task.get('class_name', '')})",
-                }
-            )
-    for tid, task in all_new.items():
-        old_task = all_old.get(tid)
-        if not old_task:
-            continue
-        if task.get("grade_letter") and not old_task.get("grade_letter"):
-            alerts.append(
-                {
-                    "type": "new_grade",
-                    "severity": "info",
-                    "task": task,
-                    "message": f"Grade posted: {task['title']} -> {task.get('grade_letter')} {task.get('grade_score', '')}",
-                }
-            )
-    return alerts
+    return diff_index(old, new)[0]
 
 
-def _load_snapshot(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+def load_snapshot(path: Path) -> dict:
+    from mb_cli.__main__ import load_snapshot as _load
+
+    return _load(path)
 
 
-def _save_snapshot(path: Path, data: dict) -> None:
-    _ensure_parent(path)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+def save_snapshot(path: Path, data: dict) -> None:
+    from mb_cli.__main__ import save_snapshot as _save
+
+    _save(path, data)
 
 
 def _post_webhook(
@@ -281,10 +256,10 @@ def run_daemon_once(
     dry_run: bool = False,
 ) -> dict:
     snapshot_path = Path(daemon_config["snapshot_file"]).expanduser()
-    old = _load_snapshot(snapshot_path)
+    old = load_snapshot(snapshot_path)
     result = client.crawl_all(max_pages=10, fetch_details=False)
     alerts = _diff_snapshots_full(old, result)
-    _save_snapshot(snapshot_path, result)
+    save_snapshot(snapshot_path, result)
 
     delivered = False
     if alerts and not dry_run:
@@ -389,10 +364,10 @@ def start_loop(
     try:
         if once:
             snapshot_path = Path(daemon_config["snapshot_file"]).expanduser()
-            old = _load_snapshot(snapshot_path)
+            old = load_snapshot(snapshot_path)
             index = client.crawl_index()
             alerts, changed_ids = diff_index(old, index)
-            _save_snapshot(snapshot_path, index)
+            save_snapshot(snapshot_path, index)
             _log(
                 log_path,
                 f"check alert_count={len(alerts)} "
