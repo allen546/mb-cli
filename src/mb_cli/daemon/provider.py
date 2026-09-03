@@ -10,7 +10,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 import requests
 
-from ..client import ManageBacClient
+from ..client import ManageBacClient, parse_task_url
 from ..notifications import MNNHubClient, hub_for_domain
 from .events import MBEvent
 
@@ -157,10 +157,10 @@ class MNNHubProvider(AbstractNotificationProvider):
             # Look for /student/classes/{class_id}/core_tasks/{task_id}
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", href)
-                if m:
-                    class_id = int(m.group(1))
-                    task_id = int(m.group(2))
+                cid, tid = parse_task_url(href)
+                if cid and tid:
+                    class_id = int(cid)
+                    task_id = int(tid)
                     task_url = href
                     break
                 # Fallback to calendar link if task link missing

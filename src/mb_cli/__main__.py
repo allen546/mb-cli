@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .auth import build_client
-from .client import ManageBacClient
+from .client import ManageBacClient, parse_task_url
 from .config import clear_session, load_state, save_profile, save_session
 from .daemon import (
     DaemonConfig,
@@ -608,23 +608,17 @@ def _resolve_task_ids(
     client: ManageBacClient, target: str, pages: int = 10
 ) -> tuple[str, str]:
     """Resolve a task target (id, URL, or class/task pair) to (class_id, task_id)."""
-    if target.startswith("http") or "/core_tasks/" in target:
-        m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", target)
-        if m:
-            return m.group(1), m.group(2)
-        parts = target.rstrip("/").split("/")
-        task_id = parts[-1]
-    else:
-        task_id = target
+    cid, tid = parse_task_url(target)
+    if cid and tid:
+        return cid, tid
+    task_id = tid or target
 
     result = client.crawl_all(max_pages=pages, fetch_details=False)
     for task in result["upcoming"] + result["past"] + result["overdue"]:
         if task.get("id") == task_id:
-            m = re.search(
-                r"/student/classes/(\d+)/core_tasks/(\d+)", task.get("link", "")
-            )
-            if m:
-                return m.group(1), m.group(2)
+            cid, tid = parse_task_url(task.get("link", ""))
+            if cid and tid:
+                return cid, tid
     raise CommandError("task_not_found", f"Could not find task with id {task_id}")
 
 
