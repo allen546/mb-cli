@@ -32,7 +32,44 @@ def test_stealth_crawler_navigates_parent_and_parses():
     assert task["class_id"] == "1001"
     assert task["task_id"] == "2001"
     assert task["status"] == "not-submitted"
+    assert task["due_date"] == "September 15, 2026 at 23:59"
     assert task["has_submit_button"] is True
 
     # Assert that parent class calendar was visited first
     assert mock_client._get.call_count >= 2
+
+
+def test_stealth_crawler_badge_handling():
+    mock_client = MagicMock()
+    mock_client.base = "https://school.managebac.cn"
+
+    # Test "Not Submitted" badge is not mistakenly treated as "submitted"
+    not_sub_html = """
+    <html>
+      <body>
+        <h3 class="title">HW 2</h3>
+        <span class="badge-status">Not Submitted</span>
+        <p>Due: Sep 20, 2026 at 11:59 PM</p>
+      </body>
+    </html>
+    """
+    mock_client._get.return_value = BeautifulSoup(not_sub_html, "html.parser")
+    crawler = StealthTaskCrawler(
+        mock_client, StealthConfig(enabled=False)
+    )
+    task = crawler.fetch_task_details(class_id=1001, task_id=2002)
+    assert task["status"] == "not-submitted"
+
+    # Test "Submitted" badge is recognized
+    sub_html = """
+    <html>
+      <body>
+        <h3 class="title">HW 2</h3>
+        <span class="badge-status">Submitted</span>
+        <p>Due: Sep 20, 2026 at 11:59 PM</p>
+      </body>
+    </html>
+    """
+    mock_client._get.return_value = BeautifulSoup(sub_html, "html.parser")
+    task_sub = crawler.fetch_task_details(class_id=1001, task_id=2003)
+    assert task_sub["status"] == "submitted"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Any
 from bs4 import BeautifulSoup
@@ -67,9 +68,13 @@ class StealthTaskCrawler:
 
         # Due date
         due_date_str = ""
-        due_el = soup.find(lambda el: el.name in ("p", "div", "span") and "Due" in el.get_text())
-        if due_el:
-            due_date_str = due_el.get_text(strip=True)
+        due_match = re.search(r"Due:\s*([^\n\r<]+)", soup.get_text())
+        if due_match:
+            due_date_str = due_match.group(1).strip()
+        else:
+            due_el = soup.find(lambda el: el.name in ("p", "div", "span", "time") and "Due" in el.get_text())
+            if due_el:
+                due_date_str = re.sub(r"^Due:\s*", "", due_el.get_text(strip=True), flags=re.IGNORECASE)
 
         # Check submission button & status
         has_submit_btn = bool(
@@ -78,9 +83,18 @@ class StealthTaskCrawler:
         )
 
         status = "not-submitted"
+        def _is_submitted(badge: str) -> bool:
+            b = badge.strip().lower()
+            return "submitted" in b and "not" not in b and "un" not in b
+
         # Check for submitted indicators
-        badges = [el.get_text(strip=True).lower() for el in soup.find_all(class_=lambda c: c and any(k in c for k in ["badge", "label", "status"]))]
-        if any("submitted" in b for b in badges):
+        badges = [
+            el.get_text(strip=True).lower()
+            for el in soup.find_all(
+                class_=lambda c: c and any(k in c for k in ["badge", "label", "status"])
+            )
+        ]
+        if any(_is_submitted(b) for b in badges):
             status = "submitted"
 
         # Check if dropbox shows a file uploaded

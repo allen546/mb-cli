@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+from collections.abc import Callable
 import logging
 import re
 from typing import Any
@@ -43,8 +44,13 @@ class AbstractNotificationProvider(abc.ABC):
 class MNNHubProvider(AbstractNotificationProvider):
     """Notification provider using ManageBac Notification Network (MNN Hub) REST API."""
 
-    def __init__(self, client: ManageBacClient):
+    def __init__(
+        self,
+        client: ManageBacClient,
+        auth_refresh_fn: Callable[[], bool] | None = None,
+    ):
         self.client = client
+        self.auth_refresh_fn = auth_refresh_fn
         self.hub: MNNHubClient | None = None
         self.hub_endpoint: str | None = None
         self.token: str | None = None
@@ -52,7 +58,17 @@ class MNNHubProvider(AbstractNotificationProvider):
     def _ensure_hub(self, force_refresh: bool = False) -> MNNHubClient:
         if self.hub is None or force_refresh:
             try:
-                endpoint, token = self.client.get_notification_token(bypass_cache=True)
+                try:
+                    endpoint, token = self.client.get_notification_token(bypass_cache=True)
+                except Exception as exc:
+                    if ("Session expired" in str(exc) or "login" in str(exc).lower()) and self.auth_refresh_fn:
+                        log.info("Session expired while acquiring notification token — attempting auto-relogin...")
+                        if self.auth_refresh_fn():
+                            endpoint, token = self.client.get_notification_token(bypass_cache=True)
+                        else:
+                            raise
+                    else:
+                        raise
                 if not endpoint:
                     endpoint = hub_for_domain(self.client.domain)
                 self.hub_endpoint = endpoint
@@ -72,8 +88,11 @@ class MNNHubProvider(AbstractNotificationProvider):
         self.hub = None
 
     def refresh_auth(self) -> bool:
-        """Force refresh MNN Hub JWT token."""
+        """Force refresh MNN Hub JWT token with session relogin fallback."""
         try:
+            if self.auth_refresh_fn:
+                log.info("Refreshing ManageBac web session via auth callback...")
+                self.auth_refresh_fn()
             self._ensure_hub(force_refresh=True)
             return True
         except Exception as exc:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections.abc import Callable
 import logging
 import random
 import signal
@@ -29,11 +30,15 @@ class DaemonService:
         config: DaemonConfig | None = None,
         state_manager: DaemonStateManager | None = None,
         provider: AbstractNotificationProvider | None = None,
+        auth_refresh_fn: Callable[[], bool] | None = None,
     ):
         self.client = client
         self.config = config or DaemonConfig()
         self.state_manager = state_manager or DaemonStateManager()
-        self.provider = provider or MNNHubProvider(self.client)
+        self.auth_refresh_fn = auth_refresh_fn
+        self.provider = provider or MNNHubProvider(
+            self.client, auth_refresh_fn=self.auth_refresh_fn
+        )
         self.stealth_crawler = StealthTaskCrawler(self.client, self.config.stealth)
         self.scheduler = DDLScheduler(self.state_manager, self.config.reminders)
         self.dispatcher = WebhookDispatcher(
@@ -47,21 +52,35 @@ class DaemonService:
         log.info("Performing upcoming tasks sync...")
         try:
             upcoming_tasks = self.client.get_tasks_by_view("upcoming", max_pages=3)
-            synced_count = 0
-            for t in upcoming_tasks:
-                task_id = t.get("id")
-                if not task_id:
-                    continue
-                self.state_manager.update_task(t)
-                synced_count += 1
-            self._last_full_sync = time.time()
-            self.state_manager.last_synced_at = datetime.now(timezone.utc).isoformat()
-            self.state_manager.save()
-            log.info("Synced %d upcoming tasks into scheduler", synced_count)
-            return synced_count
         except Exception as exc:
-            log.warning("Task sync error: %s", exc)
-            return 0
+            if ("Session expired" in str(exc) or "login" in str(exc).lower()) and self.auth_refresh_fn:
+                log.info("Session expired during upcoming task sync — attempting auto-relogin...")
+                if self.auth_refresh_fn():
+                    try:
+                        upcoming_tasks = self.client.get_tasks_by_view("upcoming", max_pages=3)
+                    except Exception as inner_exc:
+                        log.warning("Task sync error after re-login: %s", inner_exc)
+                        return 0
+                else:
+                    log.warning("Re-login failed during task sync")
+                    return 0
+            else:
+                log.warning("Task sync error: %s", exc)
+                return 0
+
+        synced_count = 0
+        for t in upcoming_tasks:
+            task_id = t.get("id")
+            if not task_id:
+                continue
+            self.state_manager.update_task(t)
+            synced_count += 1
+        self._last_full_sync = time.time()
+        self.state_manager.last_synced_at = datetime.now(timezone.utc).isoformat()
+        self.state_manager.prune_old_tasks()
+        self.state_manager.save()
+        log.info("Synced %d upcoming tasks into scheduler", synced_count)
+        return synced_count
 
     def run_check_cycle(self) -> dict[str, Any]:
         """Run a single check cycle: poll notifications, enrich tasks, evaluate deadlines, and dispatch."""
@@ -89,11 +108,12 @@ class DaemonService:
                         event.data["enriched_task"] = task_info
 
                 # Dispatch event to webhooks
-                self.dispatcher.dispatch(event)
+                results = self.dispatcher.dispatch(event)
                 dispatched_events.append(event)
                 new_notifications_count += 1
 
-                if notif_id:
+                # Only mark processed if delivery succeeded on at least one endpoint or no endpoints configured
+                if notif_id and (not self.config.webhooks or any(r.get("success") for r in results)):
                     self.state_manager.mark_notification_processed(int(notif_id))
 
         except Exception as exc:
@@ -101,11 +121,16 @@ class DaemonService:
 
         # 3. Evaluate Deadline Countdown Reminders
         try:
-            ddl_events = self.scheduler.evaluate_deadlines()
+            ddl_events = self.scheduler.evaluate_deadlines(auto_mark=False)
             for ddl_event in ddl_events:
-                self.dispatcher.dispatch(ddl_event)
+                results = self.dispatcher.dispatch(ddl_event)
                 dispatched_events.append(ddl_event)
                 reminders_dispatched_count += 1
+
+                t_id = ddl_event.data.get("task_id")
+                threshold = ddl_event.data.get("reminder_threshold")
+                if t_id and threshold and (not self.config.webhooks or any(r.get("success") for r in results)):
+                    self.state_manager.mark_reminder_dispatched(t_id, threshold)
         except Exception as exc:
             log.warning("Deadline evaluation error: %s", exc)
 

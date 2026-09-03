@@ -28,7 +28,9 @@ class DDLScheduler:
             reverse=True,
         )
 
-    def evaluate_deadlines(self, now: datetime | None = None) -> list[MBEvent]:
+    def evaluate_deadlines(
+        self, now: datetime | None = None, auto_mark: bool = True
+    ) -> list[MBEvent]:
         """Evaluate all tracked tasks in state against reminder thresholds."""
         current_time = now or datetime.now().astimezone()
         events: list[MBEvent] = []
@@ -42,13 +44,14 @@ class DDLScheduler:
             if due_dt is None:
                 continue
 
-            # Ensure due_dt is timezone-aware for comparison if current_time is
-            if due_dt.tzinfo is None and current_time.tzinfo is not None:
-                due_dt = due_dt.replace(tzinfo=current_time.tzinfo)
-            elif due_dt.tzinfo is not None and current_time.tzinfo is None:
-                current_time = current_time.replace(tzinfo=due_dt.tzinfo)
+            # Ensure due_dt and task_now have matching tzinfo without mutating current_time
+            task_now = current_time
+            if due_dt.tzinfo is None and task_now.tzinfo is not None:
+                due_dt = due_dt.replace(tzinfo=task_now.tzinfo)
+            elif due_dt.tzinfo is not None and task_now.tzinfo is None:
+                task_now = task_now.replace(tzinfo=due_dt.tzinfo)
 
-            minutes_left = (due_dt - current_time).total_seconds() / 60.0
+            minutes_left = (due_dt - task_now).total_seconds() / 60.0
 
             # If deadline has passed or task is already submitted, skip reminders
             if minutes_left <= 0:
@@ -63,18 +66,23 @@ class DDLScheduler:
                     if not self.state_manager.is_reminder_dispatched(
                         task_id, reminder.name
                     ):
-                        self.state_manager.mark_reminder_dispatched(
-                            task_id, reminder.name
-                        )
+                        if auto_mark:
+                            self.state_manager.mark_reminder_dispatched(
+                                task_id, reminder.name
+                            )
+                        t_id = int(task_id) if str(task_id).isdigit() else task_id
+                        raw_c_id = task.get("class_id")
+                        c_id = int(raw_c_id) if raw_c_id is not None and str(raw_c_id).isdigit() else raw_c_id
+
                         event = MBEvent(
                             event="deadline_approaching",
                             event_id=f"evt_{task_id}_reminder_{reminder.name}",
-                            timestamp=current_time.isoformat(),
+                            timestamp=task_now.isoformat(),
                             data={
-                                "task_id": task_id,
+                                "task_id": t_id,
                                 "title": task.get("title", ""),
                                 "class_name": task.get("class_name", ""),
-                                "class_id": task.get("class_id"),
+                                "class_id": c_id,
                                 "due_date": due_str,
                                 "due_iso": due_dt.isoformat(),
                                 "time_remaining_minutes": round(minutes_left, 1),

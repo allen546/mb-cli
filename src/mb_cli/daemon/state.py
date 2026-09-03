@@ -8,7 +8,10 @@ import json
 import logging
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
+
+from ..client import parse_due_date
 
 log = logging.getLogger(__name__)
 
@@ -62,12 +65,19 @@ class DaemonStateManager:
             "dispatched_reminders": sorted(list(self.dispatched_reminders)),
             "tasks_cache": self.tasks_cache,
         }
-        tmp_path = self.path.with_suffix(".tmp")
+        tmp_path: Path | None = None
         try:
-            tmp_path.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=self.path.parent,
+                prefix="daemon_state_",
+                suffix=".tmp",
                 encoding="utf-8",
-            )
+                delete=False,
+            ) as tf:
+                json.dump(data, tf, indent=2, ensure_ascii=False)
+                tf.write("\n")
+                tmp_path = Path(tf.name)
             try:
                 os.chmod(tmp_path, 0o600)
             except OSError:
@@ -75,7 +85,7 @@ class DaemonStateManager:
             tmp_path.replace(self.path)
         except Exception as exc:
             log.error("Failed to save daemon state to %s: %s", self.path, exc)
-            if tmp_path.exists():
+            if tmp_path and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
 
     def is_notification_processed(self, notification_id: int) -> bool:
@@ -111,3 +121,21 @@ class DaemonStateManager:
 
     def remove_task(self, task_id: str | int) -> None:
         self.tasks_cache.pop(str(task_id), None)
+
+    def prune_old_tasks(self, max_age_days: int = 14) -> int:
+        """Prune tasks from tasks_cache whose deadlines passed more than max_age_days ago."""
+        now = datetime.now(timezone.utc)
+        to_delete = []
+        for tid, task in list(self.tasks_cache.items()):
+            due_str = task.get("due_date")
+            if not due_str:
+                continue
+            due_dt = parse_due_date(due_str)
+            if due_dt:
+                if due_dt.tzinfo is None:
+                    due_dt = due_dt.replace(tzinfo=timezone.utc)
+                if (now - due_dt).total_seconds() > max_age_days * 86400:
+                    to_delete.append(tid)
+        for tid in to_delete:
+            self.tasks_cache.pop(tid, None)
+        return len(to_delete)

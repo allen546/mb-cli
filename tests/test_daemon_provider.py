@@ -43,3 +43,19 @@ def test_mobile_push_provider():
     assert polled[0].event == "task_created"
     assert provider.poll_events() == []
     provider.stop()
+
+
+def test_mnnhub_provider_session_relogin():
+    mock_client = MagicMock()
+    # First call to get_notification_token raises session expired RuntimeError, second succeeds
+    mock_client.get_notification_token.side_effect = [
+        RuntimeError("Session expired or invalid — redirected to login"),
+        ("https://mnn-hub.prod.faria.cn", "new_jwt_token"),
+    ]
+    relogin_mock = MagicMock(return_value=True)
+
+    provider = MNNHubProvider(mock_client, auth_refresh_fn=relogin_mock)
+    provider.start()
+
+    assert relogin_mock.called
+    assert provider.token == "new_jwt_token"
