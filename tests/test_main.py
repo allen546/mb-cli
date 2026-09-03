@@ -3,7 +3,24 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+# Ensure worktree src is prioritized over editable installs in venv
+worktree_src = str(Path(__file__).resolve().parent.parent / "src")
+if sys.path[0] != worktree_src:
+    sys.path.insert(0, worktree_src)
+
+import importlib
+import mb_cli
+
+mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
+if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
+    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+
+if "mb_cli.__main__" in sys.modules:
+    importlib.reload(sys.modules["mb_cli.__main__"])
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -570,3 +587,20 @@ class TestMainCountGradeFreq:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["count-grade-freq", "--format", "json"])
                         assert exc_info.value.code == 0
+
+
+def test_reclassify_tasks_uses_canonical_classifier(tmp_path: Path):
+    from datetime import datetime
+    from mb_cli.__main__ import _reclassify_tasks
+
+    now = datetime(2026, 9, 10, 12, 0, 0)
+    merged_map = {
+        "1": {"id": "1", "due_date": "2026-09-20 12:00:00", "has_submit_button": True, "status": "not-submitted"},
+        "2": {"id": "2", "due_date": "2026-09-01 12:00:00", "has_submit_button": True, "status": "not-submitted"},
+        "3": {"id": "3", "due_date": "2026-09-01 12:00:00", "has_submit_button": True, "status": "submitted"},
+    }
+    res = _reclassify_tasks(merged_map, now_ref=now)
+    assert [t["id"] for t in res["upcoming"]] == ["1"]
+    assert [t["id"] for t in res["overdue"]] == ["2"]
+    assert [t["id"] for t in res["past"]] == ["3"]
+
