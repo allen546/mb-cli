@@ -56,3 +56,42 @@ def test_daemon_service_check_cycle(tmp_path: Path):
     # Next check should not process already-processed notification
     res2 = service.run_check_cycle()
     assert res2["new_notifications"] == 0
+
+
+def test_daemon_service_live_submission_check(tmp_path: Path):
+    from datetime import datetime, timedelta
+
+    mock_client = MagicMock()
+    # Task dropbox has a submitted file
+    mock_client.get_submissions.return_value = [{"name": "solution.pdf", "url": "/att/1"}]
+    mock_client.get_tasks_by_view.return_value = []
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+
+    now = datetime.now().astimezone()
+    due_dt = now + timedelta(minutes=45)
+    task = {
+        "id": "777",
+        "task_id": "777",
+        "class_id": "11516148",
+        "title": "Calculus Worksheet",
+        "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "not-submitted",
+        "has_submit_button": True,
+    }
+    state_mgr.update_task(task)
+
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=MockProvider([]),
+    )
+
+    res = service.run_check_cycle()
+    # Reminder should be suppressed because live check discovered submission!
+    assert res["reminders_dispatched"] == 0
+    # Cached task status should now be updated to submitted
+    assert state_mgr.get_task("777")["status"] == "submitted"
+    # Verify get_submissions was called ONLY for that specific task
+    mock_client.get_submissions.assert_called_once_with("11516148", "777")
+    # Verify no general crawling was performed
+    mock_client.get_tasks_by_view.assert_not_called()

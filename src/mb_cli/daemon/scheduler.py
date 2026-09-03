@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from ..client import parse_due_date
@@ -20,8 +21,10 @@ class DDLScheduler:
         self,
         state_manager: DaemonStateManager,
         reminders: list[ReminderThreshold] | None = None,
+        submission_checker: Callable[[str, str], bool] | None = None,
     ):
         self.state_manager = state_manager
+        self.submission_checker = submission_checker
         self.reminders = sorted(
             reminders or list(DEFAULT_REMINDER_THRESHOLDS),
             key=lambda r: r.threshold_minutes,
@@ -61,11 +64,25 @@ class DDLScheduler:
             if status == "submitted":
                 continue
 
+            checked_live = False
             for reminder in self.reminders:
                 if minutes_left <= reminder.threshold_minutes:
                     if not self.state_manager.is_reminder_dispatched(
                         task_id, reminder.name
                     ):
+                        # Live-verify on ManageBac if student submitted in the meantime
+                        if not checked_live and self.submission_checker:
+                            checked_live = True
+                            c_id = task.get("class_id")
+                            if c_id:
+                                try:
+                                    if self.submission_checker(str(c_id), str(task_id)):
+                                        task["status"] = "submitted"
+                                        self.state_manager.update_task(task)
+                                        log.info("Task %s live-verified as submitted — suppressing reminders", task_id)
+                                        break
+                                except Exception as exc:
+                                    log.debug("Live submission check error for task %s: %s", task_id, exc)
                         if auto_mark:
                             self.state_manager.mark_reminder_dispatched(
                                 task_id, reminder.name
