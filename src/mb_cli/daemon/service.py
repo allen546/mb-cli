@@ -10,7 +10,7 @@ import signal
 import time
 from typing import Any
 
-from ..client import ManageBacClient
+from ..client import ManageBacClient, parse_due_date
 from .events import DaemonConfig, MBEvent
 from .provider import AbstractNotificationProvider, MNNHubProvider
 from .scheduler import DDLScheduler
@@ -73,7 +73,10 @@ class DaemonService:
             task_id = t.get("id")
             if not task_id:
                 continue
+            is_new = self.state_manager.get_task(task_id) is None
             self.state_manager.update_task(t)
+            if is_new:
+                self._suppress_past_milestones(t)
             synced_count += 1
         self._last_full_sync = time.time()
         self.state_manager.last_synced_at = datetime.now(timezone.utc).isoformat()
@@ -81,6 +84,21 @@ class DaemonService:
         self.state_manager.save()
         log.info("Synced %d upcoming tasks into scheduler", synced_count)
         return synced_count
+
+    def _suppress_past_milestones(self, task: dict[str, Any]) -> None:
+        """Suppress reminder milestones that were already in the past when task was first discovered."""
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        due_str = task.get("due_date")
+        if not task_id or not due_str:
+            return
+        due_dt = parse_due_date(due_str)
+        if not due_dt:
+            return
+        now = datetime.now(due_dt.tzinfo) if due_dt.tzinfo else datetime.now()
+        minutes_left = (due_dt - now).total_seconds() / 60.0
+        for th in self.scheduler.reminders:
+            if minutes_left < th.threshold_minutes:
+                self.state_manager.mark_reminder_dispatched(task_id, th.name)
 
     def run_check_cycle(self) -> dict[str, Any]:
         """Run a single check cycle: poll notifications, enrich tasks, evaluate deadlines, and dispatch."""
@@ -104,7 +122,10 @@ class DaemonService:
                 if class_id and task_id:
                     task_info = self.stealth_crawler.fetch_task_details(class_id, task_id)
                     if task_info:
+                        is_new = self.state_manager.get_task(task_id) is None
                         self.state_manager.update_task(task_info)
+                        if is_new:
+                            self._suppress_past_milestones(task_info)
                         event.data["enriched_task"] = task_info
                         if task_info.get("title"):
                             event.data["task_title"] = task_info["title"]

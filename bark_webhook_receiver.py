@@ -240,10 +240,43 @@ def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int, 
 
     elif event == "deadline_approaching":
         threshold = data.get("reminder_threshold") or "即将到期"
+        threshold_names = {
+            "24h": "24小时",
+            "6h": "6小时",
+            "1h": "1小时",
+            "15m": "15分钟",
+        }
+        friendly_th = threshold_names.get(threshold, threshold)
         title = truncate(f"⏰ DDL提醒: {clean_tsk}", MAX_TITLE_LEN)
         line1 = f"课程: {clean_cls}"
         line2 = f"作业: {clean_tsk}"
-        line3 = f"⚠️ 提醒: 距离截止仅剩 {threshold}"
+
+        mins_left = data.get("time_remaining_minutes")
+        if mins_left is not None:
+            mins_val = float(mins_left)
+            hrs = int(mins_val // 60)
+            mins = int(round(mins_val % 60))
+            if hrs > 0 and mins > 0:
+                time_str = f"{hrs}小时{mins}分"
+            elif hrs > 0:
+                time_str = f"{hrs}小时"
+            else:
+                time_str = f"{mins}分钟"
+
+            if mins_val <= 15:
+                line3 = f"🚨 倒计时: 距离截止仅剩 {time_str}"
+            elif mins_val <= 60:
+                line3 = f"⚠️ 紧急: 距离截止仅剩 {time_str}"
+            else:
+                line3 = f"⏰ 提醒: 距离截止还剩 {time_str}"
+        else:
+            if threshold == "15m":
+                line3 = f"🚨 倒计时: 距离截止仅剩 {friendly_th}"
+            elif threshold == "1h":
+                line3 = f"⚠️ 紧急: 距离截止仅剩 {friendly_th}"
+            else:
+                line3 = f"⏰ 提醒: 距离截止还剩 {friendly_th}"
+
         line4 = due_line
         sound = "alarm"
         priority = 10
