@@ -10,6 +10,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from ..client import ManageBacClient
+from ..filters import is_submitted_badge
 from .events import StealthConfig
 
 log = logging.getLogger(__name__)
@@ -83,9 +84,6 @@ class StealthTaskCrawler:
         )
 
         status = "not-submitted"
-        def _is_submitted(badge: str) -> bool:
-            b = badge.strip().lower()
-            return "submitted" in b and "not" not in b and "un" not in b
 
         # Check for submitted indicators
         badges = [
@@ -94,20 +92,16 @@ class StealthTaskCrawler:
                 class_=lambda c: c and any(k in c for k in ["badge", "label", "status"])
             )
         ]
-        if any(_is_submitted(b) for b in badges):
+        if any(is_submitted_badge(b) for b in badges):
             status = "submitted"
 
         # Check if dropbox shows a file uploaded
         if has_submit_btn and status != "submitted":
             try:
-                dropbox_path = f"/student/classes/{class_id_str}/core_tasks/{task_id_str}/dropbox"
-                db_soup = self.client._get(dropbox_path, bypass_cache=True)
+                submissions = self.client.get_submissions(class_id_str, task_id_str)
                 self._jitter()
-                if db_soup.find("table") or db_soup.find(class_=lambda c: c and "submission" in c):
-                    # Check for submitted file links
-                    file_links = db_soup.find_all("a", href=lambda h: h and "/attachments/" in h)
-                    if file_links:
-                        status = "submitted"
+                if submissions and not submissions[0].get("error"):
+                    status = "submitted"
             except Exception:
                 pass
 
