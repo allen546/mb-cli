@@ -108,7 +108,7 @@ class DDLScheduler:
                                 "has_submit_button": task.get(
                                     "has_submit_button", False
                                 ),
-                                "url": task.get("url", ""),
+                                "url": task.get("url") or task.get("link") or "",
                             },
                         )
                         events.append(event)

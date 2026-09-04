@@ -557,39 +557,84 @@ class ManageBacClient:
         }
 
     def get_submissions(self, class_id: str, task_id: str) -> list[dict]:
-        """List current submissions on a task's dropbox page.
+        """List current submissions on a task page (or dropbox).
 
-        Each entry may include a ``feedback_url`` key when the teacher has
-        posted feedback for that specific submission.
+        Each entry may include a ``feedback_url`` and/or ``preview_modal_url``
+        when the teacher has posted feedback/annotations for that submission.
         """
-        dropbox_path = f"/student/classes/{class_id}/core_tasks/{task_id}/dropbox"
+        task_path = f"/student/classes/{class_id}/core_tasks/{task_id}"
+        soup = None
         try:
-            soup = self._get(dropbox_path)
-        except Exception as e:
-            return [{"error": str(e)}]
+            soup = self._get(task_path)
+        except Exception:
+            pass
+
+        rows = []
+        if soup:
+            rows = soup.find_all("tr", class_=re.compile(r"file", re.IGNORECASE))
+            if not rows:
+                rows = soup.find_all("tr", id=re.compile(r"^asset_\d+", re.IGNORECASE))
+
+        # Fallback to dropbox page if no submission rows found on task page
+        if not rows:
+            dropbox_path = f"{task_path}/dropbox"
+            try:
+                soup_drop = self._get(dropbox_path)
+                drop_rows = soup_drop.find_all("tr", class_=re.compile(r"file", re.IGNORECASE))
+                if not drop_rows:
+                    drop_rows = soup_drop.find_all("tr")
+                if drop_rows:
+                    rows = drop_rows
+                    soup = soup_drop
+            except Exception as e:
+                if not soup:
+                    return [{"error": str(e)}]
+
+        if not rows and soup:
+            rows = soup.find_all("tr")
 
         submissions: list[dict] = []
-        # Look for submitted file rows in the dropbox table
-        for row in soup.find_all("tr"):
-            # Collect all anchors in the row
+        for row in rows:
             anchors = row.find_all("a", href=True)
+            if not anchors:
+                continue
+
             file_link = None
             feedback_href: str | None = None
+            preview_modal_url: str | None = None
 
             for a in anchors:
                 href = a.get("href", "")
                 txt = a.get_text(strip=True).lower()
-                if "/attachments/" in href and txt not in ("view teacher feedback", "view feedback"):
-                    if file_link is None:
-                        file_link = a
-                elif "teacher feedback" in txt or ("view feedback" in txt and "/attachments/" not in href):
+                title_attr = (a.get("title") or "").lower()
+                is_feedback = (
+                    "teacher feedback" in txt
+                    or "teacher feedback" in title_attr
+                    or "view feedback" in txt
+                    or "view feedback" in title_attr
+                    or a.get("data-pdf-preview-url-value") is not None
+                    or "pdf-preview" in a.get("class", [])
+                )
+
+                if is_feedback:
                     feedback_href = href
+                    if a.get("data-pdf-preview-url-value"):
+                        preview_modal_url = a.get("data-pdf-preview-url-value")
+                else:
+                    looks_like_file = (
+                        "/attachments/" in href
+                        or "/uploads/" in href
+                        or bool(re.search(r"\.[a-z0-9]{2,8}(?:\?|$)", href, re.IGNORECASE))
+                        or "text-break" in a.get("class", [])
+                    )
+                    if looks_like_file and file_link is None:
+                        file_link = a
 
             if not file_link:
                 continue
 
             href = file_link.get("href", "")
-            name = file_link.get_text(strip=True)
+            name = file_link.get_text(strip=True) or href.split("?")[0].rstrip("/").split("/")[-1]
             if not name:
                 continue
 
@@ -603,84 +648,144 @@ class ManageBacClient:
                     if feedback_href.startswith("/")
                     else feedback_href
                 )
+            if preview_modal_url:
+                entry["preview_modal_url"] = (
+                    f"{self.base}{preview_modal_url}"
+                    if preview_modal_url.startswith("/")
+                    else preview_modal_url
+                )
             submissions.append(entry)
+
         return submissions
 
-    def _parse_feedback_page(self, url: str) -> dict:
-        """GET a teacher-feedback page and extract comment, rubric rows, and attachments.
+    def _parse_feedback_page(
+        self, url: str | None, preview_modal_url: str | None = None
+    ) -> dict:
+        """Fetch and parse teacher feedback details from a feedback page or preview modal.
 
-        Returns a dict with keys:
-        - ``comment``      : str | None — free-text teacher comment
-        - ``rubric``       : list[dict] — [{criterion, score, max}, ...]
-        - ``attachments``  : list[dict] — [{name, url}, ...]
-        - ``error``        : str | None — set when the page could not be fetched
+        Extracts comment, rubric criteria, and attached/annotated files.
         """
-        path = url.replace(self.base, "") if url.startswith(self.base) else url
-        try:
-            soup = self._get(path, bypass_cache=True)
-        except Exception as exc:
-            return {"comment": None, "rubric": [], "attachments": [], "error": str(exc)}
-
-        # 1. Free-text comment (Froala editor block)
-        comment_el = soup.find(
-            "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
-        )
-        comment = self._text_from_block(comment_el, limit=4000) if comment_el else None
-
-        # 2. Rubric rows — tables vary by school, try every <tr> with ≥2 cells
+        comment = None
         rubric: list[dict] = []
-        seen_criteria: set[str] = set()
-        for row in soup.find_all("tr"):
-            cells = row.find_all(["td", "th"])
-            if len(cells) < 2:
-                continue
-            criterion = cells[0].get_text(strip=True)
-            score_text = cells[1].get_text(strip=True)
-            max_text = cells[2].get_text(strip=True) if len(cells) >= 3 else None
-            # Skip header-like rows
-            if not criterion or criterion.lower() in ("criterion", "criteria", "description", ""):
-                continue
-            if criterion in seen_criteria:
-                continue
-            seen_criteria.add(criterion)
-            rubric.append({"criterion": criterion, "score": score_text, "max": max_text})
-
-        # 3. Teacher-attached files
         attachments: list[dict] = []
-        seen_attach: set[str] = set()
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if "/attachments/" not in href and "/uploads/" not in href:
-                continue
-            full_url = f"{self.base}{href}" if href.startswith("/") else href
-            if full_url in seen_attach:
-                continue
-            seen_attach.add(full_url)
-            name = a.get_text(strip=True) or href.rsplit("/", 1)[-1]
-            attachments.append({"name": name, "url": full_url})
+        annotated_url: str | None = None
+        err = None
 
-        return {"comment": comment, "rubric": rubric, "attachments": attachments, "error": None}
+        # 1. Check preview modal if available (modern ManageBac PSPDFKit annotation viewer)
+        if preview_modal_url:
+            modal_req_url = (
+                preview_modal_url
+                if preview_modal_url.startswith("http")
+                else f"{self.base}{preview_modal_url}"
+            )
+            try:
+                r = self.session.get(
+                    modal_req_url,
+                    headers={"X-Requested-With": "XMLHttpRequest"},
+                    timeout=30,
+                    verify=self.session.verify,
+                )
+                if r.status_code == 200:
+                    ann_m = re.search(
+                        r'data-download-annotated-url=\\?[\'"]([^\'"\\]+)', r.text
+                    )
+                    if ann_m:
+                        annotated_url = ann_m.group(1).replace("&amp;", "&")
+                        attachments.append(
+                            {
+                                "name": "annotated_feedback.pdf",
+                                "url": annotated_url,
+                                "type": "annotated_pdf",
+                            }
+                        )
+            except Exception as exc:
+                log.warning("Failed to fetch preview modal %s: %s", modal_req_url, exc)
+
+        # 2. Check HTML feedback page if URL is a page path (not an S3 direct asset URL)
+        if url and not re.search(r"\.(pdf|docx?|xlsx?|png|jpe?g)(\?|$)", url, re.IGNORECASE):
+            path = url.replace(self.base, "") if url.startswith(self.base) else url
+            try:
+                soup = self._get(path, bypass_cache=True)
+                comment_el = soup.find(
+                    "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
+                )
+                comment = self._text_from_block(comment_el, limit=4000) if comment_el else None
+
+                seen_criteria: set[str] = set()
+                for row in soup.find_all("tr"):
+                    cells = row.find_all(["td", "th"])
+                    if len(cells) < 2:
+                        continue
+                    criterion = cells[0].get_text(strip=True)
+                    score_text = cells[1].get_text(strip=True)
+                    max_text = cells[2].get_text(strip=True) if len(cells) >= 3 else None
+                    if not criterion or criterion.lower() in ("criterion", "criteria", "description", ""):
+                        continue
+                    if criterion in seen_criteria:
+                        continue
+                    seen_criteria.add(criterion)
+                    rubric.append({"criterion": criterion, "score": score_text, "max": max_text})
+
+                seen_attach = {a["url"] for a in attachments}
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    if "/attachments/" not in href and "/uploads/" not in href:
+                        continue
+                    full_url = f"{self.base}{href}" if href.startswith("/") else href
+                    if full_url in seen_attach:
+                        continue
+                    seen_attach.add(full_url)
+                    name = a.get_text(strip=True) or href.rsplit("/", 1)[-1]
+                    attachments.append({"name": name, "url": full_url, "type": "attachment"})
+            except Exception as exc:
+                err = str(exc)
+        elif url:
+            if not any(a["url"] == url for a in attachments):
+                attachments.append({"name": "feedback_file", "url": url, "type": "file"})
+
+        return {
+            "comment": comment,
+            "rubric": rubric,
+            "attachments": attachments,
+            "annotated_download_url": annotated_url,
+            "error": err,
+        }
 
     def get_teacher_feedback(self, class_id: str, task_id: str) -> dict:
-        """Fetch teacher feedback for all submissions on a task's dropbox.
+        """Fetch teacher feedback for all submissions on a task.
 
-        Returns::
-
-            {
-                "task_url": str,
-                "feedback_items": [
-                    {
-                        "submission_name": str,
-                        "feedback_url": str | None,
-                        "comment": str | None,
-                        "rubric": [{"criterion": str, "score": str, "max": str | None}],
-                        "attachments": [{"name": str, "url": str}],
-                        "error": str | None,
-                    },
-                    ...
-                ]
-            }
+        Returns structured feedback including comments, rubric scores,
+        and teacher-annotated attachments.
         """
+        task_path = f"/student/classes/{class_id}/core_tasks/{task_id}"
+        grade_letter = None
+        grade_score = None
+        general_comments: list[str] = []
+
+        try:
+            soup = self._get(task_path)
+            card = soup.find(class_="fusion-card-item")
+            if card:
+                score_cell = card.find(class_=re.compile(r"assessment-cell|task-score")) or card
+                grade_el = score_cell.find(class_=re.compile(r"\bgrade\b"))
+                if grade_el:
+                    grade_letter = grade_el.get_text(strip=True)
+                points_el = card.find("div", class_="points")
+                if points_el:
+                    grade_score = points_el.get_text(strip=True)
+
+            main_content = soup.find("main") or soup
+            assessment_div = main_content.find(class_="assessment-comments")
+            if assessment_div:
+                for b in assessment_div.find_all(
+                    "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
+                ):
+                    txt = self._text_from_block(b, limit=2000)
+                    if txt and txt not in general_comments:
+                        general_comments.append(txt)
+        except Exception as exc:
+            log.warning("Could not fetch task detail for feedback metadata: %s", exc)
+
         submissions = self.get_submissions(class_id, task_id)
         items: list[dict] = []
         for sub in submissions:
@@ -691,26 +796,36 @@ class ManageBacClient:
                     "comment": None,
                     "rubric": [],
                     "attachments": [],
+                    "annotated_download_url": None,
                     "error": sub["error"],
                 })
                 continue
 
             feedback_url = sub.get("feedback_url")
+            preview_modal = sub.get("preview_modal_url")
             entry: dict = {
                 "submission_name": sub.get("name"),
                 "feedback_url": feedback_url,
                 "comment": None,
                 "rubric": [],
                 "attachments": [],
+                "annotated_download_url": None,
                 "error": None,
             }
-            if feedback_url:
-                parsed = self._parse_feedback_page(feedback_url)
+            if feedback_url or preview_modal:
+                parsed = self._parse_feedback_page(feedback_url, preview_modal_url=preview_modal)
                 entry.update(parsed)
             items.append(entry)
 
         return {
+            "task_id": task_id,
+            "class_id": class_id,
             "task_url": f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}",
+            "grade": {
+                "grade_letter": grade_letter,
+                "grade_score": grade_score,
+            },
+            "general_comments": general_comments,
             "feedback_items": items,
         }
 

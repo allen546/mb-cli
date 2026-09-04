@@ -50,6 +50,7 @@ class TestBuildParser:
             "grades",
             "count-grade-freq",
             "download",
+            "feedback",
         }
         assert set(choices.keys()) == expected
 

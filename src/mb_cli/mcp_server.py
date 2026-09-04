@@ -315,10 +315,28 @@ def get_teacher_feedback(
 
     cid, tid = parse_task_url(target)
     if not (cid and tid):
-        return json.dumps({"error": f"Cannot parse class_id/task_id from: {target}"})
+        tid = target
+        result = client.crawl_all(max_pages=5, fetch_details=False)
+        for task in result["upcoming"] + result["past"] + result["overdue"]:
+            if task.get("id") == tid:
+                c_id, t_id = parse_task_url(task.get("link", ""))
+                if c_id and t_id:
+                    cid, tid = c_id, t_id
+                    break
+
+        if not cid:
+            found = client.find_task_by_id(tid, max_pages=10)
+            if found and found.get("link"):
+                c_id, t_id = parse_task_url(found["link"])
+                if c_id and t_id:
+                    cid, tid = c_id, t_id
+
+    if not (cid and tid):
+        return json.dumps({"error": f"Could not find or resolve task with ID: {target}"})
 
     result = client.get_teacher_feedback(cid, tid)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
 
 
 # ── Notifications ───────────────────────────────────────────────────────
