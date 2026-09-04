@@ -31,6 +31,7 @@ class DaemonService:
         state_manager: DaemonStateManager | None = None,
         provider: AbstractNotificationProvider | None = None,
         auth_refresh_fn: Callable[[], bool] | None = None,
+        on_start: Callable[[DaemonService], None] | None = None,
     ):
         self.client = client
         self.config = config or DaemonConfig()
@@ -47,6 +48,9 @@ class DaemonService:
         )
         self.dispatcher = WebhookDispatcher(
             webhooks=self.config.webhooks, verify_tls=self.config.verify_tls
+        )
+        self.on_start: Callable[[DaemonService], None] = on_start or (
+            lambda svc: svc.sync_upcoming_tasks()
         )
         self._running = False
         self._last_full_sync: float = 0.0
@@ -220,15 +224,12 @@ class DaemonService:
         log.info("ManageBac Notification Daemon started (provider=%s)", self.config.provider)
         self.provider.start()
 
-        # Initial task synchronization only if cache is empty
-        if not self.state_manager.tasks_cache:
-            self.sync_upcoming_tasks()
-        else:
-            log.info(
-                "Loaded %d active tasks from state cache — skipping initial full crawl",
-                len(self.state_manager.tasks_cache),
-            )
-            self._last_full_sync = time.time()
+        # Initial on-start lifecycle callback (triggers full upcoming task refresh by default)
+        log.info("Executing daemon on-start callback...")
+        try:
+            self.on_start(self)
+        except Exception as exc:
+            log.warning("Daemon on-start callback encountered error: %s", exc)
 
         full_sync_interval_sec = self.config.full_sync_interval_minutes * 60
 

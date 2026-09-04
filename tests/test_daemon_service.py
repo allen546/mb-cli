@@ -95,3 +95,79 @@ def test_daemon_service_live_submission_check(tmp_path: Path):
     mock_client.get_submissions.assert_called_once_with("11516148", "777")
     # Verify no general crawling was performed
     mock_client.get_tasks_by_view.assert_not_called()
+
+
+def test_daemon_service_on_start_default(tmp_path: Path):
+    mock_client = MagicMock()
+    # Pre-populate state manager with an existing task
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+    state_mgr.update_task({"id": "111", "title": "Old Task", "due_date": "2026-09-10 10:00:00"})
+
+    # Setup upcoming task return and terminate loop
+    def _upcoming(view, max_pages=3):
+        service._running = False
+        return [
+            {"id": "111", "title": "Old Task Updated", "due_date": "2026-09-10 12:00:00"},
+            {"id": "222", "title": "Brand New Task", "due_date": "2026-09-12 15:00:00"},
+        ]
+
+    mock_client.get_tasks_by_view.side_effect = _upcoming
+
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=MockProvider([]),
+    )
+
+    # Start service; default on_start should invoke sync_upcoming_tasks even though cache is non-empty
+    service.start()
+
+    mock_client.get_tasks_by_view.assert_called_once_with("upcoming", max_pages=3)
+    # Verify existing task updated
+    assert state_mgr.get_task("111")["title"] == "Old Task Updated"
+    # Verify newly discovered task added to cache
+    assert state_mgr.get_task("222") is not None
+    assert state_mgr.get_task("222")["title"] == "Brand New Task"
+
+
+def test_daemon_service_on_start_custom_callback(tmp_path: Path):
+    mock_client = MagicMock()
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+    custom_hook = MagicMock()
+
+    def _custom_callback(svc: DaemonService):
+        custom_hook(svc)
+        svc._running = False
+
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=MockProvider([]),
+        on_start=_custom_callback,
+    )
+
+    service.start()
+
+    custom_hook.assert_called_once_with(service)
+    # Default sync_upcoming_tasks was replaced by custom callback, so client was not called
+    mock_client.get_tasks_by_view.assert_not_called()
+
+
+def test_daemon_service_on_start_error_resilience(tmp_path: Path):
+    mock_client = MagicMock()
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+
+    def _failing_callback(svc: DaemonService):
+        svc._running = False
+        raise RuntimeError("Simulated connection failure during startup refresh")
+
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=MockProvider([]),
+        on_start=_failing_callback,
+    )
+
+    # service.start() should not crash even if on_start raises
+    service.start()
+    assert service._running is False

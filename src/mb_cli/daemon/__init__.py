@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, time as dt_time, timedelta
 import json
 import logging
@@ -391,6 +392,7 @@ def start_loop(
     daemon_config: dict,
     dry_run: bool = False,
     once: bool = False,
+    on_start: Callable[[DaemonService], None] | None = None,
 ) -> dict:
     pid_path = Path(daemon_config["pid_file"]).expanduser()
     log_path = Path(daemon_config["log_file"]).expanduser()
@@ -421,7 +423,7 @@ def start_loop(
             }
         # In multi-loop mode run DaemonService
         config = DaemonConfig.from_dict(daemon_config)
-        service = DaemonService(client, config=config)
+        service = DaemonService(client, config=config, on_start=on_start)
         service.run_forever()
         return {"stopped": True}
     finally:
