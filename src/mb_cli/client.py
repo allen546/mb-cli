@@ -557,7 +557,11 @@ class ManageBacClient:
         }
 
     def get_submissions(self, class_id: str, task_id: str) -> list[dict]:
-        """List current submissions on a task's dropbox page."""
+        """List current submissions on a task's dropbox page.
+
+        Each entry may include a ``feedback_url`` key when the teacher has
+        posted feedback for that specific submission.
+        """
         dropbox_path = f"/student/classes/{class_id}/core_tasks/{task_id}/dropbox"
         try:
             soup = self._get(dropbox_path)
@@ -567,22 +571,148 @@ class ManageBacClient:
         submissions: list[dict] = []
         # Look for submitted file rows in the dropbox table
         for row in soup.find_all("tr"):
-            link = row.find("a", href=True)
-            if not link:
+            # Collect all anchors in the row
+            anchors = row.find_all("a", href=True)
+            file_link = None
+            feedback_href: str | None = None
+
+            for a in anchors:
+                href = a.get("href", "")
+                txt = a.get_text(strip=True).lower()
+                if "/attachments/" in href and txt not in ("view teacher feedback", "view feedback"):
+                    if file_link is None:
+                        file_link = a
+                elif "teacher feedback" in txt or ("view feedback" in txt and "/attachments/" not in href):
+                    feedback_href = href
+
+            if not file_link:
                 continue
-            href = link.get("href", "")
-            if "/attachments/" not in href:
+
+            href = file_link.get("href", "")
+            name = file_link.get_text(strip=True)
+            if not name:
                 continue
-            name = link.get_text(strip=True)
-            if not name or name.lower() in ("view teacher feedback", "view feedback"):
-                continue
-            submissions.append(
-                {
-                    "name": name,
-                    "url": f"{self.base}{href}" if href.startswith("/") else href,
-                }
-            )
+
+            entry: dict = {
+                "name": name,
+                "url": f"{self.base}{href}" if href.startswith("/") else href,
+            }
+            if feedback_href:
+                entry["feedback_url"] = (
+                    f"{self.base}{feedback_href}"
+                    if feedback_href.startswith("/")
+                    else feedback_href
+                )
+            submissions.append(entry)
         return submissions
+
+    def _parse_feedback_page(self, url: str) -> dict:
+        """GET a teacher-feedback page and extract comment, rubric rows, and attachments.
+
+        Returns a dict with keys:
+        - ``comment``      : str | None — free-text teacher comment
+        - ``rubric``       : list[dict] — [{criterion, score, max}, ...]
+        - ``attachments``  : list[dict] — [{name, url}, ...]
+        - ``error``        : str | None — set when the page could not be fetched
+        """
+        path = url.replace(self.base, "") if url.startswith(self.base) else url
+        try:
+            soup = self._get(path, bypass_cache=True)
+        except Exception as exc:
+            return {"comment": None, "rubric": [], "attachments": [], "error": str(exc)}
+
+        # 1. Free-text comment (Froala editor block)
+        comment_el = soup.find(
+            "div", class_=re.compile(r"fr-view|fix-body-margins", re.IGNORECASE)
+        )
+        comment = self._text_from_block(comment_el, limit=4000) if comment_el else None
+
+        # 2. Rubric rows — tables vary by school, try every <tr> with ≥2 cells
+        rubric: list[dict] = []
+        seen_criteria: set[str] = set()
+        for row in soup.find_all("tr"):
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            criterion = cells[0].get_text(strip=True)
+            score_text = cells[1].get_text(strip=True)
+            max_text = cells[2].get_text(strip=True) if len(cells) >= 3 else None
+            # Skip header-like rows
+            if not criterion or criterion.lower() in ("criterion", "criteria", "description", ""):
+                continue
+            if criterion in seen_criteria:
+                continue
+            seen_criteria.add(criterion)
+            rubric.append({"criterion": criterion, "score": score_text, "max": max_text})
+
+        # 3. Teacher-attached files
+        attachments: list[dict] = []
+        seen_attach: set[str] = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "/attachments/" not in href and "/uploads/" not in href:
+                continue
+            full_url = f"{self.base}{href}" if href.startswith("/") else href
+            if full_url in seen_attach:
+                continue
+            seen_attach.add(full_url)
+            name = a.get_text(strip=True) or href.rsplit("/", 1)[-1]
+            attachments.append({"name": name, "url": full_url})
+
+        return {"comment": comment, "rubric": rubric, "attachments": attachments, "error": None}
+
+    def get_teacher_feedback(self, class_id: str, task_id: str) -> dict:
+        """Fetch teacher feedback for all submissions on a task's dropbox.
+
+        Returns::
+
+            {
+                "task_url": str,
+                "feedback_items": [
+                    {
+                        "submission_name": str,
+                        "feedback_url": str | None,
+                        "comment": str | None,
+                        "rubric": [{"criterion": str, "score": str, "max": str | None}],
+                        "attachments": [{"name": str, "url": str}],
+                        "error": str | None,
+                    },
+                    ...
+                ]
+            }
+        """
+        submissions = self.get_submissions(class_id, task_id)
+        items: list[dict] = []
+        for sub in submissions:
+            if "error" in sub:
+                items.append({
+                    "submission_name": None,
+                    "feedback_url": None,
+                    "comment": None,
+                    "rubric": [],
+                    "attachments": [],
+                    "error": sub["error"],
+                })
+                continue
+
+            feedback_url = sub.get("feedback_url")
+            entry: dict = {
+                "submission_name": sub.get("name"),
+                "feedback_url": feedback_url,
+                "comment": None,
+                "rubric": [],
+                "attachments": [],
+                "error": None,
+            }
+            if feedback_url:
+                parsed = self._parse_feedback_page(feedback_url)
+                entry.update(parsed)
+            items.append(entry)
+
+        return {
+            "task_url": f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}",
+            "feedback_items": items,
+        }
 
     # ── Calendar ────────────────────────────────────────────────────────
 

@@ -217,6 +217,44 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             }
         )
 
+    # Teacher feedback — only fires when snapshot was produced with feedback_items
+    # (i.e. the daemon ran with feedback.enabled=true). Tracks per-task novelty
+    # in old["feedback_seen"] = {task_id: [submission_name, ...]}.
+    old_feedback_seen: dict[str, list[str]] = old.get("feedback_seen", {})
+    new_feedback_seen: dict[str, list[str]] = {}
+    for tid, task in all_new.items():
+        fb_items = task.get("feedback_items", [])
+        if not fb_items:
+            continue
+        # Only consider submissions that actually have feedback content
+        new_names = [
+            f["submission_name"]
+            for f in fb_items
+            if (f.get("comment") or f.get("rubric") or f.get("attachments"))
+            and f.get("submission_name")
+        ]
+        new_feedback_seen[tid] = new_names
+        old_names = set(old_feedback_seen.get(tid, []))
+        novel = [n for n in new_names if n not in old_names]
+        if novel:
+            alerts.append(
+                {
+                    "type": "new_feedback",
+                    "severity": "info",
+                    "task": task,
+                    "message": (
+                        f"Teacher feedback posted: {task.get('title', tid)} "
+                        f"({task.get('class_name', '')}) — "
+                        + ", ".join(novel)
+                    ),
+                }
+            )
+            changed_ids.append(tid)
+
+    # Persist updated feedback_seen into the new snapshot for next diff
+    if new_feedback_seen:
+        new["feedback_seen"] = {**old_feedback_seen, **new_feedback_seen}
+
     return alerts, changed_ids
 
 

@@ -271,6 +271,56 @@ def submit_file(
         return json.dumps({"error": str(e)})
 
 
+@mcp.tool()
+def get_teacher_feedback(
+    task_id: str | None = None,
+    task_url: str | None = None,
+    school: str | None = None,
+    domain: str | None = None,
+    cookie: str | None = None,
+    profile: str | None = None,
+    verify_tls: bool = True,
+    retry: int = 3,
+) -> str:
+    """Fetch teacher feedback for all submitted files on a task's dropbox.
+
+    Provide either task_id (numeric) or task_url (full ManageBac URL).
+    Returns comment text, rubric scores, and any teacher-attached files for
+    each submission.
+
+    PREFER passing the full task URL (from list_tasks results) to avoid
+    expensive task-list resolution.
+
+    Args:
+        task_id: Numeric task ID (e.g. "27395861")
+        task_url: Full task URL (e.g. "https://myschool.managebac.cn/student/classes/1000024/core_tasks/27395861")
+        school: School subdomain
+        domain: Base domain
+        cookie: Session cookie override
+        profile: Profile name
+        verify_tls: Set to False to disable TLS certificate verification
+        retry: Max retries with exponential backoff (default 3, 0=off)
+    """
+    _state, client, _email = build_client(
+        school=school,
+        domain=domain,
+        cookie=cookie,
+        profile=profile,
+        verify=verify_tls,
+        retry=retry,
+    )
+    target = task_url or task_id
+    if not target:
+        return json.dumps({"error": "Provide task_id or task_url"})
+
+    cid, tid = parse_task_url(target)
+    if not (cid and tid):
+        return json.dumps({"error": f"Cannot parse class_id/task_id from: {target}"})
+
+    result = client.get_teacher_feedback(cid, tid)
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 # ── Notifications ───────────────────────────────────────────────────────
 
 

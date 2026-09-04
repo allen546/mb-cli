@@ -960,6 +960,25 @@ def cmd_download(args) -> int:
     return 0 if success_count > 0 else 1
 
 
+def cmd_feedback(args) -> int:
+    """Fetch teacher feedback for all submitted files on a task's dropbox."""
+    state, client, email = _build_client(args, "feedback")
+    _authenticate_client(state, client, email)
+
+    target = args.task_id
+    try:
+        class_id, task_id = _resolve_task_ids(client, target, getattr(args, "pages", 10))
+    except CommandError as exc:
+        payload = error("feedback", exc.code, exc.message)
+        print_payload(payload, args.output, args.format)
+        return 1
+
+    result = client.get_teacher_feedback(class_id, task_id)
+    payload = ok("feedback", state.active_profile, result)
+    print_payload(payload, args.output, args.format)
+    return 0
+
+
 # ── CLI parser ──────────────────────────────────────────────────────────
 
 
@@ -1375,6 +1394,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not download teacher attachments",
     )
     download_p.set_defaults(func=cmd_download)
+
+    feedback_p = subparsers.add_parser(
+        "feedback", help="Fetch teacher feedback for a submitted task"
+    )
+    add_common_auth_flags(feedback_p)
+    feedback_p.add_argument(
+        "task_id",
+        help="Task numeric ID or full ManageBac URL",
+    )
+    feedback_p.add_argument(
+        "--pages",
+        type=int,
+        default=10,
+        help="Max pages to search when resolving by id (default: 10)",
+    )
+    feedback_p.set_defaults(func=cmd_feedback)
 
     return parser
 
