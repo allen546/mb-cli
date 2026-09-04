@@ -29,11 +29,45 @@ log = logging.getLogger("bark_webhook_receiver")
 DEFAULT_BARK_BIN = "/srv/data/tools/bark"
 DEFAULT_PORT = 42617
 DEFAULT_HOST = "127.0.0.1"
-MAX_LINE_LEN = 60
+DEFAULT_ALIASES_PATH = Path.home() / ".config" / "managebac" / "course_aliases.json"
+MAX_COURSE_LEN = 40
+MAX_TASK_LEN = 80
+MAX_META_LEN = 40
 MAX_TITLE_LEN = 50
 
+_aliases_cache: dict[str, str] = {}
+_aliases_mtime: float = -1.0
+_aliases_path_cached: Path | None = None
 
-def truncate(s: str | None, max_len: int = MAX_LINE_LEN) -> str:
+
+def load_course_aliases(path: Path | str | None = None) -> dict[str, str]:
+    """Load course alias mapping from JSON file with mtime caching.
+
+    Returns an empty dict if the file is missing or invalid.
+    """
+    global _aliases_cache, _aliases_mtime, _aliases_path_cached
+    target_path = Path(path).expanduser() if path else DEFAULT_ALIASES_PATH
+    try:
+        if not target_path.exists():
+            return {}
+        mtime = target_path.stat().st_mtime
+        if target_path == _aliases_path_cached and mtime == _aliases_mtime:
+            return _aliases_cache
+        with open(target_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _aliases_cache = {str(k): str(v) for k, v in data.items()}
+            _aliases_mtime = mtime
+            _aliases_path_cached = target_path
+            return _aliases_cache
+        log.warning("Aliases file at %s is not a JSON object", target_path)
+        return {}
+    except Exception as e:
+        log.warning("Failed to load course aliases from %s: %s", target_path, e)
+        return {}
+
+
+def truncate(s: str | None, max_len: int = MAX_COURSE_LEN) -> str:
     """Safely bound line length to avoid runaway multi-line wrapping while keeping full context."""
     if not s:
         return ""
@@ -43,31 +77,33 @@ def truncate(s: str | None, max_len: int = MAX_LINE_LEN) -> str:
     return cleaned[: max_len - 2] + ".."
 
 
-def clean_class_name(raw_name: str | None) -> str:
-    """Clean verbose ManageBac class names into clear, readable course names."""
+def resolve_course_name(raw_name: str | None, aliases: dict[str, str] | None = None) -> str:
+    """Resolve course name using exact case-sensitive match against user aliases.
+
+    Zero autocleaning or heuristic manipulation is performed.
+    """
     if not raw_name:
         return "ManageBac"
-    s = str(raw_name).strip()
-    # Normalize repeated AP prefixes: e.g. "AP AP—Calculus BC" -> "AP Calculus BC"
-    s = re.sub(r"^(?:AP\s+)+AP[—\- ]*", "AP ", s)
-    # Remove metadata noise
-    s = re.sub(r"\b20\d{2}-20\d{2}\b", "", s)
-    s = re.sub(r"\(Grade \d+\)", "", s)
-    s = re.sub(r"\((?:Grade|AP)[^)]*\)", "", s)
-    s = re.sub(r"\bCLASS\s+\d+\b", "", s, flags=re.I)
-    s = re.sub(r"\b(?:BLUE|YELLOW|RED|GREEN|E101|E102)\b", "", s, flags=re.I)
-    s = re.sub(r"\s+", " ", s).strip(" -—:")
-
-    return truncate(s or "ManageBac", MAX_LINE_LEN)
+    trimmed = str(raw_name).strip()
+    if aliases and trimmed in aliases:
+        name = aliases[trimmed]
+    else:
+        name = trimmed
+    return truncate(name or "ManageBac", MAX_COURSE_LEN)
 
 
-def clean_task_title(raw_title: str | None) -> str:
+def clean_class_name(raw_name: str | None, aliases: dict[str, str] | None = None) -> str:
+    """Backward compatibility alias for resolve_course_name."""
+    return resolve_course_name(raw_name, aliases=aliases)
+
+
+def clean_task_title(raw_title: str | None, max_len: int = MAX_TASK_LEN) -> str:
     """Extract full clean task name without 'New Task:' or 'Updated Task:' prefixes."""
     if not raw_title:
         return "未命名作业"
     s = str(raw_title).strip()
     s = re.sub(r"^(?:New\s+Task|Updated\s+Task|Task):\s*", "", s, flags=re.I).strip()
-    return truncate(s or "未命名作业", MAX_LINE_LEN)
+    return truncate(s or "未命名作业", max_len)
 
 
 def clean_teacher_name(raw_name: str | None) -> str:
@@ -169,12 +205,19 @@ def format_relative_due_date(raw_due: str | None, now: datetime | None = None) -
         return f"截止: {dt.strftime('%m-%d %H:%M')}"
 
 
-def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int, str]:
+def format_event_for_bark(
+    payload: dict[str, Any],
+    aliases: dict[str, str] | None = None,
+) -> tuple[str, str, str, int, str]:
     """Format an MBEvent payload into (title, message, sound, priority, url).
 
     Guarantees:
-    - Maximum 4 lines of showing space
-    - Full, actionable information without premature ellipsis
+    - Clean English alert titles without markdown formatting
+    - Exactly 3 logical fields budgeted for at most 4 visual lines:
+        * Field 1: 课程: {course} (1 visual line, exact alias applied without autocleaning)
+        * Field 2: 作业: {task} (up to 2 visual lines)
+        * Field 3: 截止/得分/状态 (1 visual line)
+    - Zero teacher noise
     - Direct assignment URL for instant click-through
     """
     event = payload.get("event") or payload.get("type") or "notification"
@@ -206,35 +249,35 @@ def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int, 
         or (data.get("enriched_task") or {}).get("url")
         or ""
     )
+    if not raw_url:
+        c_id = data.get("class_id") or (data.get("task") or {}).get("class_id")
+        t_id = data.get("task_id") or (data.get("task") or {}).get("id") or (data.get("task") or {}).get("task_id")
+        if c_id and t_id:
+            raw_url = f"https://demo-school.managebac.cn/student/classes/{c_id}/core_tasks/{t_id}"
 
-    clean_cls = clean_class_name(raw_class)
-    clean_tsk = clean_task_title(raw_title)
-    teacher = clean_teacher_name((data.get("sender") or {}).get("name"))
+    clean_cls = resolve_course_name(raw_class, aliases=aliases)
+    clean_tsk = clean_task_title(raw_title, max_len=MAX_TASK_LEN)
     due_line = format_relative_due_date(raw_due)
 
     if event in ("task_created", "new_task"):
-        title = truncate(f"📝 {clean_cls}: {clean_tsk}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"作业: {clean_tsk}"
-        line3 = f"教师: {teacher}" if teacher else "新布置作业"
-        line4 = due_line or f"发布: {datetime.now().strftime('%m-%d %H:%M')}"
+        title = "📝 New Task"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"作业: {clean_tsk}"
+        field3 = due_line or f"发布: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 6
 
     elif event in ("task_updated", "updated_task"):
-        title = truncate(f"✏️ {clean_cls}: {clean_tsk}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"作业: {clean_tsk}"
+        title = "✏️ Updated Task"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"作业: {clean_tsk}"
         status = (data.get("enriched_task") or {}).get("status")
         if status == "submitted":
-            line3 = "状态: 已提交"
+            field3 = f"{due_line} (已提交)" if due_line else "状态: 已提交"
         elif status == "not-submitted":
-            line3 = "状态: 未提交"
-        elif teacher:
-            line3 = f"教师: {teacher}"
+            field3 = f"{due_line} (未提交)" if due_line else "状态: 未提交"
         else:
-            line3 = "作业内容已更新"
-        line4 = due_line or f"更新: {datetime.now().strftime('%m-%d %H:%M')}"
+            field3 = due_line or f"更新: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 5
 
@@ -247,9 +290,9 @@ def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int, 
             "15m": "15分钟",
         }
         friendly_th = threshold_names.get(threshold, threshold)
-        title = truncate(f"⏰ DDL提醒: {clean_tsk}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"作业: {clean_tsk}"
+        title = "⏰ DDL Warning"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"作业: {clean_tsk}"
 
         mins_left = data.get("time_remaining_minutes")
         if mins_left is not None:
@@ -263,84 +306,76 @@ def format_event_for_bark(payload: dict[str, Any]) -> tuple[str, str, str, int, 
             else:
                 time_str = f"{mins}分钟"
 
-            if mins_val <= 15:
-                line3 = f"🚨 倒计时: 距离截止仅剩 {time_str}"
-            elif mins_val <= 60:
-                line3 = f"⚠️ 紧急: 距离截止仅剩 {time_str}"
-            else:
-                line3 = f"⏰ 提醒: 距离截止还剩 {time_str}"
+            prefix = "仅剩 " if mins_val <= 60 else "还剩 "
+            countdown = f"{prefix}{time_str}"
         else:
-            if threshold == "15m":
-                line3 = f"🚨 倒计时: 距离截止仅剩 {friendly_th}"
-            elif threshold == "1h":
-                line3 = f"⚠️ 紧急: 距离截止仅剩 {friendly_th}"
-            else:
-                line3 = f"⏰ 提醒: 距离截止还剩 {friendly_th}"
+            prefix = "仅剩 " if threshold in ("15m", "1h") else "还剩 "
+            countdown = f"{prefix}{friendly_th}"
 
-        line4 = due_line
+        # Clean base due date without redundant (今晚)/(下午)/(明天) when countdown is present
+        dt = parse_datetime(raw_due)
+        if dt:
+            field3 = f"截止: {dt.strftime('%m-%d %H:%M')} ({countdown})"
+        elif due_line:
+            field3 = f"{due_line} ({countdown})"
+        else:
+            field3 = f"截止: ({countdown})"
         sound = "alarm"
         priority = 10
 
     elif event in ("assignment_graded", "grade_posted"):
-        title = truncate(f"📊 成绩发布: {clean_tsk}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"作业: {clean_tsk}"
+        title = "📊 Grade Posted"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"作业: {clean_tsk}"
         grade_letter = data.get("grade_letter") or ""
         grade_score = data.get("grade_score") or data.get("points") or ""
         grade_str = f"{grade_letter} {grade_score}".strip() or "已批改"
-        line3 = f"得分: {grade_str}"
-        line4 = f"发布: {datetime.now().strftime('%m-%d %H:%M')}"
+        field3 = f"得分: {grade_str}"
         sound = "chime"
         priority = 7
 
     elif event in ("file_uploaded", "new_file_uploaded"):
-        title = truncate(f"📁 课件上传: {clean_cls}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
+        title = "📁 File Uploaded"
+        field1 = f"课程: {clean_cls}"
         preview = data.get("body_preview") or data.get("title") or ""
         m_file = re.search(r"named\s+([^\s]+\.\w+)", preview)
         filename = m_file.group(1) if m_file else clean_tsk
-        line2 = f"课件: {filename}"
-        line3 = f"教师: {teacher}" if teacher else "新课件附件"
-        line4 = f"上传: {datetime.now().strftime('%m-%d %H:%M')}"
+        field2 = f"课件: {filename}"
+        field3 = f"上传: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 5
 
     elif event in ("announcement_created", "new_announcement"):
-        title = truncate(f"📢 班级公告: {clean_cls}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"主题: {clean_tsk}"
-        line3 = f"发布: {teacher}" if teacher else "班级新公告"
-        line4 = f"发布: {datetime.now().strftime('%m-%d %H:%M')}"
+        title = "📢 Class Announcement"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"主题: {clean_tsk}"
+        field3 = f"发布: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 5
 
     elif event == "test_ping":
-        title = "🔔 ManageBac 测试通知"
-        line1 = "通道: 实时推送正常"
-        line2 = "设备: Mac & iPhone"
-        line3 = "状态: 监听端口 42617"
-        line4 = f"时间: {datetime.now().strftime('%m-%d %H:%M')}"
+        title = "🔔 Test Notification"
+        field1 = "通道: 实时推送正常"
+        field2 = "设备: Mac & iPhone"
+        field3 = f"时间: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 5
 
     else:
-        title = truncate(f"ManageBac: {clean_cls}", MAX_TITLE_LEN)
-        line1 = f"课程: {clean_cls}"
-        line2 = f"内容: {clean_tsk}"
-        line3 = f"教师: {teacher}" if teacher else "新通知"
-        line4 = due_line or f"时间: {datetime.now().strftime('%m-%d %H:%M')}"
+        title = "ManageBac Notification"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"内容: {clean_tsk}"
+        field3 = due_line or f"时间: {datetime.now().strftime('%m-%d %H:%M')}"
         sound = "bell"
         priority = 5
 
-    # Assemble at most 4 lines
-    lines = [
-        truncate(line1, MAX_LINE_LEN),
-        truncate(line2, MAX_LINE_LEN),
-        truncate(line3, MAX_LINE_LEN),
-        truncate(line4, MAX_LINE_LEN),
+    # Assemble at most 3 logical fields, guaranteeing max 4 visual lines
+    fields = [
+        truncate(field1, MAX_COURSE_LEN),
+        truncate(field2, MAX_TASK_LEN),
+        truncate(field3, MAX_META_LEN),
     ]
-    final_lines = [l for l in lines if l][:4]
-    message = "\n".join(final_lines)
+    message = "\n".join(f for f in fields if f)
 
     return title, message, sound, priority, raw_url
 
@@ -387,7 +422,7 @@ class BarkPusher:
             return False
 
 
-def make_request_handler(pusher: BarkPusher):
+def make_request_handler(pusher: BarkPusher, aliases_path: Path | str | None = None):
     class WebhookHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path in ("/health", "/ping", "/"):
@@ -415,7 +450,8 @@ def make_request_handler(pusher: BarkPusher):
             event_name = self.headers.get("X-MB-Event") or payload.get("event", "unknown")
             log.info("Received event: %s", event_name)
 
-            title, message, sound, priority, url = format_event_for_bark(payload)
+            aliases = load_course_aliases(aliases_path)
+            title, message, sound, priority, url = format_event_for_bark(payload, aliases=aliases)
             log.info(
                 "Dispatching to Bark:\nTitle: %r\nMessage:\n%s\nSound: %r, Priority: %d, URL: %r",
                 title,
@@ -443,10 +479,15 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to listen on (default: 42617)")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind to (default: 127.0.0.1)")
     parser.add_argument("--bark-bin", default=DEFAULT_BARK_BIN, help="Path to bark CLI script")
+    parser.add_argument(
+        "--course-aliases",
+        default=str(DEFAULT_ALIASES_PATH),
+        help="Path to course aliases JSON file (default: ~/.config/managebac/course_aliases.json)",
+    )
     args = parser.parse_args()
 
     pusher = BarkPusher(bark_bin=args.bark_bin)
-    handler_cls = make_request_handler(pusher)
+    handler_cls = make_request_handler(pusher, aliases_path=args.course_aliases)
 
     server = HTTPServer((args.host, args.port), handler_cls)
     log.info("Starting Bark Webhook Receiver on http://%s:%d/webhook ...", args.host, args.port)
