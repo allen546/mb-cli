@@ -223,10 +223,19 @@ def test_is_task_unfinished_and_completed():
     assert is_task_unfinished(task_graded) is False
     assert is_task_completed(task_graded) is True
 
-    # Completed: not assessed yet (exempt)
-    task_exempt = dict(task_todo, labels=["Not Assessed Yet"])
+    # Completed: exempt or N/A
+    task_exempt = dict(task_todo, labels=["Exempt"])
     assert is_task_unfinished(task_exempt) is False
     assert is_task_completed(task_exempt) is True
+
+    task_na = dict(task_todo, grade_letter="N/A")
+    assert is_task_unfinished(task_na) is False
+    assert is_task_completed(task_na) is True
+
+    # "Not Assessed Yet" does NOT make an unsubmitted task complete (it remains TODO)
+    task_not_assessed = dict(task_todo, labels=["Not Assessed Yet"])
+    assert is_task_unfinished(task_not_assessed) is True
+    assert is_task_completed(task_not_assessed) is False
 
 
 def test_classify_task_view():

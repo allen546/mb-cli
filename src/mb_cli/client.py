@@ -1133,7 +1133,16 @@ class ManageBacClient:
 
             # Parse submit button
             dropbox_link = card.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
-            has_submit_btn = bool(dropbox_link)
+            has_submit_btn = bool(
+                dropbox_link
+                or card.find(
+                    lambda el: el.name in ("a", "button")
+                    and any(
+                        kw in el.get_text().lower()
+                        for kw in ("submit coursework", "upload submission", "submit")
+                    )
+                )
+            )
 
             # Parse due date
             due_date = None
@@ -1361,7 +1370,16 @@ class ManageBacClient:
 
             # Parse submit button
             dropbox_link = soup.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
-            has_submit_btn = bool(dropbox_link)
+            has_submit_btn = bool(
+                dropbox_link
+                or soup.find(
+                    lambda el: el.name in ("a", "button")
+                    and any(
+                        kw in el.get_text().lower()
+                        for kw in ("upload submission", "submit coursework", "submit")
+                    )
+                )
+            )
             detail["has_submit_button"] = has_submit_btn
 
             # Parse status
@@ -1543,6 +1561,13 @@ class ManageBacClient:
                         has_submit_btn = bool(t.get("has_submit_button", False))
                         is_submitted = is_task_submitted(t)
 
+                        if is_submitted:
+                            task_status = "submitted"
+                        elif has_submit_btn or t.get("status") == "not-submitted":
+                            task_status = "not-submitted"
+                        else:
+                            task_status = t.get("status")
+
                         reconstructed_task = {
                             "id": task_id,
                             "title": t.get("title"),
@@ -1552,7 +1577,7 @@ class ManageBacClient:
                             "grade_letter": grade_letter,
                             "grade_score": t.get("points"),
                             "labels": labels or None,
-                            "status": "submitted" if is_submitted else "not-submitted",
+                            "status": task_status,
                             "has_submit_button": has_submit_btn,
                         }
 
