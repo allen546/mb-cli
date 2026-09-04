@@ -619,6 +619,13 @@ def _resolve_task_ids(
             cid, tid = parse_task_url(task.get("link", ""))
             if cid and tid:
                 return cid, tid
+
+    found = client.find_task_by_id(task_id, max_pages=pages)
+    if found and found.get("link"):
+        cid, tid = parse_task_url(found["link"])
+        if cid and tid:
+            return cid, tid
+
     raise CommandError("task_not_found", f"Could not find task with id {task_id}")
 
 

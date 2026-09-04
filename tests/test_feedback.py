@@ -301,3 +301,43 @@ def test_diff_index_no_feedback_alert_without_feedback_items():
     alerts, _ = diff_index(old, new)
     fb_alerts = [a for a in alerts if a["type"] == "new_feedback"]
     assert len(fb_alerts) == 0
+
+
+def test_get_submissions_task_page_modal_preview():
+    """Modern ManageBac renders submitted coursework with View Teacher Feedback on task page."""
+    html = """
+    <tr class="file" id="asset_81995543">
+      <td><a class="text-break" href="https://s3.amazonaws.com/file/essay.pdf">essay.pdf</a></td>
+      <td>
+        <a class="btn btn-light" title="View Teacher Feedback"
+           data-pdf-preview-url-value="/document_previews/modal/token123"
+           href="https://s3.amazonaws.com/file/essay.pdf">View Teacher Feedback</a>
+      </td>
+    </tr>
+    """
+    client = _make_client()
+    with patch.object(client, "_get", return_value=_soup(html)):
+        subs = client.get_submissions("11516148", "27530452")
+
+    assert len(subs) == 1
+    assert subs[0]["name"] == "essay.pdf"
+    assert subs[0]["preview_modal_url"].endswith("/document_previews/modal/token123")
+    assert "feedback_url" in subs[0]
+
+
+def test_parse_feedback_page_with_modal_preview():
+    """When preview_modal_url is present, fetches modal and extracts annotated download URL."""
+    client = _make_client()
+    fake_modal_js = """
+    modal.innerHTML = '<div class="pspdfkit-doc-viewer" data-download-annotated-url="https://pspdfkit.example.com/annotated.pdf" data-download-original-url="https://pspdfkit.example.com/orig.pdf">';
+    """
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = fake_modal_js
+    client.session.get.return_value = mock_resp
+
+    result = client._parse_feedback_page("https://s3.amazonaws.com/file/essay.pdf", preview_modal_url="/document_previews/modal/token123")
+    assert result["annotated_download_url"] == "https://pspdfkit.example.com/annotated.pdf"
+    assert len(result["attachments"]) >= 1
+    assert any("annotated" in a["name"] for a in result["attachments"])
+

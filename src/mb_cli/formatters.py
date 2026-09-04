@@ -114,7 +114,17 @@ def render_pretty(payload: dict) -> str:
                 if "not assessed" in letter.lower() or letter.lower() == "n/a":
                     return "N/A"
                 return letter
-            return "Ungraded"
+            # No grade yet — determine submission state.
+            # "not-submitted" status is only rendered by ManageBac when there
+            # is an active submission entrance (dropbox). has_submit_button is
+            # unreliable on the grades overview page so we use status instead.
+            if str(t.get("status") or "").lower() != "not-submitted":
+                return "Ungraded"
+            # Not submitted and has a submission entrance
+            due_dt = parse_due_date(t.get("due_date"))
+            if due_dt and due_dt < datetime.now(tz=due_dt.tzinfo):
+                return "⚠ Unsubmitted"
+            return "Unsubmitted"
 
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
