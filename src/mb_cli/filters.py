@@ -25,37 +25,26 @@ def filter_result_by_subject(result: dict, subject: str) -> dict:
     return result
 
 
+from .task_status import (
+    GradeStatus,
+    SubmissionStatus,
+    classify_task_view,
+    get_grade_status,
+    get_submission_status,
+    is_submitted_badge,
+    is_task_completed,
+    is_task_submitted,
+    is_task_todo,
+)
+
+# Alias for backward compatibility
+is_task_unfinished = is_task_todo
+
+
 def matches_graded(task: dict, graded: bool) -> bool:
     """Return *True* if the task's graded state matches the *graded* query."""
-    has_grade = bool(task.get("grade_letter") or task.get("grade_score"))
-    return has_grade == graded
-
-
-def is_submitted_badge(badge: str) -> bool:
-    """Return True if badge indicates submission without negative qualifiers ('not', 'un')."""
-    b = str(badge or "").strip().lower()
-    return "submitted" in b and "not" not in b and "un" not in b
-
-
-def is_task_submitted(task: dict) -> bool:
-    """Return True if task has been submitted based on status, labels, or details."""
-    status = str(task.get("status") or "").lower()
-    if status == "submitted":
-        return True
-
-    labels = task.get("labels") or []
-    if any(is_submitted_badge(l) for l in labels):
-        return True
-
-    detail = task.get("detail") or {}
-    if str(detail.get("status") or "").lower() == "submitted":
-        return True
-    if any(is_submitted_badge(l) for l in (detail.get("labels") or [])):
-        return True
-    if detail.get("submission") or detail.get("submissions"):
-        return True
-
-    return False
+    is_graded = get_grade_status(task) == GradeStatus.GRADED
+    return is_graded == graded
 
 
 def matches_submitted(task: dict, submitted: bool) -> bool:
@@ -160,69 +149,6 @@ def matches_tag(task: dict, tag_query: str) -> bool:
 
     # Single tag fallback
     return any(query in lbl for lbl in label_set)
-
-
-def is_task_unfinished(task: dict) -> bool:
-    """Return True if task has_submit_button, is not submitted, has no completed passing grade (ignores 0/ score), and is not assessed yet."""
-    if is_task_submitted(task):
-        return False
-
-    detail = task.get("detail") or {}
-    labels = (task.get("labels") or []) + (detail.get("labels") or [])
-    labels_lower = [str(l).lower() for l in labels]
-
-    grade_letter = task.get("grade_letter") or detail.get("grade_letter")
-    grade_score = task.get("grade_score") or detail.get("grade_score")
-
-    is_zero_score = False
-    if grade_score and re.match(r"^\s*0\s*/", str(grade_score)):
-        is_zero_score = True
-
-    has_score = bool(grade_score and str(grade_score).strip() and str(grade_score).strip() != "-")
-    has_letter = bool(grade_letter and str(grade_letter).strip())
-    has_completed_grade = (has_score or has_letter) and not is_zero_score
-
-    is_not_assessed = "not assessed yet" in labels_lower or (
-        bool(grade_letter) and "not assessed" in str(grade_letter).lower()
-    )
-    has_submit_btn = bool(
-        task.get("has_submit_button", False)
-        or detail.get("has_submit_button", False)
-    )
-
-    return has_submit_btn and not has_completed_grade and not is_not_assessed
-
-
-def is_task_completed(task: dict) -> bool:
-    """Return True if a task is not unfinished."""
-    return not is_task_unfinished(task)
-
-
-def classify_task_view(task: dict, now_ref: datetime | None = None) -> str:
-    """Classify a task into 'upcoming', 'overdue', or 'past' based on due date and status."""
-    from .client import parse_due_date
-
-    now = now_ref or datetime.now()
-    due_date = task.get("due_date")
-    if isinstance(due_date, datetime):
-        due_dt = due_date
-    elif due_date:
-        due_dt = parse_due_date(due_date, now_ref=now)
-    else:
-        due_dt = None
-
-    if due_dt:
-        if due_dt.tzinfo is not None and now.tzinfo is None:
-            due_dt = due_dt.astimezone().replace(tzinfo=None)
-        elif due_dt.tzinfo is None and now.tzinfo is not None:
-            now = now.astimezone().replace(tzinfo=None)
-
-        if due_dt > now:
-            return "upcoming"
-
-    if is_task_unfinished(task):
-        return "overdue"
-    return "past"
 
 
 def matches_completed(task: dict, completed: bool) -> bool:

@@ -7,7 +7,13 @@ import sys
 import unicodedata
 from textwrap import indent
 
-from .filters import is_task_submitted, is_task_unfinished
+from .task_status import (
+    get_task_display_grade,
+    get_task_display_status,
+    is_task_completed,
+    is_task_submitted,
+    is_task_todo,
+)
 
 
 def get_display_width(s: str) -> int:
@@ -101,30 +107,7 @@ def render_pretty(payload: dict) -> str:
             dt = parse_due_date(t.get("due_date"))
             return dt or datetime.max
 
-        def get_grade_display(t: dict) -> str:
-            score = t.get("grade_score")
-            letter = t.get("grade_letter")
-            if score and score != "-":
-                if letter and letter != "-":
-                    if "not assessed" in letter.lower() or letter.lower() == "n/a":
-                        return score
-                    return f"{letter} ( {score} )"
-                return score
-            if letter:
-                if "not assessed" in letter.lower() or letter.lower() == "n/a":
-                    return "N/A"
-                return letter
-            # No grade yet — determine submission state.
-            # "not-submitted" status is only rendered by ManageBac when there
-            # is an active submission entrance (dropbox). has_submit_button is
-            # unreliable on the grades overview page so we use status instead.
-            if str(t.get("status") or "").lower() != "not-submitted":
-                return "Ungraded"
-            # Not submitted and has a submission entrance
-            due_dt = parse_due_date(t.get("due_date"))
-            if due_dt and due_dt < datetime.now(tz=due_dt.tzinfo):
-                return "⚠ Unsubmitted"
-            return "Unsubmitted"
+        get_grade_display = get_task_display_grade
 
         for section in ("upcoming", "past", "overdue"):
             section_tasks = tasks.get(section, [])
@@ -175,40 +158,17 @@ def render_pretty(payload: dict) -> str:
         task = data.get("task", {}) or {}
         detail = data.get("detail", {}) or {}
 
-        # Format Grade Display
-        grade_letter = task.get("grade_letter") or detail.get("grade_letter")
-        grade_score = task.get("grade_score") or detail.get("grade_score")
-        grade_display = "None"
-        if grade_letter and grade_score:
-            grade_display = f"{grade_letter} ({grade_score})"
-        elif grade_letter:
-            grade_display = grade_letter
-        elif grade_score:
-            grade_display = grade_score
-
-        # Format Status/Completion Display
         task_data = {**task}
         if detail:
             task_data["detail"] = {**(task.get("detail") or {}), **detail}
 
-        is_submitted = is_task_submitted(task_data) or (bool(detail) and is_task_submitted(detail))
-        is_unfinished = is_task_unfinished(task_data)
-        has_submit_btn = bool(task.get("has_submit_button") or detail.get("has_submit_button"))
-
-        labels = (task.get("labels") or []) + (detail.get("labels") or [])
-        labels_lower = [str(l).lower() for l in labels]
-        is_not_assessed = "not assessed yet" in labels_lower or (
-            bool(grade_letter) and "not assessed" in str(grade_letter).lower()
+        # Format Grade & Status Display via unified domain model
+        grade_display = get_task_display_grade(task_data, standalone=True)
+        status_display = get_task_display_status(task_data)
+        has_submit_btn = bool(
+            task_data.get("has_submit_button")
+            or (task_data.get("detail") or {}).get("has_submit_button")
         )
-
-        if is_unfinished:
-            status_display = "Incomplete (Todo)"
-        else:
-            status_display = "Complete"
-            if is_submitted:
-                status_display += " (Submitted)"
-            elif is_not_assessed:
-                status_display += " (Not Assessed Yet)"
 
         lines = [
             "Task detail",
