@@ -77,6 +77,15 @@ class TestMNNHubClient:
         with requests_mock.Mocker() as m:
             m.put(
                 "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/1234/read",
+                status_code=200,
+                json={"notification": {"id": 1234, "is_read": True}},
+            )
+            assert hub.mark_read(1234) is True
+
+    def test_mark_read_204(self, hub):
+        with requests_mock.Mocker() as m:
+            m.put(
+                "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/1234/read",
                 status_code=204,
             )
             assert hub.mark_read(1234) is True
@@ -93,7 +102,8 @@ class TestMNNHubClient:
         with requests_mock.Mocker() as m:
             m.put(
                 "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/1234/unread",
-                status_code=204,
+                status_code=200,
+                json={"notification": {"id": 1234, "is_read": False}},
             )
             assert hub.mark_unread(1234) is True
 
@@ -104,12 +114,22 @@ class TestMNNHubClient:
                 status_code=204,
             )
             assert hub.mark_all_read() is True
+            assert m.last_request.json() == {"ids": "all"}
+
+    def test_mark_all_read_200(self, hub):
+        with requests_mock.Mocker() as m:
+            m.put(
+                "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/mark_as_read",
+                status_code=200,
+            )
+            assert hub.mark_all_read() is True
+            assert m.last_request.json() == {"ids": "all"}
 
     def test_star(self, hub):
         with requests_mock.Mocker() as m:
             m.put(
                 "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/1234/star",
-                status_code=204,
+                status_code=200,
             )
             assert hub.star(1234) is True
 
@@ -117,7 +137,7 @@ class TestMNNHubClient:
         with requests_mock.Mocker() as m:
             m.put(
                 "https://mnn-hub.prod.faria.com/api/frontend/v2/notifications/1234/unstar",
-                status_code=204,
+                status_code=200,
             )
             assert hub.unstar(1234) is True
 

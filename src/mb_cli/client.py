@@ -310,12 +310,18 @@ class ManageBacClient:
         title = a.get_text(strip=True)
         link = a.get("href", "")
 
-        # Task ID
+        # Task ID & Class ID
         task_id = None
         if "core_tasks/" in link:
             task_id = link.split("core_tasks/")[-1].rstrip("/")
         elif link:
             task_id = link.rstrip("/").split("/")[-1]
+
+        class_id = None
+        if link:
+            m_cls = re.search(r"/student/classes/(\d+)/", link)
+            if m_cls:
+                class_id = m_cls.group(1)
 
         # Due date & class name
         desc = tile.find("div", class_="f-tile__description")
@@ -332,6 +338,10 @@ class ManageBacClient:
             class_link = desc.find("a", href=re.compile(r"/student/classes/"))
             if class_link:
                 class_name = class_link.get_text(strip=True)
+                if not class_id and class_link.get("href"):
+                    m_cls2 = re.search(r"/student/classes/(\d+)/", class_link.get("href", ""))
+                    if m_cls2:
+                        class_id = m_cls2.group(1)
 
         # Labels / badges
         labels = []
@@ -340,8 +350,11 @@ class ManageBacClient:
             if badge_text and badge_text not in labels:
                 labels.append(badge_text)
 
-        # Grade
-        grade_letter = grade_score = None
+        # Grade & Suffix Parsing
+        grade_letter = None
+        grade_score = None
+        has_submit_button = False
+
         suffix = tile.find("div", class_=re.compile(r"f-tile__suffix"))
         if suffix:
             score_div = suffix.find("div", class_=re.compile(r"f-task-score"))
@@ -349,22 +362,40 @@ class ManageBacClient:
                 h4 = score_div.find("h4")
                 p = score_div.find("p")
                 grade_letter = h4.get_text(strip=True) if h4 else None
-                grade_score = p.get_text(" ", strip=True) if p else None
+                raw_score = p.get_text(" ", strip=True) if p else None
+                # Grade score must be a genuine score/percentage/points, never a lifecycle badge
+                if raw_score and not any(k in raw_score.lower() for k in ["submitted", "pending", "task", "due", "not"]):
+                    grade_score = raw_score
             else:
-                raw = suffix.get_text(" ", strip=True)
-                if raw:
-                    grade_score = raw
+                # Suffix does not contain a grade box; extract status badges and action links
+                for el in suffix.find_all(["span", "div", "a"]):
+                    txt = el.get_text(strip=True)
+                    if txt and txt not in labels:
+                        labels.append(txt)
+                    href = str(el.get("href", "")).lower()
+                    if "dropbox" in href or any(kw in txt.lower() for kw in ("submit", "upload")):
+                        has_submit_button = True
 
-        return {
+        from .task_status import get_submission_status, SubmissionStatus
+        parsed = {
             "title": title,
             "link": f"{self.base}{link}" if link.startswith("/") else link,
             "id": task_id,
+            "task_id": task_id,
+            "class_id": class_id,
             "due_date": due_date,
             "class_name": class_name,
             "labels": labels or None,
             "grade_letter": grade_letter,
             "grade_score": grade_score,
+            "has_submit_button": has_submit_button,
         }
+        sub_status = get_submission_status(parsed)
+        parsed["submission_status"] = sub_status.value
+        parsed["status"] = "submitted" if sub_status == SubmissionStatus.SUBMITTED else "not-submitted"
+        if sub_status == SubmissionStatus.PENDING:
+            parsed["has_submit_button"] = True
+        return parsed
 
     def _parse_tasks_page(self, soup: BeautifulSoup) -> list[dict]:
         self._capture_student_name(soup)
@@ -772,7 +803,9 @@ class ManageBacClient:
                     grade_letter = grade_el.get_text(strip=True)
                 points_el = card.find("div", class_="points")
                 if points_el:
-                    grade_score = points_el.get_text(strip=True)
+                    raw_pt = points_el.get_text(strip=True)
+                    if raw_pt and not any(k in raw_pt.lower() for k in ["submitted", "pending", "task", "due", "not"]):
+                        grade_score = raw_pt
 
             main_content = soup.find("main") or soup
             assessment_div = main_content.find(class_="assessment-comments")
@@ -1366,7 +1399,9 @@ class ManageBacClient:
             # Parse points
             points_el = card.find("div", class_="points")
             if points_el:
-                detail["grade_score"] = points_el.get_text(strip=True)
+                raw_pt = points_el.get_text(strip=True)
+                if raw_pt and not any(k in raw_pt.lower() for k in ["submitted", "pending", "task", "due", "not"]):
+                    detail["grade_score"] = raw_pt
 
             # Parse submit button
             dropbox_link = soup.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))

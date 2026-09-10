@@ -148,3 +148,16 @@ cython_debug/
 !pyproject.toml
 .worktrees/
 
+# Deployments and operational notes
+docs/deployments/
+
+# Local diagnostic, data, and sensitive files
+backup.txt
+test_login.py
+fetch_attachments.py
+open_classes.py
+freqs.txt
+downloaded_attachments/
+course_aliases.json
+
+

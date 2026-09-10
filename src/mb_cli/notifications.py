@@ -72,30 +72,32 @@ class MNNHubClient:
         r = self.session.put(
             f"{self.base}/notifications/{notification_id}/read", timeout=self.timeout
         )
-        return r.status_code == 204
+        return r.status_code in (200, 204)
 
     def mark_unread(self, notification_id: int) -> bool:
         r = self.session.put(
             f"{self.base}/notifications/{notification_id}/unread",
             timeout=self.timeout,
         )
-        return r.status_code == 204
+        return r.status_code in (200, 204)
 
     def mark_all_read(self) -> bool:
         r = self.session.put(
-            f"{self.base}/notifications/mark_as_read", timeout=self.timeout
+            f"{self.base}/notifications/mark_as_read",
+            json={"ids": "all"},
+            timeout=self.timeout,
         )
-        return r.status_code == 204
+        return r.status_code in (200, 204)
 
     def star(self, notification_id: int) -> bool:
         r = self.session.put(
             f"{self.base}/notifications/{notification_id}/star", timeout=self.timeout
         )
-        return r.status_code == 204
+        return r.status_code in (200, 204)
 
     def unstar(self, notification_id: int) -> bool:
         r = self.session.put(
             f"{self.base}/notifications/{notification_id}/unstar",
             timeout=self.timeout,
         )
-        return r.status_code == 204
+        return r.status_code in (200, 204)

@@ -136,6 +136,27 @@ def test_format_event_ddl_warning():
     assert "截止: 09-04 15:30 (还剩 2小时)" in lines[2]
 
 
+def test_format_event_ddl_warning_rollover():
+    # 23 hours 59.8 minutes should roll over to 24小时, not 23小时60分
+    payload = {
+        "event": "deadline_approaching",
+        "data": {
+            "class_name": "Pre-AP Chemistry",
+            "task_title": "Homework of summer holiday",
+            "due_date": "2026-09-07T08:00:00",
+            "time_remaining_minutes": 1439.8,
+        },
+    }
+    _, message, _, _, _ = format_event_for_bark(payload)
+    assert "(还剩 24小时)" in message
+    assert "60分" not in message
+
+    # 59.8 minutes should roll over to 仅剩 1小时, not 0小时60分
+    payload["data"]["time_remaining_minutes"] = 59.8
+    _, message2, _, _, _ = format_event_for_bark(payload)
+    assert "(仅剩 1小时)" in message2
+
+
 def test_format_event_task_updated_submitted_status():
     payload = {
         "event": "task_updated",

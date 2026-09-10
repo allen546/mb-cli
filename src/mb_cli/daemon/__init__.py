@@ -36,6 +36,7 @@ from .state import DEFAULT_STATE_PATH, DaemonStateManager
 from .stealth import StealthTaskCrawler
 from .system import DEFAULT_LOG_PATH, DEFAULT_PID_PATH, ServiceManager
 from .webhook import WebhookDispatcher
+from ..task_status import GradeStatus, get_grade_status, format_grade_display
 
 log = logging.getLogger(__name__)
 
@@ -186,20 +187,28 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             )
             changed_ids.append(tid)
 
-    # Grade updates across all views
+    # Grade change: fire whenever the effective grade display changes to a real value
+    # Covers first-time grading, re-grading, N/A↔letter, and score corrections
     for tid, task in all_new.items():
         old_task = all_old.get(tid)
         if not old_task:
             continue
-        if task.get("grade_letter") and task.get("grade_letter") != old_task.get(
-            "grade_letter"
-        ):
+        old_display = format_grade_display(old_task, standalone=True)
+        new_display = format_grade_display(task, standalone=True)
+        if new_display != old_display and new_display != "None":
+            grade_letter = task.get("grade_letter") or ""
+            grade_score = task.get("grade_score") or ""
             alerts.append(
                 {
-                    "type": "new_grade",
+                    "type": "task_graded",
                     "severity": "info",
                     "task": task,
-                    "message": f"Grade posted: {task['title']} -> {task.get('grade_letter')} {task.get('grade_score', '')}",
+                    "grade_letter": grade_letter or None,
+                    "grade_score": grade_score or None,
+                    "message": (
+                        f"Grade posted: {task.get('title', tid)}"
+                        f" ({task.get('class_name', '')}) → {new_display}"
+                    ),
                 }
             )
             changed_ids.append(tid)

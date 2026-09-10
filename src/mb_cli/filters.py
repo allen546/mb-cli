@@ -33,7 +33,9 @@ from .task_status import (
     get_submission_status,
     is_submitted_badge,
     is_task_completed,
+    is_task_graded,
     is_task_submitted,
+    is_task_submitted_or_graded,
     is_task_todo,
 )
 

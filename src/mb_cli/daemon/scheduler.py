@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
 from ..client import parse_due_date
+from ..task_status import is_task_submitted, is_task_submitted_or_graded
 from .events import MBEvent, ReminderThreshold, DEFAULT_REMINDER_THRESHOLDS
 from .state import DaemonStateManager
 
@@ -22,9 +24,11 @@ class DDLScheduler:
         state_manager: DaemonStateManager,
         reminders: list[ReminderThreshold] | None = None,
         submission_checker: Callable[[str, str], bool] | None = None,
+        completion_checker: Callable[[str, str], bool] | None = None,
     ):
         self.state_manager = state_manager
-        self.submission_checker = submission_checker
+        self.submission_checker = completion_checker or submission_checker
+        self.completion_checker = self.submission_checker
         self.reminders = sorted(
             reminders or list(DEFAULT_REMINDER_THRESHOLDS),
             key=lambda r: r.threshold_minutes,
@@ -56,13 +60,21 @@ class DDLScheduler:
 
             minutes_left = (due_dt - task_now).total_seconds() / 60.0
 
-            # If deadline has passed or task is already submitted, skip reminders
+            # If deadline has passed or task is already submitted or graded, skip reminders
             if minutes_left <= 0:
                 continue
 
-            status = str(task.get("status", "not-submitted")).lower()
-            if status == "submitted":
+            if is_task_submitted_or_graded(task):
                 continue
+
+            status = str(task.get("status", "not-submitted")).lower()
+            c_id = task.get("class_id")
+            if not c_id:
+                link = task.get("link") or task.get("url") or ""
+                m_cls = re.search(r"/student/classes/(\d+)/", link)
+                if m_cls:
+                    c_id = m_cls.group(1)
+                    task["class_id"] = c_id
 
             checked_live = False
             for reminder in self.reminders:
@@ -70,16 +82,21 @@ class DDLScheduler:
                     if not self.state_manager.is_reminder_dispatched(
                         task_id, reminder.name
                     ):
-                        # Live-verify on ManageBac if student submitted in the meantime
+                        # Live-verify on ManageBac if student submitted or task was graded in the meantime
                         if not checked_live and self.submission_checker:
                             checked_live = True
-                            c_id = task.get("class_id")
                             if c_id:
                                 try:
                                     if self.submission_checker(str(c_id), str(task_id)):
-                                        task["status"] = "submitted"
-                                        self.state_manager.update_task(task)
-                                        log.info("Task %s live-verified as submitted — suppressing reminders", task_id)
+                                        updated_task = self.state_manager.get_task(task_id) or task
+                                        if not is_task_submitted_or_graded(updated_task):
+                                            task["status"] = "submitted"
+                                            self.state_manager.update_task(task)
+                                        else:
+                                            task.update(updated_task)
+                                        for th in self.reminders:
+                                            self.state_manager.mark_reminder_dispatched(task_id, th.name)
+                                        log.info("Task %s live-verified as submitted or graded — suppressing reminders", task_id)
                                         break
                                 except Exception as exc:
                                     log.debug("Live submission check error for task %s: %s", task_id, exc)
@@ -88,8 +105,8 @@ class DDLScheduler:
                                 task_id, reminder.name
                             )
                         t_id = int(task_id) if str(task_id).isdigit() else task_id
-                        raw_c_id = task.get("class_id")
-                        c_id = int(raw_c_id) if raw_c_id is not None and str(raw_c_id).isdigit() else raw_c_id
+                        raw_c_id = c_id
+                        num_c_id = int(raw_c_id) if raw_c_id is not None and str(raw_c_id).isdigit() else raw_c_id
 
                         event = MBEvent(
                             event="deadline_approaching",
@@ -99,7 +116,7 @@ class DDLScheduler:
                                 "task_id": t_id,
                                 "title": task.get("title", ""),
                                 "class_name": task.get("class_name", ""),
-                                "class_id": c_id,
+                                "class_id": num_c_id,
                                 "due_date": due_str,
                                 "due_iso": due_dt.isoformat(),
                                 "time_remaining_minutes": round(minutes_left, 1),
