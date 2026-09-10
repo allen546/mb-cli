@@ -135,7 +135,7 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
             "fake_jwt_token",
         )
 
-        now = datetime(2026, 9, 10, 8, 30, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         due_dt = now + timedelta(minutes=40)  # Due in 40m -> should trigger 1h milestone
 
         # Mock upcoming tasks
@@ -216,7 +216,8 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
         )
 
         # Initial sync
-        synced = service.sync_upcoming_tasks()
+        with patch.object(service, "_suppress_past_milestones"):
+            synced = service.sync_upcoming_tasks()
         assert synced == 2
         assert state_manager.get_task(1000099) is not None
 

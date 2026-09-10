@@ -11,6 +11,14 @@ import time
 from typing import Any
 
 from ..client import ManageBacClient, parse_due_date
+from ..task_status import (
+    GradeStatus,
+    get_grade_status,
+    format_grade_display,
+    is_task_submitted,
+    is_task_graded,
+    is_task_submitted_or_graded,
+)
 from .events import DaemonConfig, MBEvent
 from .provider import AbstractNotificationProvider, MNNHubProvider
 from .scheduler import DDLScheduler
@@ -44,7 +52,7 @@ class DaemonService:
         self.scheduler = DDLScheduler(
             self.state_manager,
             self.config.reminders,
-            submission_checker=self._check_is_task_submitted,
+            submission_checker=self._check_is_task_submitted_or_graded,
         )
         self.dispatcher = WebhookDispatcher(
             webhooks=self.config.webhooks, verify_tls=self.config.verify_tls
@@ -83,7 +91,7 @@ class DaemonService:
                 continue
             is_new = self.state_manager.get_task(task_id) is None
             self.state_manager.update_task(t)
-            if is_new:
+            if is_new or is_task_submitted_or_graded(t):
                 self._suppress_past_milestones(t)
             synced_count += 1
         self._last_full_sync = time.time()
@@ -94,10 +102,18 @@ class DaemonService:
         return synced_count
 
     def _suppress_past_milestones(self, task: dict[str, Any]) -> None:
-        """Suppress reminder milestones that were already in the past when task was first discovered."""
+        """Suppress reminder milestones that were already in the past or if task is submitted/graded."""
         task_id = str(task.get("id") or task.get("task_id") or "")
+        if not task_id:
+            return
+
+        if is_task_submitted_or_graded(task):
+            for th in self.scheduler.reminders:
+                self.state_manager.mark_reminder_dispatched(task_id, th.name)
+            return
+
         due_str = task.get("due_date")
-        if not task_id or not due_str:
+        if not due_str:
             return
         due_dt = parse_due_date(due_str)
         if not due_dt:
@@ -108,19 +124,19 @@ class DaemonService:
             if minutes_left < th.threshold_minutes:
                 self.state_manager.mark_reminder_dispatched(task_id, th.name)
 
-    def _check_is_task_submitted(self, class_id: str, task_id: str) -> bool:
-        """Targeted check: verify task page badge and submission status before firing an alarm."""
+    def _check_is_task_submitted_or_graded(self, class_id: str, task_id: str) -> bool:
+        """Targeted check: verify task page badge, submission, and grading status before firing an alarm."""
         task = self.state_manager.get_task(task_id)
-        if task and task.get("status") == "submitted":
+        if task and is_task_submitted_or_graded(task):
             return True
-        if task and not task.get("has_submit_button", True):
-            return False
 
         try:
-            # 1. Check live task page via stealth crawler (finds 'Submitted' badge)
+            # 1. Check live task page via stealth crawler (finds badges, status, grade)
             details = self.stealth_crawler.fetch_task_details(class_id, task_id)
-            if details and details.get("status") == "submitted":
-                return True
+            if details:
+                self.state_manager.update_task(details)
+                if is_task_submitted_or_graded(details):
+                    return True
         except Exception as e:
             log.debug("Live task page check error for task %s: %s", task_id, e)
 
@@ -128,11 +144,16 @@ class DaemonService:
             # 2. Check dropbox table as fallback
             submissions = self.client.get_submissions(class_id, task_id)
             if submissions and not submissions[0].get("error"):
+                if task:
+                    task["status"] = "submitted"
+                    self.state_manager.update_task(task)
                 return True
         except Exception as e:
             log.debug("Targeted dropbox check error for task %s: %s", task_id, e)
 
         return False
+
+    _check_is_task_submitted = _check_is_task_submitted_or_graded
 
     def run_check_cycle(self) -> dict[str, Any]:
         """Run a single check cycle: poll notifications, enrich tasks, evaluate deadlines, and dispatch."""
@@ -154,9 +175,11 @@ class DaemonService:
                 class_id = event.data.get("class_id")
                 task_id = event.data.get("task_id")
                 if class_id and task_id:
+                    # Snapshot old state BEFORE updating so we can detect grade transitions
+                    old_task = self.state_manager.get_task(task_id)
                     task_info = self.stealth_crawler.fetch_task_details(class_id, task_id)
                     if task_info:
-                        is_new = self.state_manager.get_task(task_id) is None
+                        is_new = old_task is None
                         self.state_manager.update_task(task_info)
                         if is_new:
                             self._suppress_past_milestones(task_info)
@@ -167,6 +190,48 @@ class DaemonService:
                             event.data["class_name"] = task_info["class_name"]
                         if task_info.get("due_date"):
                             event.data["due_date"] = task_info["due_date"]
+
+                        # Grade change: task_updated → task_graded
+                        # Fires on first grading AND re-grades/corrections when old state is known
+                        if event.event == "task_updated":
+                            if old_task is not None:
+                                old_grade_display = format_grade_display(old_task, standalone=True)
+                                new_grade_display = format_grade_display(task_info, standalone=True)
+                                if new_grade_display != old_grade_display and new_grade_display != "None":
+                                    event.event = "task_graded"
+                                    event.data["grade_letter"] = task_info.get("grade_letter")
+                                    event.data["grade_score"] = task_info.get("grade_score")
+                                    log.info(
+                                        "Grade change detected for task %s: promoting to task_graded "
+                                        "(letter=%s score=%s)",
+                                        task_id,
+                                        task_info.get("grade_letter"),
+                                        task_info.get("grade_score"),
+                                    )
+                            elif is_task_graded(task_info):
+                                event.event = "task_graded"
+                                event.data["grade_letter"] = task_info.get("grade_letter")
+                                event.data["grade_score"] = task_info.get("grade_score")
+                                log.info(
+                                    "Initial grade detected for task %s: promoting to task_graded "
+                                    "(letter=%s score=%s)",
+                                    task_id,
+                                    task_info.get("grade_letter"),
+                                    task_info.get("grade_score"),
+                                )
+
+                        # If still task_updated and task is already submitted or graded, suppress notification!
+                        if event.event == "task_updated" and (
+                            is_task_submitted_or_graded(task_info)
+                            or (old_task is not None and is_task_submitted_or_graded(old_task))
+                        ):
+                            log.info(
+                                "Suppressing task_updated notification for task %s: already submitted or graded",
+                                task_id,
+                            )
+                            if notif_id:
+                                self.state_manager.mark_notification_processed(int(notif_id))
+                            continue
 
                 # Dispatch event to webhooks
                 results = self.dispatcher.dispatch(event)

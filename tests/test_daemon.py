@@ -98,12 +98,12 @@ class TestDiffSnapshots:
         assert alerts[0]["severity"] == "medium"
 
     def test_new_grade_alert(self, make_crawl_result, sample_task):
-        old_task = {**sample_task, "grade_letter": None}
+        old_task = {**sample_task, "grade_letter": None, "grade_score": None}
         new_task = {**sample_task, "grade_letter": "A", "grade_score": "95/100"}
         old = make_crawl_result(upcoming=[old_task])
         new = make_crawl_result(upcoming=[new_task])
         alerts = _diff_snapshots_full(old, new)
-        grade_alerts = [a for a in alerts if a["type"] == "new_grade"]
+        grade_alerts = [a for a in alerts if a["type"] == "task_graded"]
         assert len(grade_alerts) == 1
         assert "A" in grade_alerts[0]["message"]
 
@@ -149,7 +149,7 @@ def test_canonical_snapshot_io_and_diff(tmp_path: Path):
     assert changed_ov == ["11"]
     assert _diff_snapshots_full(old_ov, new_ov) == alerts_ov
 
-    # diff_index detects new_grade
+    # diff_index detects task_graded
     old_gr = {"upcoming": [{"id": "12", "title": "Science", "grade_letter": None}]}
     new_gr = {
         "upcoming": [
@@ -163,7 +163,7 @@ def test_canonical_snapshot_io_and_diff(tmp_path: Path):
     }
     alerts_gr, changed_gr = diff_index(old_gr, new_gr)
     assert len(alerts_gr) == 1
-    assert alerts_gr[0]["type"] == "new_grade"
+    assert alerts_gr[0]["type"] == "task_graded"
     assert changed_gr == ["12"]
     assert _diff_snapshots_full(old_gr, new_gr) == alerts_gr
 

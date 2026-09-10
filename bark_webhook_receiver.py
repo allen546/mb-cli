@@ -297,8 +297,8 @@ def format_event_for_bark(
         mins_left = data.get("time_remaining_minutes")
         if mins_left is not None:
             mins_val = float(mins_left)
-            hrs = int(mins_val // 60)
-            mins = int(round(mins_val % 60))
+            total_mins = max(0, int(round(mins_val)))
+            hrs, mins = divmod(total_mins, 60)
             if hrs > 0 and mins > 0:
                 time_str = f"{hrs}小时{mins}分"
             elif hrs > 0:
@@ -306,7 +306,7 @@ def format_event_for_bark(
             else:
                 time_str = f"{mins}分钟"
 
-            prefix = "仅剩 " if mins_val <= 60 else "还剩 "
+            prefix = "仅剩 " if total_mins <= 60 else "还剩 "
             countdown = f"{prefix}{time_str}"
         else:
             prefix = "仅剩 " if threshold in ("15m", "1h") else "还剩 "
@@ -330,6 +330,20 @@ def format_event_for_bark(
         grade_letter = data.get("grade_letter") or ""
         grade_score = data.get("grade_score") or data.get("points") or ""
         grade_str = f"{grade_letter} {grade_score}".strip() or "已批改"
+        field3 = f"得分: {grade_str}"
+        sound = "chime"
+        priority = 7
+
+    elif event == "task_graded":
+        title = "📊 Grade Posted"
+        field1 = f"课程: {clean_cls}"
+        field2 = f"作业: {clean_tsk}"
+        grade_letter = data.get("grade_letter") or (data.get("enriched_task") or {}).get("grade_letter") or ""
+        grade_score = data.get("grade_score") or (data.get("enriched_task") or {}).get("grade_score") or ""
+        if grade_letter.upper() in ("N/A", "NOT APPLICABLE", "EXEMPT", "EXCUSED"):
+            grade_str = "N/A"
+        else:
+            grade_str = f"{grade_letter} {grade_score}".strip() or "N/A"
         field3 = f"得分: {grade_str}"
         sound = "chime"
         priority = 7
@@ -378,6 +392,31 @@ def format_event_for_bark(
     message = "\n".join(f for f in fields if f)
 
     return title, message, sound, priority, raw_url
+
+
+def is_task_event_suppressed(payload: dict[str, Any]) -> bool:
+    """Return True if the event is for a task that is already submitted or graded."""
+    event_name = payload.get("event") or payload.get("type") or ""
+    if event_name not in ("deadline_approaching", "task_updated", "updated_task"):
+        return False
+
+    data = payload.get("data") or {}
+    enriched = data.get("enriched_task") or {}
+    status = str(data.get("status") or enriched.get("status") or "").lower()
+    if status == "submitted":
+        return True
+
+    labels = [str(l).lower() for l in (data.get("labels") or []) + (enriched.get("labels") or [])]
+    if any("submitted" in l and "not" not in l and "un" not in l for l in labels):
+        return True
+
+    grade_score = str(data.get("grade_score") or enriched.get("grade_score") or "").strip()
+    grade_letter = str(data.get("grade_letter") or enriched.get("grade_letter") or "").strip()
+    _noise = ("submitted", "pending", "not-submitted", "not submitted", "not assessed yet", "not assessed", "ungraded", "-", "")
+    if (grade_score and grade_score.lower() not in _noise) or (grade_letter and grade_letter.lower() not in _noise):
+        return True
+
+    return False
 
 
 class BarkPusher:
@@ -449,6 +488,15 @@ def make_request_handler(pusher: BarkPusher, aliases_path: Path | str | None = N
 
             event_name = self.headers.get("X-MB-Event") or payload.get("event", "unknown")
             log.info("Received event: %s", event_name)
+
+            if is_task_event_suppressed(payload):
+                log.info("Suppressed event %s for task: already submitted or graded", event_name)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                resp = json.dumps({"ok": True, "suppressed": True, "event": event_name}) + "\n"
+                self.wfile.write(resp.encode("utf-8"))
+                return
 
             aliases = load_course_aliases(aliases_path)
             title, message, sound, priority, url = format_event_for_bark(payload, aliases=aliases)

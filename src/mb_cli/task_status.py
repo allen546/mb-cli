@@ -49,6 +49,11 @@ def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
     if detail.get("submission") or detail.get("submissions"):
         return SubmissionStatus.SUBMITTED
 
+    grade_score = str(task.get("grade_score") or "").strip().lower()
+    grade_letter = str(task.get("grade_letter") or "").strip().lower()
+    if is_submitted_badge(grade_score) or is_submitted_badge(grade_letter):
+        return SubmissionStatus.SUBMITTED
+
     # Check pending submission entrance
     has_submit_btn = bool(
         task.get("has_submit_button", False)
@@ -67,7 +72,11 @@ def is_task_submitted(task: dict[str, Any]) -> bool:
 
 def get_grade_status(task: dict[str, Any]) -> GradeStatus:
     """Evaluate canonical grading status of a task."""
-    detail = task.get("detail") or {}
+    detail = task.get("detail") or task.get("enriched_task") or {}
+    status = str(task.get("status") or detail.get("status") or "").strip().lower()
+    if status == "graded":
+        return GradeStatus.GRADED
+
     letter = str(task.get("grade_letter") or detail.get("grade_letter") or "").strip()
     score = str(task.get("grade_score") or detail.get("grade_score") or "").strip()
 
@@ -75,6 +84,13 @@ def get_grade_status(task: dict[str, Any]) -> GradeStatus:
         letter = ""
     if score == "-":
         score = ""
+
+    # Sanitize: non-evaluative lifecycle strings leaking into score/letter must never count as grades
+    non_grade_terms = ("submitted", "pending", "not-submitted", "not submitted", "not assessed yet", "not assessed", "ungraded")
+    if score.lower() in non_grade_terms:
+        score = ""
+    if letter.lower() in non_grade_terms:
+        letter = ""
 
     labels = (task.get("labels") or []) + (detail.get("labels") or [])
     labels_lower = [str(l).lower() for l in labels]
@@ -97,10 +113,20 @@ def get_grade_status(task: dict[str, Any]) -> GradeStatus:
     # Valid evaluated grade or score
     has_score = bool(score)
     has_letter = bool(letter and letter.lower() not in ("not assessed", "not assessed yet"))
-    if has_score or has_letter:
+    if has_score or has_letter or any(l == "graded" for l in labels_lower):
         return GradeStatus.GRADED
 
     return GradeStatus.NOT_ASSESSED
+
+
+def is_task_graded(task: dict[str, Any]) -> bool:
+    """Return True if the task has been evaluated with a grade or marked not applicable."""
+    return get_grade_status(task) in (GradeStatus.GRADED, GradeStatus.NOT_APPLICABLE)
+
+
+def is_task_submitted_or_graded(task: dict[str, Any]) -> bool:
+    """Return True if the task is submitted, graded, or marked exempt."""
+    return is_task_submitted(task) or is_task_graded(task)
 
 
 def is_task_todo(task: dict[str, Any]) -> bool:
@@ -108,7 +134,7 @@ def is_task_todo(task: dict[str, Any]) -> bool:
     if is_task_submitted(task):
         return False
     grade_status = get_grade_status(task)
-    if grade_status == GradeStatus.GRADED or grade_status == GradeStatus.NOT_APPLICABLE:
+    if grade_status in (GradeStatus.GRADED, GradeStatus.NOT_APPLICABLE):
         return False
 
     sub_status = get_submission_status(task)
@@ -116,48 +142,47 @@ def is_task_todo(task: dict[str, Any]) -> bool:
 
 
 def is_task_completed(task: dict[str, Any]) -> bool:
-    """Return True if a task is completed (either submitted or graded)."""
+    """Return True if a task is completed (submitted or evaluated with a grade)."""
     return not is_task_todo(task)
 
 
 def classify_task_view(task: dict[str, Any], now_ref: datetime | None = None) -> str:
-    """Classify a task into 'upcoming', 'overdue', or 'past' based on due date and todo status."""
+    """Classify a task into canonical timeline views: 'upcoming', 'overdue', 'past'."""
     from .client import parse_due_date
 
     now = now_ref or datetime.now()
     due_date = task.get("due_date")
-    if isinstance(due_date, datetime):
-        due_dt = due_date
-    elif due_date:
-        due_dt = parse_due_date(due_date, now_ref=now)
-    else:
-        due_dt = None
+    if not due_date:
+        return "past"
 
-    if due_dt:
-        if due_dt.tzinfo is not None and now.tzinfo is None:
-            due_dt = due_dt.astimezone().replace(tzinfo=None)
-        elif due_dt.tzinfo is None and now.tzinfo is not None:
-            now = now.astimezone().replace(tzinfo=None)
+    due_dt = parse_due_date(due_date, now_ref=now)
+    if not due_dt:
+        return "past"
 
-        if due_dt > now:
-            return "upcoming"
+    # Ensure tzinfo compatibility without mutating inputs
+    if due_dt.tzinfo is not None and now.tzinfo is None:
+        due_dt = due_dt.astimezone().replace(tzinfo=None)
+    elif due_dt.tzinfo is None and now.tzinfo is not None:
+        now = now.astimezone().replace(tzinfo=None)
 
+    if due_dt >= now:
+        return "upcoming"
+
+    # Due date is in the past: if task is incomplete/todo, it is overdue
     if is_task_todo(task):
         return "overdue"
     return "past"
 
 
-def get_task_display_grade(
+def format_grade_display(
     task: dict[str, Any],
-    now_ref: datetime | None = None,
     standalone: bool = False,
+    now_ref: datetime | None = None,
 ) -> str:
     """Format single unified grade display string.
 
     If standalone is True (e.g. mb view), returns only the grade value
     ('A', 'A (100 / 100 pts)', 'N/A', or 'None').
-    If standalone is False (mb list), returns the combined list column display
-    ('A ( 100 / 100 pts )', 'Ungraded', 'Unsubmitted', '⚠ Unsubmitted', 'N/A').
     """
     from .client import parse_due_date
 
@@ -167,6 +192,12 @@ def get_task_display_grade(
     if letter == "-":
         letter = ""
     if score == "-":
+        score = ""
+
+    non_grade_terms = ("submitted", "pending", "not-submitted", "not submitted", "not assessed yet", "not assessed", "ungraded")
+    if letter.lower() in non_grade_terms:
+        letter = ""
+    if score.lower() in non_grade_terms:
         score = ""
 
     grade_status = get_grade_status(task)
@@ -213,3 +244,7 @@ def get_task_display_status(task: dict[str, Any]) -> str:
     if get_grade_status(task) == GradeStatus.GRADED:
         return "Complete (Graded)"
     return "Complete"
+
+
+# Alias for backward compatibility
+get_task_display_grade = format_grade_display

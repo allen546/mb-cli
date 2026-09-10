@@ -206,6 +206,64 @@ class TestParseTile:
         result = client._parse_tile(tile)
         assert result["labels"] == ["Urgent", "Homework"]
 
+    def test_tile_submitted_badge_not_grade_score(self, client):
+        from bs4 import BeautifulSoup
+
+        html = """
+        <div class="f-task-tile">
+          <a class="f-tile__title-link" href="/student/classes/1000012/core_tasks/1000099">Homework of summer holiday</a>
+          <div class="f-tile__description">
+            <span>Sep 07</span>
+            <a href="/student/classes/1000012/">Pre-AP Chemistry</a>
+          </div>
+          <span class="badge">Formative</span>
+          <div class="f-tile__suffix">
+            <span class="badge">Submitted</span>
+          </div>
+        </div>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        tile = soup.find("div", class_="f-task-tile")
+        result = client._parse_tile(tile)
+
+        assert result["id"] == "1000099"
+        assert result["class_id"] == "1000012"
+        # Grade must be None, NOT "Submitted"
+        assert result["grade_score"] is None
+        assert result["grade_letter"] is None
+        # Submission status and lifecycle must be clean
+        assert result["submission_status"] == "submitted"
+        assert result["status"] == "submitted"
+        assert "Submitted" in result["labels"]
+
+    def test_tile_pending_submit_button_not_grade_score(self, client):
+        from bs4 import BeautifulSoup
+
+        html = """
+        <div class="f-task-tile">
+          <a class="f-tile__title-link" href="/student/classes/1000012/core_tasks/1000020">Poster</a>
+          <div class="f-tile__description">
+            <span>Sep 07</span>
+            <a href="/student/classes/1000012/">Pre-AP Chemistry</a>
+          </div>
+          <span class="badge">Formative</span>
+          <div class="f-tile__suffix">
+            <a class="btn btn-primary" href="/student/classes/1000012/core_tasks/1000020/dropbox">Submit Coursework</a>
+          </div>
+        </div>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        tile = soup.find("div", class_="f-task-tile")
+        result = client._parse_tile(tile)
+
+        assert result["id"] == "1000020"
+        assert result["class_id"] == "1000012"
+        assert result["grade_score"] is None
+        assert result["grade_letter"] is None
+        assert result["has_submit_button"] is True
+        assert result["submission_status"] == "pending"
+        assert result["status"] == "not-submitted"
+
 
 class TestHasNextPage:
     def test_has_next_page(self, client):

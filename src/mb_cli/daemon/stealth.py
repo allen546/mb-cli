@@ -105,6 +105,21 @@ class StealthTaskCrawler:
             except Exception:
                 pass
 
+        # Grade — mirrors get_teacher_feedback() selectors on the same page
+        grade_letter = None
+        grade_score = None
+        _noise = ("submitted", "pending", "task", "due", "not")
+        card = soup.find(class_="fusion-card-item")
+        if card:
+            grade_el = card.find(class_=re.compile(r"\bgrade\b"))
+            if grade_el:
+                grade_letter = grade_el.get_text(strip=True) or None
+            points_el = card.find("div", class_="points")
+            if points_el:
+                raw_pt = points_el.get_text(strip=True)
+                if raw_pt and not any(k in raw_pt.lower() for k in _noise):
+                    grade_score = raw_pt
+
         return {
             "id": task_id_str,
             "task_id": task_id_str,
@@ -114,5 +129,7 @@ class StealthTaskCrawler:
             "due_date": due_date_str,
             "status": status,
             "has_submit_button": has_submit_btn,
+            "grade_letter": grade_letter,
+            "grade_score": grade_score,
             "url": f"{self.client.base}{task_path}",
         }
