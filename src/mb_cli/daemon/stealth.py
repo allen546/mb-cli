@@ -57,15 +57,52 @@ class StealthTaskCrawler:
             log.warning("Failed to fetch task %s: %s", task_path, exc)
             return None
 
-        # 3. Parse task metadata
-        title_el = soup.find("h3", class_="title") or soup.find("h1") or soup.find("h2")
-        title = title_el.get_text(strip=True) if title_el else f"Task {task_id_str}"
-
-        # Class name
+        # 3. Parse class name first so title extraction can guard against matching it
         class_name = ""
         class_el = soup.find("a", href=lambda h: h and f"/student/classes/{class_id_str}" in h)
         if class_el:
             class_name = class_el.get_text(strip=True)
+        if not class_name:
+            hero_el = soup.find(class_=re.compile(r"f-hero__title"))
+            if hero_el:
+                class_name = hero_el.get_text(strip=True)
+
+        # Parse task title
+        title = ""
+        # 3a. Primary: .fusion-card-item .title (e.g. <div class="h4 title">)
+        card = soup.find(class_="fusion-card-item")
+        if card:
+            title_node = card.find(class_=re.compile(r"\btitle\b"))
+            if title_node:
+                # Remove popovers, icons, and badges before extracting text
+                for noise in title_node.find_all(class_=re.compile(r"popover|icon|badge|indicator", re.I)):
+                    noise.decompose()
+                candidate = title_node.get_text(strip=True)
+                if candidate and candidate.lower() != class_name.lower():
+                    title = candidate
+
+        # 3b. Fallback: Breadcrumb navigation (last item)
+        if not title:
+            breadcrumb = soup.find(id="breadcrumb") or soup.find(class_=re.compile(r"breadcrumb", re.I))
+            if breadcrumb:
+                items = [li.get_text(strip=True) for li in breadcrumb.find_all("li") if li.get_text(strip=True)]
+                if items:
+                    last = items[-1]
+                    if last.lower() not in ("tasks", "task details", "calendar", class_name.lower()):
+                        title = last
+
+        # 3c. Fallback: Headings with class="title", explicitly excluding hero title and modal titles
+        if not title:
+            for el in soup.find_all(["h1", "h2", "h3", "h4"], class_=re.compile(r"\btitle\b")):
+                if any(c in el.get("class", []) for c in ["f-hero__title", "modal-title", "offcanvas-title"]):
+                    continue
+                candidate = el.get_text(strip=True)
+                if candidate and candidate.lower() != class_name.lower():
+                    title = candidate
+                    break
+
+        if not title:
+            title = f"Task {task_id_str}"
 
         # Due date
         due_date_str = ""

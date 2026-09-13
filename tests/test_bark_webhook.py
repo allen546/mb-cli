@@ -305,3 +305,74 @@ def test_webhook_handler_post(tmp_path):
     assert "作业: Novel Essay" in msg
     assert "教师" not in msg
 
+
+def test_format_event_fallback_when_task_title_matches_class_name():
+    payload = {
+        "event": "new_task",
+        "data": {
+            "class_name": "AP AP—Calculus BC (Grade 10) Yellow",
+            "task_title": "AP AP—Calculus BC (Grade 10) Yellow",
+            "body_preview": "Hongjing (Sarah) Shi has just added a new Task Unit 1.3 Library of functions in AP AP—Calculus BC (Grade 10) Yellow. When: September 13, 2026 at 11:55 PM View full details",
+            "due_date": "September 13, 2026 at 11:55 PM",
+        },
+    }
+    aliases = {"AP AP—Calculus BC (Grade 10) Yellow": "AP Calc BC"}
+    title, message, _, _, _ = format_event_for_bark(payload, aliases=aliases)
+    assert title == "📝 New Task"
+    lines = message.split("\n")
+    assert lines[0] == "课程: AP Calc BC"
+    assert lines[1] == "作业: Unit 1.3 Library of functions"
+
+
+def test_format_event_task_created_with_released_grade_shows_grade_posted():
+    """If a score is released along with the task itself, show scores released banner instead of new task."""
+    payload = {
+        "event": "task_created",
+        "data": {
+            "class_name": "Chinese Language Arts I 高一语文1班 (Gr..",
+            "task_title": "语文早读小测1",
+            "due_date": "2026-09-11T10:10:00",
+            "grade_letter": "A",
+            "grade_score": "90 / 100 pts",
+            "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000013",
+        },
+    }
+    title, message, sound, priority, url = format_event_for_bark(payload)
+
+    assert title == "📊 Grade Posted"
+    assert sound == "chime"
+    assert priority == 7
+    assert url == "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000013"
+    lines = message.split("\n")
+    assert len(lines) == 3
+    assert "课程:" in lines[0]
+    assert lines[1] == "作业: 语文早读小测1"
+    assert lines[2] == "得分: A 90 / 100 pts"
+
+
+def test_format_event_task_created_with_enriched_grade_shows_grade_posted():
+    """Ensure enriched_task grades also promote task_created to Grade Posted banner."""
+    payload = {
+        "event": "task_created",
+        "data": {
+            "class_name": "Chinese Language Arts I 高一语文1班 (Gr..",
+            "task_title": "AP Chinese Language Arts I 高一语文1班 (Grade 10) E103",
+            "body_preview": "Teacher has added a new Task 语文早读小测1 in Chinese Language Arts I",
+            "due_date": "2026-09-11T10:10:00",
+            "enriched_task": {
+                "title": "语文早读小测1",
+                "grade_letter": "A",
+                "grade_score": "90 / 100 pts",
+            },
+        },
+    }
+    title, message, sound, priority, _ = format_event_for_bark(payload)
+
+    assert title == "📊 Grade Posted"
+    assert sound == "chime"
+    assert priority == 7
+    lines = message.split("\n")
+    assert lines[1] == "作业: 语文早读小测1"
+    assert lines[2] == "得分: A 90 / 100 pts"
+
+

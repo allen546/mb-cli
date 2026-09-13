@@ -30,6 +30,26 @@ def test_mnnhub_provider_normalization():
     assert event.data["url"] == "https://school.managebac.cn/student/classes/1000012/core_tasks/1000099"
 
 
+def test_mnnhub_provider_extracts_task_title_from_updated_task_body():
+    mock_client = MagicMock()
+    provider = MNNHubProvider(mock_client)
+
+    raw_item = {
+        "id": 246223933,
+        "title": "Updated Task",
+        "event_name": "task_updated",
+        "created_at": "2026-09-11T02:00:00.000Z",
+        "body": '<p style="margin:0 0 10px"><strong style="font-weight:600">A. Teacher</strong> has just updated the Task <strong style="font-weight:600">Materials Check</strong> in <a href="https://demo-school.managebac.cn/student/classes/1000010/calendar">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>.</p> <p style="margin:0 0 10px"> <strong style="font-weight:600">When:</strong> September 11, 2026 at 12:10 PM </p> <p style="margin:0 0 10px"><a href="https://demo-school.managebac.cn/student/classes/1000010/core_tasks/27564524">View full details</a></p>',
+        "body_preview": "A. Teacher has just updated the Task Materials Check in AP English Language Arts I (Hons) - Group 2 (Grade 10). When: September 11, 2026 at 12:10 PM View full details",
+        "sender": {"name": "A. Teacher"},
+        "origin": {"name": "AP English Language Arts I (Hons) - Group 2 (Grade 10)"},
+    }
+
+    event = provider.normalize_notification(raw_item)
+    assert event.event == "task_updated"
+    assert event.data["task_title"] == "Materials Check"
+
+
 def test_mobile_push_provider():
     provider = MobilePushProvider()
     provider.start()

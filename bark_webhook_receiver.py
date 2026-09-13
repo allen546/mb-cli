@@ -205,6 +205,82 @@ def format_relative_due_date(raw_due: str | None, now: datetime | None = None) -
         return f"截止: {dt.strftime('%m-%d %H:%M')}"
 
 
+def has_released_grade(data: dict[str, Any]) -> bool:
+    """Return True if grade/score has been released for the task."""
+    if not isinstance(data, dict):
+        return False
+    enriched = data.get("enriched_task") or {}
+    task_obj = data.get("task") or {}
+
+    status = str(
+        data.get("status")
+        or enriched.get("status")
+        or task_obj.get("status")
+        or ""
+    ).strip().lower()
+    if status == "graded":
+        return True
+
+    letter = str(
+        data.get("grade_letter")
+        or enriched.get("grade_letter")
+        or task_obj.get("grade_letter")
+        or ""
+    ).strip()
+    score = str(
+        data.get("grade_score")
+        or enriched.get("grade_score")
+        or task_obj.get("grade_score")
+        or data.get("points")
+        or ""
+    ).strip()
+
+    if letter == "-":
+        letter = ""
+    if score == "-":
+        score = ""
+
+    non_grade_terms = (
+        "submitted",
+        "pending",
+        "not-submitted",
+        "not submitted",
+        "not assessed yet",
+        "not assessed",
+        "ungraded",
+    )
+    if score.lower() in non_grade_terms:
+        score = ""
+    if letter.lower() in non_grade_terms:
+        letter = ""
+
+    labels = [
+        str(l).lower()
+        for l in (data.get("labels") or [])
+        + (enriched.get("labels") or [])
+        + (task_obj.get("labels") or [])
+    ]
+
+    if letter.lower() in ("n/a", "not applicable", "exempt", "excused") or any(
+        l in ("exempt", "excused") for l in labels
+    ):
+        return True
+
+    if "not assessed yet" in letter.lower() or "not assessed yet" in labels:
+        if not (score and not re.match(r"^\s*0\s*/", score)):
+            return False
+
+    if score and re.match(r"^\s*0\s*/", score) and not letter:
+        return False
+
+    has_score = bool(score)
+    has_letter = bool(letter and letter.lower() not in ("not assessed", "not assessed yet"))
+    if has_score or has_letter or any(l == "graded" for l in labels):
+        return True
+
+    return False
+
+
 def format_event_for_bark(
     payload: dict[str, Any],
     aliases: dict[str, str] | None = None,
@@ -222,6 +298,13 @@ def format_event_for_bark(
     """
     event = payload.get("event") or payload.get("type") or "notification"
     data = payload.get("data") or {}
+
+    # If a score is released along with the task itself, show scores released banner instead of new task
+    if (
+        event in ("task_created", "new_task", "task_updated", "updated_task", "new_upcoming")
+        and has_released_grade(data)
+    ):
+        event = "task_graded"
 
     raw_title = (
         data.get("task_title")
@@ -257,6 +340,52 @@ def format_event_for_bark(
 
     clean_cls = resolve_course_name(raw_class, aliases=aliases)
     clean_tsk = clean_task_title(raw_title, max_len=MAX_TASK_LEN)
+
+    raw_class_clean = re.sub(r"\(.*?(?:\)|$)", "", raw_class).strip().lower().rstrip(". ")
+    clean_tsk_clean = re.sub(r"\(.*?(?:\)|$)", "", clean_tsk).strip().lower()
+    is_class_name_match = (
+        clean_tsk.lower() == raw_class.lower()
+        or clean_tsk.lower() == clean_cls.lower()
+        or (len(raw_class_clean) >= 5 and raw_class_clean in clean_tsk_clean)
+        or (len(raw_class_clean) >= 5 and clean_tsk_clean in raw_class_clean)
+    )
+
+    # Fallback if clean_tsk matches class name or is generic
+    if (
+        is_class_name_match
+        or clean_tsk in ("未命名作业", "Updated Task", "New Task")
+    ):
+        enriched_title = (data.get("enriched_task") or {}).get("title")
+        if enriched_title and enriched_title.strip().lower() not in (raw_class.lower(), clean_cls.lower()):
+            clean_tsk = clean_task_title(enriched_title, max_len=MAX_TASK_LEN)
+        else:
+            body_str = data.get("body") or ""
+            body_prev = data.get("body_preview") or ""
+            extracted = None
+            if body_str:
+                m = re.search(
+                    r"(?:added a new|updated the|created a|added the)\s+Task\s+<strong[^>]*>(.*?)</strong>",
+                    body_str,
+                    re.IGNORECASE,
+                )
+                if not m:
+                    m = re.search(r"Task\s+<strong[^>]*>(.*?)</strong>", body_str, re.IGNORECASE)
+                if m:
+                    extracted = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+            if not extracted and body_prev:
+                m = re.search(
+                    r"(?:added a new|updated the|created a|added the)\s+Task\s+(.*?)\s+in\s+",
+                    body_prev,
+                    re.IGNORECASE,
+                )
+                if not m:
+                    m = re.search(r"Task\s+(.*?)\s+in\s+", body_prev, re.IGNORECASE)
+                if m:
+                    extracted = m.group(1).strip()
+
+            if extracted and extracted.lower() not in (raw_class.lower(), clean_cls.lower()):
+                clean_tsk = clean_task_title(extracted, max_len=MAX_TASK_LEN)
+
     due_line = format_relative_due_date(raw_due)
 
     if event in ("task_created", "new_task"):
@@ -323,27 +452,27 @@ def format_event_for_bark(
         sound = "alarm"
         priority = 10
 
-    elif event in ("assignment_graded", "grade_posted"):
+    elif event in ("assignment_graded", "grade_posted", "task_graded"):
         title = "📊 Grade Posted"
         field1 = f"课程: {clean_cls}"
         field2 = f"作业: {clean_tsk}"
-        grade_letter = data.get("grade_letter") or ""
-        grade_score = data.get("grade_score") or data.get("points") or ""
-        grade_str = f"{grade_letter} {grade_score}".strip() or "已批改"
-        field3 = f"得分: {grade_str}"
-        sound = "chime"
-        priority = 7
-
-    elif event == "task_graded":
-        title = "📊 Grade Posted"
-        field1 = f"课程: {clean_cls}"
-        field2 = f"作业: {clean_tsk}"
-        grade_letter = data.get("grade_letter") or (data.get("enriched_task") or {}).get("grade_letter") or ""
-        grade_score = data.get("grade_score") or (data.get("enriched_task") or {}).get("grade_score") or ""
-        if grade_letter.upper() in ("N/A", "NOT APPLICABLE", "EXEMPT", "EXCUSED"):
+        grade_letter = (
+            data.get("grade_letter")
+            or (data.get("enriched_task") or {}).get("grade_letter")
+            or (data.get("task") or {}).get("grade_letter")
+            or ""
+        )
+        grade_score = (
+            data.get("grade_score")
+            or (data.get("enriched_task") or {}).get("grade_score")
+            or (data.get("task") or {}).get("grade_score")
+            or data.get("points")
+            or ""
+        )
+        if str(grade_letter).upper() in ("N/A", "NOT APPLICABLE", "EXEMPT", "EXCUSED"):
             grade_str = "N/A"
         else:
-            grade_str = f"{grade_letter} {grade_score}".strip() or "N/A"
+            grade_str = f"{grade_letter} {grade_score}".strip() or "已批改"
         field3 = f"得分: {grade_str}"
         sound = "chime"
         priority = 7
@@ -402,18 +531,16 @@ def is_task_event_suppressed(payload: dict[str, Any]) -> bool:
 
     data = payload.get("data") or {}
     enriched = data.get("enriched_task") or {}
-    status = str(data.get("status") or enriched.get("status") or "").lower()
+    task_obj = data.get("task") or {}
+    status = str(data.get("status") or enriched.get("status") or task_obj.get("status") or "").lower()
     if status == "submitted":
         return True
 
-    labels = [str(l).lower() for l in (data.get("labels") or []) + (enriched.get("labels") or [])]
+    labels = [str(l).lower() for l in (data.get("labels") or []) + (enriched.get("labels") or []) + (task_obj.get("labels") or [])]
     if any("submitted" in l and "not" not in l and "un" not in l for l in labels):
         return True
 
-    grade_score = str(data.get("grade_score") or enriched.get("grade_score") or "").strip()
-    grade_letter = str(data.get("grade_letter") or enriched.get("grade_letter") or "").strip()
-    _noise = ("submitted", "pending", "not-submitted", "not submitted", "not assessed yet", "not assessed", "ungraded", "-", "")
-    if (grade_score and grade_score.lower() not in _noise) or (grade_letter and grade_letter.lower() not in _noise):
+    if has_released_grade(data):
         return True
 
     return False

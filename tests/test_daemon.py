@@ -167,6 +167,24 @@ def test_canonical_snapshot_io_and_diff(tmp_path: Path):
     assert changed_gr == ["12"]
     assert _diff_snapshots_full(old_gr, new_gr) == alerts_gr
 
+    # diff_index detects newly created task with released score -> emits task_graded, suppresses new_upcoming
+    old_new_gr = {"upcoming": []}
+    new_new_gr = {
+        "upcoming": [
+            {
+                "id": "15",
+                "title": "Chinese Quiz",
+                "grade_letter": "A",
+                "grade_score": "90 / 100 pts",
+            }
+        ]
+    }
+    alerts_ng, changed_ng = diff_index(old_new_gr, new_new_gr)
+    assert len(alerts_ng) == 1
+    assert alerts_ng[0]["type"] == "task_graded"
+    assert "Grade posted: Chinese Quiz" in alerts_ng[0]["message"]
+    assert changed_ng == ["15"]
+
     # diff_index detects new_notifications
     old_notif = {"notifications": {"unread_count": 1}}
     new_notif = {"notifications": {"unread_count": 3}}

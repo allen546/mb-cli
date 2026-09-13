@@ -180,20 +180,45 @@ class DaemonService:
                     task_info = self.stealth_crawler.fetch_task_details(class_id, task_id)
                     if task_info:
                         is_new = old_task is None
+                        cls_name = task_info.get("class_name") or event.data.get("class_name") or ""
+                        enriched_title = task_info.get("title")
+                        existing_task_title = event.data.get("task_title")
+
+                        # Guard: If enriched title matches class name, retain existing valid task title
+                        if enriched_title and cls_name and enriched_title.strip().lower() == cls_name.strip().lower():
+                            if existing_task_title and existing_task_title.strip().lower() != cls_name.strip().lower():
+                                task_info["title"] = existing_task_title
+                            elif old_task and old_task.get("title") and old_task.get("title", "").strip().lower() != cls_name.strip().lower():
+                                task_info["title"] = old_task["title"]
+
                         self.state_manager.update_task(task_info)
                         if is_new:
                             self._suppress_past_milestones(task_info)
                         event.data["enriched_task"] = task_info
-                        if task_info.get("title"):
+                        if task_info.get("title") and (not cls_name or task_info["title"].strip().lower() != cls_name.strip().lower()):
                             event.data["task_title"] = task_info["title"]
                         if task_info.get("class_name"):
                             event.data["class_name"] = task_info["class_name"]
                         if task_info.get("due_date"):
                             event.data["due_date"] = task_info["due_date"]
 
-                        # Grade change: task_updated → task_graded
-                        # Fires on first grading AND re-grades/corrections when old state is known
-                        if event.event == "task_updated":
+                        # Grade change / initial grade detection:
+                        # 1. If task is newly created and already graded, promote to task_graded
+                        #    so user sees Grade Posted instead of New Task banner.
+                        # 2. If task is updated and grade changed (or newly graded), promote to task_graded.
+                        if event.event in ("task_created", "new_task"):
+                            if is_task_graded(task_info):
+                                event.event = "task_graded"
+                                event.data["grade_letter"] = task_info.get("grade_letter")
+                                event.data["grade_score"] = task_info.get("grade_score")
+                                log.info(
+                                    "Task %s was created with released grade: promoting to task_graded "
+                                    "(letter=%s score=%s)",
+                                    task_id,
+                                    task_info.get("grade_letter"),
+                                    task_info.get("grade_score"),
+                                )
+                        elif event.event in ("task_updated", "updated_task"):
                             if old_task is not None:
                                 old_grade_display = format_grade_display(old_task, standalone=True)
                                 new_grade_display = format_grade_display(task_info, standalone=True)
@@ -213,7 +238,7 @@ class DaemonService:
                                 event.data["grade_letter"] = task_info.get("grade_letter")
                                 event.data["grade_score"] = task_info.get("grade_score")
                                 log.info(
-                                    "Initial grade detected for task %s: promoting to task_graded "
+                                    "Initial grade detected for task %s on task_updated: promoting to task_graded "
                                     "(letter=%s score=%s)",
                                     task_id,
                                     task_info.get("grade_letter"),
@@ -221,7 +246,7 @@ class DaemonService:
                                 )
 
                         # If still task_updated and task is already submitted or graded, suppress notification!
-                        if event.event == "task_updated" and (
+                        if event.event in ("task_updated", "updated_task") and (
                             is_task_submitted_or_graded(task_info)
                             or (old_task is not None and is_task_submitted_or_graded(old_task))
                         ):
@@ -232,6 +257,13 @@ class DaemonService:
                             if notif_id:
                                 self.state_manager.mark_notification_processed(int(notif_id))
                             continue
+                elif event.event in ("task_created", "new_task"):
+                    if is_task_graded(event.data):
+                        event.event = "task_graded"
+                        log.info(
+                            "Grade detected in event data for task %s: promoting to task_graded",
+                            task_id or event.data.get("title"),
+                        )
 
                 # Dispatch event to webhooks
                 results = self.dispatcher.dispatch(event)

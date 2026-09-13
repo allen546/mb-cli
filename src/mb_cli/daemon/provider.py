@@ -178,13 +178,54 @@ class MNNHubProvider(AbstractNotificationProvider):
         
         # Clean task title if prefixed with "New Task: " or "Updated Task: "
         clean_task_title = re.sub(r"^(?:New\s+Task|Updated\s+Task|Task):\s*", "", title, flags=re.I).strip()
+        class_name = (origin.get("name") if origin else "") or ""
+
+        raw_class_clean = re.sub(r"\(.*?(?:\)|$)", "", class_name).strip().lower().rstrip(". ")
+        clean_task_clean = re.sub(r"\(.*?(?:\)|$)", "", clean_task_title).strip().lower()
+        is_class_match = (
+            (class_name and clean_task_title.lower() == class_name.lower())
+            or (len(raw_class_clean) >= 5 and raw_class_clean in clean_task_clean)
+            or (len(raw_class_clean) >= 5 and clean_task_clean in raw_class_clean)
+        )
+
+        # Extract specific task title from body if title is generic or equals class name
+        is_generic = (
+            not clean_task_title
+            or clean_task_title.lower() in ("updated task", "new task", "task", "managebac notification", "notification")
+            or is_class_match
+        )
+        if is_generic:
+            extracted_title = None
+            if body_html:
+                m_body = re.search(
+                    r"(?:added a new|updated the|created a|added the)\s+Task\s+<strong[^>]*>(.*?)</strong>",
+                    body_html,
+                    re.IGNORECASE,
+                )
+                if not m_body:
+                    m_body = re.search(r"Task\s+<strong[^>]*>(.*?)</strong>", body_html, re.IGNORECASE)
+                if m_body:
+                    extracted_title = BeautifulSoup(m_body.group(1), "html.parser").get_text(strip=True)
+            if not extracted_title and body_preview:
+                m_prev = re.search(
+                    r"(?:added a new|updated the|created a|added the)\s+Task\s+(.*?)\s+in\s+",
+                    body_preview,
+                    re.IGNORECASE,
+                )
+                if not m_prev:
+                    m_prev = re.search(r"Task\s+(.*?)\s+in\s+", body_preview, re.IGNORECASE)
+                if m_prev:
+                    extracted_title = m_prev.group(1).strip()
+
+            if extracted_title and (not class_name or extracted_title.lower() != class_name.lower()):
+                clean_task_title = extracted_title
 
         event_data: dict[str, Any] = {
             "notification_id": notif_id,
             "raw_event_name": raw_event,
             "title": title,
             "task_title": clean_task_title or title,
-            "class_name": (origin.get("name") if origin else "") or "",
+            "class_name": class_name,
             "created_at": created_at,
             "body_preview": body_preview,
             "sender": sender,
