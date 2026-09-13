@@ -119,3 +119,47 @@ def test_stealth_crawler_uses_client_get_submissions():
     assert task["status"] == "submitted"
     mock_client.get_submissions.assert_called_once_with("101", "202")
 
+
+def test_stealth_crawler_parses_fusion_layout_without_matching_hero_class():
+    mock_client = MagicMock()
+    mock_client.base = "https://school.managebac.cn"
+
+    sample_html = """
+    <html>
+      <body>
+        <h1 class="line-clamp-2 f-truncate-clamp-item f-hero__title">AP English Language Arts I (Hons) - Group 2 (Grade 10)</h1>
+        <h2>Task Details</h2>
+        <nav id="breadcrumb">
+          <ul class="breadcrumb">
+            <li class="breadcrumb-item">Classes</li>
+            <li class="breadcrumb-item">AP English Language Arts I (Hons) - Group 2 (Grade 10)</li>
+            <li class="breadcrumb-item">Tasks</li>
+            <li class="breadcrumb-item">Materials Check</li>
+          </ul>
+        </nav>
+        <div class="fusion-card-item short-assignment section hstack flex-wrap">
+          <div class="hstack gap-2 me-auto flex-1">
+            <div class="flex-1">
+              <div class="h4 title">
+                Materials Check
+                <span class="fusion-popover px-1" data-bs-content-url="/student/classes/1000010/events/27564524/hint">
+                  <svg><path d="icon"></path></svg>
+                </span>
+              </div>
+            </div>
+          </div>
+          <a href="/student/classes/1000010">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>
+          <p>Due: September 11, 2026 at 12:10 PM</p>
+          <a href="/student/classes/1000010/core_tasks/27564524/dropbox">Upload</a>
+        </div>
+      </body>
+    </html>
+    """
+    mock_client._get.return_value = BeautifulSoup(sample_html, "html.parser")
+    crawler = StealthTaskCrawler(mock_client, StealthConfig(enabled=False))
+
+    task = crawler.fetch_task_details(class_id=1000010, task_id=27564524)
+    assert task is not None
+    assert task["title"] == "Materials Check"
+    assert task["class_name"] == "AP English Language Arts I (Hons) - Group 2 (Grade 10)"
+
