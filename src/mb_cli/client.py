@@ -180,6 +180,17 @@ class ManageBacClient:
         """Clear the entire response cache."""
         self.cache.invalidate()
 
+    def invalidate_task_cache(self, class_id: str, task_id: str) -> None:
+        """Invalidate cached HTTP responses for a specific task and its class."""
+        urls = [
+            f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}",
+            f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}/dropbox",
+            f"{self.base}/student/classes/{class_id}/events/{task_id}/hint",
+            f"{self.base}/student/classes/{class_id}/core_tasks",
+        ]
+        for url in urls:
+            self.cache.invalidate(url)
+
     # ── Retry logic ─────────────────────────────────────────────────────
 
     def _is_retryable(self, exc: Exception) -> bool:
@@ -580,23 +591,26 @@ class ManageBacClient:
             )
 
         task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
-        self.invalidate_cache()
+        self.invalidate_task_cache(class_id, task_id)
         return {
             "ok": True,
             "filename": p.name,
             "task_url": task_url,
         }
 
-    def get_submissions(self, class_id: str, task_id: str) -> list[dict]:
+    def get_submissions(
+        self, class_id: str, task_id: str, bypass_cache: bool = False
+    ) -> list[dict]:
         """List current submissions on a task page (or dropbox).
 
-        Each entry may include a ``feedback_url`` and/or ``preview_modal_url``
-        when the teacher has posted feedback/annotations for that submission.
+        Each entry includes ``asset_id``, ``name``, ``url``, ``uploaded_at``,
+        ``can_delete``, ``delete_url``, and optional ``feedback_url`` and/or
+        ``preview_modal_url``.
         """
         task_path = f"/student/classes/{class_id}/core_tasks/{task_id}"
         soup = None
         try:
-            soup = self._get(task_path)
+            soup = self._get(task_path, bypass_cache=bypass_cache)
         except Exception:
             pass
 
@@ -610,7 +624,7 @@ class ManageBacClient:
         if not rows:
             dropbox_path = f"{task_path}/dropbox"
             try:
-                soup_drop = self._get(dropbox_path)
+                soup_drop = self._get(dropbox_path, bypass_cache=bypass_cache)
                 drop_rows = soup_drop.find_all("tr", class_=re.compile(r"file", re.IGNORECASE))
                 if not drop_rows:
                     drop_rows = soup_drop.find_all("tr")
@@ -624,6 +638,15 @@ class ManageBacClient:
         if not rows and soup:
             rows = soup.find_all("tr")
 
+        # Extract page-level dropbox_id if form is present
+        page_dropbox_id = None
+        if soup:
+            form = soup.find("form", id=lambda x: x and x.startswith("edit_dropbox_"))
+            if form and form.get("id"):
+                m = re.search(r"edit_dropbox_(\d+)", form["id"])
+                if m:
+                    page_dropbox_id = m.group(1)
+
         submissions: list[dict] = []
         for row in rows:
             anchors = row.find_all("a", href=True)
@@ -633,18 +656,28 @@ class ManageBacClient:
             file_link = None
             feedback_href: str | None = None
             preview_modal_url: str | None = None
+            delete_href: str | None = None
+            can_delete = False
 
             for a in anchors:
                 href = a.get("href", "")
                 txt = a.get_text(strip=True).lower()
                 title_attr = (a.get("title") or "").lower()
+                classes = a.get("class", [])
+                method = a.get("data-method", "").lower()
+
+                if "btn-remove" in classes or method == "delete" or "destroy_asset" in href:
+                    can_delete = True
+                    delete_href = href
+                    continue
+
                 is_feedback = (
                     "teacher feedback" in txt
                     or "teacher feedback" in title_attr
                     or "view feedback" in txt
                     or "view feedback" in title_attr
                     or a.get("data-pdf-preview-url-value") is not None
-                    or "pdf-preview" in a.get("class", [])
+                    or "pdf-preview" in classes
                 )
 
                 if is_feedback:
@@ -656,7 +689,7 @@ class ManageBacClient:
                         "/attachments/" in href
                         or "/uploads/" in href
                         or bool(re.search(r"\.[a-z0-9]{2,8}(?:\?|$)", href, re.IGNORECASE))
-                        or "text-break" in a.get("class", [])
+                        or "text-break" in classes
                     )
                     if looks_like_file and file_link is None:
                         file_link = a
@@ -669,9 +702,46 @@ class ManageBacClient:
             if not name:
                 continue
 
+            # Extract asset_id
+            asset_id = None
+            row_id = row.get("id") or ""
+            if row_id.startswith("asset_"):
+                asset_id = row_id.split("asset_")[-1]
+            elif delete_href:
+                m_del = re.search(r"file_id=(\d+)", delete_href)
+                if m_del:
+                    asset_id = m_del.group(1)
+            if not asset_id:
+                m_s3 = re.search(r"/uploads/asset/file/(\d+)/", href)
+                if m_s3:
+                    asset_id = m_s3.group(1)
+
+            # Extract dropbox_id
+            dropbox_id = page_dropbox_id
+            if delete_href:
+                m_drop = re.search(r"/dropboxes/(\d+)/", delete_href)
+                if m_drop:
+                    dropbox_id = m_drop.group(1)
+
+            # Extract uploaded timestamp
+            uploaded_at = None
+            label_el = row.find("label")
+            if label_el:
+                label_text = label_el.get_text(separator=" ", strip=True)
+                m_time = re.search(r"Uploaded\s+(.+)$", label_text, re.IGNORECASE)
+                if m_time:
+                    uploaded_at = m_time.group(1).strip()
+                elif label_text:
+                    uploaded_at = label_text
+
             entry: dict = {
                 "name": name,
                 "url": f"{self.base}{href}" if href.startswith("/") else href,
+                "asset_id": asset_id,
+                "uploaded_at": uploaded_at,
+                "can_delete": can_delete,
+                "delete_url": delete_href,
+                "dropbox_id": dropbox_id,
             }
             if feedback_href:
                 entry["feedback_url"] = (
@@ -688,6 +758,128 @@ class ManageBacClient:
             submissions.append(entry)
 
         return submissions
+
+    def delete_submission(
+        self, class_id: str, task_id: str, asset_identifier: str
+    ) -> dict:
+        """Delete a submitted file from a task's dropbox.
+
+        Parameters
+        ----------
+        class_id : str
+            Class ID.
+        task_id : str
+            Task ID.
+        asset_identifier : str
+            Asset ID (e.g. '82189817' or 'asset_82189817') or file name.
+
+        Returns
+        -------
+        dict
+            ``{"ok": True, "asset_id": ..., "filename": ..., "status": "deleted", ...}``.
+        """
+        task_path = f"/student/classes/{class_id}/core_tasks/{task_id}"
+        soup = self._get(task_path, bypass_cache=True)
+        csrf = self._get_csrf(soup)
+        if not csrf:
+            raise RuntimeError("Could not find CSRF token on task page")
+
+        # Extract page dropbox_id if present
+        page_dropbox_id = None
+        form = soup.find("form", id=lambda x: x and x.startswith("edit_dropbox_"))
+        if form and form.get("id"):
+            m = re.search(r"edit_dropbox_(\d+)", form["id"])
+            if m:
+                page_dropbox_id = m.group(1)
+
+        if not page_dropbox_id:
+            try:
+                soup_drop = self._get(f"{task_path}/dropbox", bypass_cache=True)
+                form_drop = soup_drop.find(
+                    "form", id=lambda x: x and x.startswith("edit_dropbox_")
+                )
+                if form_drop and form_drop.get("id"):
+                    m = re.search(r"edit_dropbox_(\d+)", form_drop["id"])
+                    if m:
+                        page_dropbox_id = m.group(1)
+            except Exception:
+                pass
+
+        submissions = self.get_submissions(class_id, task_id, bypass_cache=True)
+        if not submissions:
+            raise ValueError(f"No submissions found for task {task_id}")
+
+        clean_ident = str(asset_identifier).strip()
+        clean_ident_id = (
+            clean_ident[6:] if clean_ident.lower().startswith("asset_") else clean_ident
+        )
+
+        target = None
+        for s in submissions:
+            aid = str(s.get("asset_id") or "")
+            sname = str(s.get("name") or "")
+            if aid and aid == clean_ident_id:
+                target = s
+                break
+            if sname.lower() == clean_ident.lower():
+                target = s
+                break
+
+        if not target:
+            for s in submissions:
+                sname = str(s.get("name") or "").lower()
+                if clean_ident.lower() in sname:
+                    target = s
+                    break
+
+        if not target:
+            raise ValueError(
+                f"Submission not found matching '{asset_identifier}' on task {task_id}"
+            )
+
+        asset_id = target.get("asset_id")
+        filename = target.get("name")
+        dropbox_id = target.get("dropbox_id") or page_dropbox_id
+        if not dropbox_id:
+            raise RuntimeError(f"Could not determine dropbox ID for task {task_id}")
+
+        delete_url = (
+            target.get("delete_url")
+            or f"/student/dropboxes/{dropbox_id}/destroy_asset?file_id={asset_id}"
+        )
+        full_delete_url = (
+            f"{self.base}{delete_url}" if delete_url.startswith("/") else delete_url
+        )
+
+        headers = {
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01",
+            "Referer": f"{self.base}{task_path}",
+        }
+
+        r = self.session.request("DELETE", full_delete_url, headers=headers)
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"Delete request failed with HTTP {r.status_code}: {r.text[:200]}"
+            )
+
+        # Post-delete verification: fetch task page freshly and ensure file is gone
+        self.invalidate_task_cache(class_id, task_id)
+        subs_after = self.get_submissions(class_id, task_id, bypass_cache=True)
+        if any(str(s.get("asset_id")) == str(asset_id) for s in subs_after):
+            raise RuntimeError(
+                f"File '{filename}' was not deleted: task deadline has passed or ManageBac server locked the submission."
+            )
+
+        task_url = f"{self.base}{task_path}"
+        return {
+            "ok": True,
+            "asset_id": asset_id,
+            "filename": filename,
+            "task_url": task_url,
+            "remaining_submissions": len(subs_after),
+        }
 
     def _parse_feedback_page(
         self, url: str | None, preview_modal_url: str | None = None
@@ -1558,6 +1750,51 @@ class ManageBacClient:
             "notifications": notifications,
         }
 
+    def get_class_tasks(
+        self,
+        class_id: str,
+        class_name: str | None = None,
+        bypass_cache: bool = False,
+    ) -> list[dict]:
+        """Fetch and reconstruct all tasks for a specific class."""
+        class_data = self.get_class_grades(class_id, bypass_cache=bypass_cache)
+        tasks: list[dict] = []
+        for t in class_data.get("tasks", []):
+            task_id = t.get("task_id")
+            if not task_id:
+                continue
+
+            labels = t.get("labels") or []
+            grade_letter = t.get("grade_letter")
+            due_date = t.get("due_date")
+            has_submit_btn = bool(t.get("has_submit_button", False))
+            is_submitted = is_task_submitted(t)
+
+            if is_submitted:
+                task_status = "submitted"
+            elif has_submit_btn or t.get("status") == "not-submitted":
+                task_status = "not-submitted"
+            else:
+                task_status = t.get("status")
+
+            reconstructed_task = {
+                "id": task_id,
+                "title": t.get("title"),
+                "class_name": class_name or "",
+                "due_date": due_date,
+                "link": t.get("url"),
+                "grade_letter": grade_letter,
+                "grade_score": t.get("points"),
+                "labels": labels or None,
+                "status": task_status,
+                "has_submit_button": has_submit_btn,
+            }
+
+            view = classify_task_view(reconstructed_task)
+            reconstructed_task["view"] = view
+            tasks.append(reconstructed_task)
+        return tasks
+
     def crawl_all(
         self,
         max_pages: int = 10,
@@ -1584,40 +1821,9 @@ class ManageBacClient:
             log.info("Fetching tasks from %d classes...", len(classes))
             for class_id, class_name in classes.items():
                 try:
-                    class_data = self.get_class_grades(class_id, bypass_cache=False)
-                    for t in class_data.get("tasks", []):
-                        task_id = t.get("task_id")
-                        if not task_id:
-                            continue
-
-                        labels = t.get("labels") or []
-                        grade_letter = t.get("grade_letter")
-                        due_date = t.get("due_date")
-                        has_submit_btn = bool(t.get("has_submit_button", False))
-                        is_submitted = is_task_submitted(t)
-
-                        if is_submitted:
-                            task_status = "submitted"
-                        elif has_submit_btn or t.get("status") == "not-submitted":
-                            task_status = "not-submitted"
-                        else:
-                            task_status = t.get("status")
-
-                        reconstructed_task = {
-                            "id": task_id,
-                            "title": t.get("title"),
-                            "class_name": class_name,
-                            "due_date": due_date,
-                            "link": t.get("url"),
-                            "grade_letter": grade_letter,
-                            "grade_score": t.get("points"),
-                            "labels": labels or None,
-                            "status": task_status,
-                            "has_submit_button": has_submit_btn,
-                        }
-
-                        view = classify_task_view(reconstructed_task)
-                        reconstructed_task["view"] = view
+                    tasks = self.get_class_tasks(class_id, class_name=class_name, bypass_cache=False)
+                    for reconstructed_task in tasks:
+                        view = reconstructed_task.get("view")
                         if view == "upcoming":
                             upcoming.append(reconstructed_task)
                         elif view == "overdue":

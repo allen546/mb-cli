@@ -203,6 +203,69 @@ def _reclassify_tasks(
     }
 
 
+def update_snapshot_with_class_tasks(
+    snapshot_path: Path,
+    class_tasks: list[dict],
+    client: ManageBacClient | None = None,
+) -> dict:
+    """Update snapshot in-place with freshly fetched tasks for a class.
+
+    Merges updated tasks into the snapshot and reclassifies them into
+    upcoming, past, and overdue.
+    """
+    old_snapshot = load_snapshot(snapshot_path)
+    merged_map = {}
+
+    for section in ("upcoming", "past", "overdue"):
+        for t in old_snapshot.get(section, []):
+            tid = t.get("id")
+            if tid:
+                merged_map[tid] = t
+
+    for t in class_tasks:
+        tid = t.get("id")
+        if tid:
+            old_t = merged_map.get(tid)
+            if old_t:
+                grade_changed = (
+                    old_t.get("grade_letter") != t.get("grade_letter")
+                    or old_t.get("grade_score") != t.get("grade_score")
+                )
+                old_labels = old_t.get("labels") or []
+                new_labels = t.get("labels") or []
+                labels_changed = (
+                    set(old_labels) != set(new_labels)
+                    or old_t.get("status") != t.get("status")
+                )
+                if (grade_changed or labels_changed) and client:
+                    class_link = t.get("link") or old_t.get("link") or ""
+                    cid, task_id = parse_task_url(class_link)
+                    if cid and task_id:
+                        client.invalidate_task_cache(cid, task_id)
+                        log.info("Task %s state changed; invalidated cached details.", task_id)
+
+                if not t.get("class_name") and old_t.get("class_name"):
+                    t["class_name"] = old_t["class_name"]
+            merged_map[tid] = t
+
+    reclassified = _reclassify_tasks(merged_map, now_ref=datetime.now())
+
+    base_url = old_snapshot.get("base_url")
+    if not base_url and client and hasattr(client, "base") and isinstance(client.base, str):
+        base_url = client.base
+
+    updated = {
+        "student_name": old_snapshot.get("student_name"),
+        "school": old_snapshot.get("school"),
+        "base_url": base_url,
+        "crawled_at": old_snapshot.get("crawled_at") or datetime.now().isoformat(),
+        "upcoming": reclassified["upcoming"],
+        "past": reclassified["past"],
+        "overdue": reclassified["overdue"],
+    }
+    save_snapshot(snapshot_path, updated)
+    return updated
+
 
 # ── Commands ────────────────────────────────────────────────────────────
 
@@ -605,7 +668,10 @@ def cmd_daemon_configure_channel(args) -> int:
 
 
 def _resolve_task_ids(
-    client: ManageBacClient, target: str, pages: int = 10
+    client: ManageBacClient,
+    target: str,
+    pages: int = 10,
+    snapshot_path: Path | None = None,
 ) -> tuple[str, str]:
     """Resolve a task target (id, URL, or class/task pair) to (class_id, task_id)."""
     cid, tid = parse_task_url(target)
@@ -613,6 +679,17 @@ def _resolve_task_ids(
         return cid, tid
     task_id = tid or target
 
+    # 1. Search local snapshot first for instant resolution
+    snap_path = snapshot_path or DEFAULT_SNAPSHOT_PATH
+    if snap_path.exists():
+        snapshot = load_snapshot(snap_path)
+        task = find_task_by_id(snapshot, task_id)
+        if task and task.get("link"):
+            cid, tid = parse_task_url(task["link"])
+            if cid and tid:
+                return cid, tid
+
+    # 2. Fall back to crawling
     result = client.crawl_all(max_pages=pages, fetch_details=False)
     for task in result["upcoming"] + result["past"] + result["overdue"]:
         if task.get("id") == task_id:
@@ -647,8 +724,12 @@ def cmd_submit(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
+    snapshot_path = state.config_path.parent / "snapshot.json"
+
     try:
-        class_id, task_id = _resolve_task_ids(client, target, args.pages)
+        class_id, task_id = _resolve_task_ids(
+            client, target, args.pages, snapshot_path=snapshot_path
+        )
     except CommandError as exc:
         payload = error("submit", exc.code, exc.message)
         print_payload(payload, args.output, args.format)
@@ -661,7 +742,184 @@ def cmd_submit(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
+    # Eagerly refresh the class in the snapshot so subsequent commands reflect submission immediately
+    try:
+        old_snapshot = load_snapshot(snapshot_path)
+        existing_task = find_task_by_id(old_snapshot, task_id)
+        class_name = existing_task.get("class_name") if existing_task else None
+
+        fresh_tasks = client.get_class_tasks(
+            class_id, class_name=class_name, bypass_cache=True
+        )
+        if fresh_tasks:
+            update_snapshot_with_class_tasks(
+                snapshot_path, fresh_tasks, client=client
+            )
+            log.info(
+                "Eagerly refreshed snapshot for class %s (%d tasks)",
+                class_id,
+                len(fresh_tasks),
+            )
+        elif existing_task:
+            existing_task["status"] = "submitted"
+            existing_task["has_submit_button"] = False
+            update_snapshot_with_class_tasks(
+                snapshot_path, [existing_task], client=client
+            )
+    except Exception as exc:
+        log.warning("Failed to eagerly refresh snapshot after submit: %s", exc)
+        try:
+            old_snapshot = load_snapshot(snapshot_path)
+            existing_task = find_task_by_id(old_snapshot, task_id)
+            if existing_task:
+                existing_task["status"] = "submitted"
+                existing_task["has_submit_button"] = False
+                update_snapshot_with_class_tasks(
+                    snapshot_path, [existing_task], client=client
+                )
+        except Exception:
+            pass
+
     payload = ok("submit", state.active_profile, result)
+    print_payload(payload, args.output, args.format)
+    return 0
+
+
+def cmd_submissions(args) -> int:
+    state, client, email = _build_client(args, "submissions")
+    _authenticate_client(state, client, email)
+
+    target = args.target or getattr(args, "id", None)
+    if not target:
+        payload = error(
+            "submissions", "missing_target", "Provide a task id or URL"
+        )
+        print_payload(payload, args.output, args.format)
+        return 1
+
+    snapshot_path = state.config_path.parent / "snapshot.json"
+    pages = getattr(args, "pages", 10)
+    try:
+        class_id, task_id = _resolve_task_ids(
+            client, target, pages, snapshot_path=snapshot_path
+        )
+    except CommandError as exc:
+        payload = error("submissions", exc.code, exc.message)
+        print_payload(payload, args.output, args.format)
+        return 1
+
+    task_title = None
+    try:
+        snap = load_snapshot(snapshot_path)
+        t_info = find_task_by_id(snap, task_id)
+        if t_info:
+            task_title = t_info.get("title")
+    except Exception:
+        pass
+
+    # 1. Action: --add / --submit
+    if getattr(args, "add", None):
+        file_path = args.add
+        try:
+            result = client.submit_file(class_id, task_id, file_path)
+        except (FileNotFoundError, RuntimeError) as exc:
+            payload = error("submissions", "upload_failed", str(exc))
+            print_payload(payload, args.output, args.format)
+            return 1
+
+        # Eagerly refresh snapshot
+        try:
+            old_snapshot = load_snapshot(snapshot_path)
+            existing_task = find_task_by_id(old_snapshot, task_id)
+            if existing_task:
+                existing_task["status"] = "submitted"
+                existing_task["has_submit_button"] = False
+                update_snapshot_with_class_tasks(
+                    snapshot_path, [existing_task], client=client
+                )
+        except Exception:
+            pass
+
+        data = {
+            "action": "add",
+            "task_id": task_id,
+            "filename": result.get("filename"),
+            "task_url": result.get("task_url"),
+        }
+        payload = ok("submissions", state.active_profile, data)
+        print_payload(payload, args.output, args.format)
+        return 0
+
+    # 2. Action: --delete
+    if getattr(args, "delete", None):
+        asset_ident = args.delete
+        try:
+            result = client.delete_submission(class_id, task_id, asset_ident)
+        except (ValueError, RuntimeError) as exc:
+            payload = error("submissions", "delete_failed", str(exc))
+            print_payload(payload, args.output, args.format)
+            return 1
+
+        # Refresh snapshot: if 0 submissions remaining, mark not-submitted
+        try:
+            remaining = result.get("remaining_submissions", 0)
+            if remaining == 0:
+                old_snapshot = load_snapshot(snapshot_path)
+                existing_task = find_task_by_id(old_snapshot, task_id)
+                if existing_task:
+                    existing_task["status"] = "not-submitted"
+                    existing_task["has_submit_button"] = True
+                    update_snapshot_with_class_tasks(
+                        snapshot_path, [existing_task], client=client
+                    )
+        except Exception:
+            pass
+
+        data = {
+            "action": "delete",
+            "task_id": task_id,
+            "filename": result.get("filename"),
+            "asset_id": result.get("asset_id"),
+            "remaining_submissions": result.get("remaining_submissions", 0),
+            "task_url": result.get("task_url"),
+        }
+        payload = ok("submissions", state.active_profile, data)
+        print_payload(payload, args.output, args.format)
+        return 0
+
+    # 3. Action: --check-feedback
+    if getattr(args, "check_feedback", None) is not None:
+        target_asset = (
+            args.check_feedback
+            if isinstance(args.check_feedback, str)
+            else None
+        )
+        feedback_result = client.get_teacher_feedback(class_id, task_id)
+        if target_asset:
+            matched = []
+            for item in feedback_result:
+                sub_name = item.get("submission_name", "")
+                att_names = [a.get("name", "") for a in item.get("attachments", [])]
+                if (
+                    target_asset.lower() in sub_name.lower()
+                    or any(target_asset.lower() in a.lower() for a in att_names)
+                ):
+                    matched.append(item)
+            if matched:
+                feedback_result = matched
+        payload = ok("feedback", state.active_profile, feedback_result)
+        print_payload(payload, args.output, args.format)
+        return 0
+
+    # 4. Action: --list or Default (when task ID is provided)
+    submissions = client.get_submissions(class_id, task_id)
+    data = {
+        "action": "list",
+        "task_id": task_id,
+        "task_title": task_title,
+        "submissions": submissions,
+    }
+    payload = ok("submissions", state.active_profile, data)
     print_payload(payload, args.output, args.format)
     return 0
 
@@ -973,8 +1231,11 @@ def cmd_feedback(args) -> int:
     _authenticate_client(state, client, email)
 
     target = args.task_id
+    snapshot_path = state.config_path.parent / "snapshot.json"
     try:
-        class_id, task_id = _resolve_task_ids(client, target, getattr(args, "pages", 10))
+        class_id, task_id = _resolve_task_ids(
+            client, target, getattr(args, "pages", 10), snapshot_path=snapshot_path
+        )
     except CommandError as exc:
         payload = error("feedback", exc.code, exc.message)
         print_payload(payload, args.output, args.format)
@@ -1326,6 +1587,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max pages to search when resolving by id",
     )
     submit.set_defaults(func=cmd_submit)
+
+    submissions_p = subparsers.add_parser(
+        "submissions",
+        help="Manage task submissions (list, add, delete, check-feedback)",
+    )
+    add_common_auth_flags(submissions_p)
+    submissions_p.add_argument("target", nargs="?", help="Task id or URL")
+    submissions_p.add_argument("--id", help="Task id")
+    submissions_p.add_argument(
+        "--pages",
+        type=int,
+        default=10,
+        help="Max pages to search when resolving by id",
+    )
+    submissions_p.add_argument(
+        "--list", action="store_true", help="List current submissions for the task"
+    )
+    submissions_p.add_argument(
+        "--add", "--submit", dest="add", help="Upload a file to the task dropbox"
+    )
+    submissions_p.add_argument(
+        "--delete", help="Delete a submitted file by asset ID or filename"
+    )
+    submissions_p.add_argument(
+        "--check-feedback",
+        nargs="?",
+        const=True,
+        default=None,
+        help="Check teacher feedback (optionally filter by asset ID or name)",
+    )
+    submissions_p.set_defaults(func=cmd_submissions)
 
     notifications = subparsers.add_parser(
         "notifications", help="View and manage notifications"

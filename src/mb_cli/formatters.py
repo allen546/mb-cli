@@ -216,6 +216,64 @@ def render_pretty(payload: dict) -> str:
             f"  task_url: {data.get('task_url')}"
         )
 
+    if command == "submissions":
+        action = data.get("action", "list")
+        task_id = data.get("task_id", "?")
+        task_title = data.get("task_title") or ""
+        title_part = f" ({task_title})" if task_title else ""
+
+        if action == "list":
+            submissions = data.get("submissions", [])
+            lines = [
+                f"Submissions for Task {task_id}{title_part}",
+                f"  profile: {profile}",
+                f"  total: {len(submissions)}",
+                "",
+            ]
+            if not submissions:
+                lines.append("  (no submissions found)")
+                return "\n".join(lines)
+
+            lines.append(
+                f"  {'Asset ID':<12} {'File Name':<35} {'Uploaded At':<24} {'Deletable':<10} {'Feedback'}"
+            )
+            lines.append("  " + "─" * 92)
+            for s in submissions:
+                aid = str(s.get("asset_id") or "-")
+                name = str(s.get("name") or "-")
+                if len(name) > 33:
+                    name = name[:30] + "..."
+                uploaded = str(s.get("uploaded_at") or "-")
+                deletable = "Yes" if s.get("can_delete") else "No"
+                feedback = (
+                    "Available"
+                    if s.get("feedback_url") or s.get("preview_modal_url")
+                    else "None"
+                )
+                lines.append(
+                    f"  {aid:<12} {name:<35} {uploaded:<24} {deletable:<10} {feedback}"
+                )
+            return "\n".join(lines)
+
+        if action == "delete":
+            filename = data.get("filename", "?")
+            aid = data.get("asset_id", "?")
+            remaining = data.get("remaining_submissions", 0)
+            return (
+                f"✔ Successfully deleted submission '{filename}' (Asset {aid}) from Task {task_id}\n"
+                f"  profile: {profile}\n"
+                f"  remaining submissions: {remaining}\n"
+                f"  task_url: {data.get('task_url')}"
+            )
+
+        if action == "add":
+            return (
+                f"✔ Successfully uploaded file to Task {task_id}\n"
+                f"  profile: {profile}\n"
+                f"  filename: {data.get('filename')}\n"
+                f"  task_url: {data.get('task_url')}"
+            )
+
     if command == "notifications":
         stats = data.get("stats", {})
         items = data.get("items", [])
