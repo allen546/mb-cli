@@ -36,7 +36,7 @@ from .state import DEFAULT_STATE_PATH, DaemonStateManager
 from .stealth import StealthTaskCrawler
 from .system import DEFAULT_LOG_PATH, DEFAULT_PID_PATH, ServiceManager
 from .webhook import WebhookDispatcher
-from ..task_status import GradeStatus, get_grade_status, format_grade_display
+from ..task_status import GradeStatus, get_grade_status, format_grade_display, is_task_graded
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +177,9 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
     # New upcoming tasks
     for tid, task in new_upcoming.items():
         if tid not in old_upcoming and task.get("view") != "overdue":
+            if is_task_graded(task):
+                # Score released along with task itself: suppress new_upcoming in favor of task_graded below
+                continue
             alerts.append(
                 {
                     "type": "new_upcoming",
@@ -188,14 +191,32 @@ def diff_index(old: dict, new: dict) -> tuple[list[dict], list[dict]]:
             changed_ids.append(tid)
 
     # Grade change: fire whenever the effective grade display changes to a real value
-    # Covers first-time grading, re-grading, N/A↔letter, and score corrections
+    # Covers first-time grading, re-grading, N/A↔letter, score corrections,
+    # and tasks created with a grade already released.
     for tid, task in all_new.items():
         old_task = all_old.get(tid)
-        if not old_task:
-            continue
-        old_display = format_grade_display(old_task, standalone=True)
-        new_display = format_grade_display(task, standalone=True)
-        if new_display != old_display and new_display != "None":
+        if old_task is not None:
+            old_display = format_grade_display(old_task, standalone=True)
+            new_display = format_grade_display(task, standalone=True)
+            if new_display != old_display and new_display != "None":
+                grade_letter = task.get("grade_letter") or ""
+                grade_score = task.get("grade_score") or ""
+                alerts.append(
+                    {
+                        "type": "task_graded",
+                        "severity": "info",
+                        "task": task,
+                        "grade_letter": grade_letter or None,
+                        "grade_score": grade_score or None,
+                        "message": (
+                            f"Grade posted: {task.get('title', tid)}"
+                            f" ({task.get('class_name', '')}) → {new_display}"
+                        ),
+                    }
+                )
+                changed_ids.append(tid)
+        elif is_task_graded(task):
+            new_display = format_grade_display(task, standalone=True)
             grade_letter = task.get("grade_letter") or ""
             grade_score = task.get("grade_score") or ""
             alerts.append(

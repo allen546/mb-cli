@@ -171,3 +171,49 @@ def test_daemon_service_on_start_error_resilience(tmp_path: Path):
     # service.start() should not crash even if on_start raises
     service.start()
     assert service._running is False
+
+
+def test_daemon_service_protects_task_title_against_class_name(tmp_path: Path):
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+
+    mock_event = MBEvent(
+        event="task_created",
+        data={
+            "notification_id": 8888,
+            "title": "New Task: Real Task Title",
+            "task_title": "Real Task Title",
+            "class_name": "AP Calc BC",
+            "class_id": 12345,
+            "task_id": 67890,
+        },
+    )
+    provider = MockProvider([mock_event])
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=provider,
+    )
+    # Simulate stealth crawler accidentally returning class_name as title
+    service.stealth_crawler.fetch_task_details = MagicMock(
+        return_value={
+            "id": "67890",
+            "task_id": "67890",
+            "title": "AP Calc BC",  # buggy scraper returned class name
+            "class_name": "AP Calc BC",
+            "due_date": "2026-09-15 23:59:00",
+            "status": "not-submitted",
+        }
+    )
+    dispatched: list[MBEvent] = []
+    service.dispatcher.dispatch = MagicMock(side_effect=lambda ev: dispatched.append(ev) or [{"success": True}])
+
+    res = service.run_check_cycle()
+    assert res["new_notifications"] == 1
+    assert len(dispatched) == 1
+    assert dispatched[0].data["task_title"] == "Real Task Title"
+    # Verify cached task title was preserved, not overwritten with class name
+    cached_task = state_mgr.get_task("67890")
+    assert cached_task is not None
+    assert cached_task["title"] == "Real Task Title"

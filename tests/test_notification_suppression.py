@@ -284,6 +284,52 @@ def test_service_promotes_task_graded_on_first_grade(tmp_path: Path):
     assert dispatched_events[0].data["grade_score"] == "98/100"
 
 
+def test_service_promotes_task_created_to_task_graded_when_score_released(tmp_path: Path):
+    """When a task is newly created and a score is released on the same run, promote to task_graded."""
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    state_mgr = DaemonStateManager(tmp_path / "state.json")
+
+    mock_event = MBEvent(
+        event="task_created",
+        data={
+            "notification_id": 99901,
+            "title": "New Task: 语文早读小测1",
+            "task_id": 27569975,
+            "class_id": 11512072,
+        },
+    )
+    provider = MockProvider([mock_event])
+    service = DaemonService(
+        client=mock_client,
+        state_manager=state_mgr,
+        provider=provider,
+    )
+    service.stealth_crawler.fetch_task_details = MagicMock(
+        return_value={
+            "id": "27569975",
+            "class_id": "11512072",
+            "title": "语文早读小测1",
+            "class_name": "AP Chinese Language Arts I 高一语文1班 (Grade 10) E103",
+            "due_date": "Sep 11, 10:10 AM",
+            "grade_letter": "A",
+            "grade_score": "90 / 100 pts",
+            "status": None,
+        }
+    )
+    dispatched_events = []
+    service.dispatcher.dispatch = MagicMock(side_effect=lambda ev: dispatched_events.append(ev) or [{"success": True}])
+
+    res = service.run_check_cycle()
+    assert res["new_notifications"] == 1
+    assert len(dispatched_events) == 1
+    # Must be promoted to task_graded instead of remaining task_created!
+    assert dispatched_events[0].event == "task_graded"
+    assert dispatched_events[0].data["grade_letter"] == "A"
+    assert dispatched_events[0].data["grade_score"] == "90 / 100 pts"
+
+
+
 def test_bark_receiver_suppression_logic():
     from bark_webhook_receiver import is_task_event_suppressed
 
