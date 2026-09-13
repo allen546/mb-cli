@@ -237,18 +237,28 @@ def submit_file(
         class_id, tid = cid, tid
     else:
         found = False
-        # Search upcoming and overdue first (most likely for submissions)
-        for view in ("upcoming", "overdue"):
-            tasks = client.get_tasks_by_view(view, max_pages=3)
-            for t in tasks:
-                if t.get("id") == task_id:
-                    c_id, t_id = parse_task_url(t.get("link", ""))
-                    if c_id and t_id:
-                        class_id, tid = c_id, t_id
-                        found = True
-                        break
-            if found:
-                break
+        from .__main__ import DEFAULT_SNAPSHOT_PATH, load_snapshot, find_task_by_id
+        snapshot = load_snapshot(DEFAULT_SNAPSHOT_PATH)
+        snap_task = find_task_by_id(snapshot, task_id)
+        if snap_task and snap_task.get("link"):
+            c_id, t_id = parse_task_url(snap_task["link"])
+            if c_id and t_id:
+                class_id, tid = c_id, t_id
+                found = True
+
+        if not found:
+            # Search upcoming and overdue first (most likely for submissions)
+            for view in ("upcoming", "overdue"):
+                tasks = client.get_tasks_by_view(view, max_pages=3)
+                for t in tasks:
+                    if t.get("id") == task_id:
+                        c_id, t_id = parse_task_url(t.get("link", ""))
+                        if c_id and t_id:
+                            class_id, tid = c_id, t_id
+                            found = True
+                            break
+                if found:
+                    break
 
         if not found:
             # Fall back to past tasks
@@ -266,6 +276,126 @@ def submit_file(
 
     try:
         result = client.submit_file(class_id, tid, file_path)
+        # Eagerly refresh snapshot
+        try:
+            from .__main__ import (
+                DEFAULT_SNAPSHOT_PATH,
+                load_snapshot,
+                find_task_by_id,
+                update_snapshot_with_class_tasks,
+            )
+            snapshot = load_snapshot(DEFAULT_SNAPSHOT_PATH)
+            existing = find_task_by_id(snapshot, tid)
+            class_name = existing.get("class_name") if existing else None
+            fresh_tasks = client.get_class_tasks(
+                class_id, class_name=class_name, bypass_cache=True
+            )
+            if fresh_tasks:
+                update_snapshot_with_class_tasks(
+                    DEFAULT_SNAPSHOT_PATH, fresh_tasks, client=client
+                )
+            elif existing:
+                existing["status"] = "submitted"
+                existing["has_submit_button"] = False
+                update_snapshot_with_class_tasks(
+                    DEFAULT_SNAPSHOT_PATH, [existing], client=client
+                )
+        except Exception:
+            pass
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def delete_submission(
+    task_id: str,
+    asset_id: str,
+    school: str | None = None,
+    domain: str | None = None,
+    cookie: str | None = None,
+    profile: str | None = None,
+    verify_tls: bool = True,
+    retry: int = 3,
+) -> str:
+    """Delete a submitted file from a task's dropbox on ManageBac.
+
+    The task_id can be a numeric ID or a full ManageBac URL.
+    The asset_id can be a numeric asset ID or the filename.
+
+    Args:
+        task_id: Task ID or full URL (e.g. "27254393" or "https://bj80.managebac.cn/student/classes/11460711/core_tasks/27254393")
+        asset_id: The asset ID (e.g. "82189817") or filename of the submission to delete
+        school: School subdomain
+        domain: Base domain
+        cookie: Session cookie override
+        profile: Profile name
+        verify_tls: Set to False to disable TLS certificate verification
+        retry: Max retries with exponential backoff (default 3, 0=off)
+    """
+    _state, client, _email = build_client(
+        school=school,
+        domain=domain,
+        cookie=cookie,
+        profile=profile,
+        verify=verify_tls,
+        retry=retry,
+    )
+
+    cid, tid = parse_task_url(task_id)
+    if cid and tid:
+        class_id, tid = cid, tid
+    else:
+        found = False
+        from .__main__ import DEFAULT_SNAPSHOT_PATH, load_snapshot, find_task_by_id
+
+        snapshot = load_snapshot(DEFAULT_SNAPSHOT_PATH)
+        snap_task = find_task_by_id(snapshot, task_id)
+        if snap_task and snap_task.get("link"):
+            c_id, t_id = parse_task_url(snap_task["link"])
+            if c_id and t_id:
+                class_id, tid = c_id, t_id
+                found = True
+
+        if not found:
+            for view in ("upcoming", "overdue", "past"):
+                tasks = client.get_tasks_by_view(view, max_pages=3)
+                for t in tasks:
+                    if t.get("id") == task_id:
+                        c_id, t_id = parse_task_url(t.get("link", ""))
+                        if c_id and t_id:
+                            class_id, tid = c_id, t_id
+                            found = True
+                            break
+                if found:
+                    break
+
+        if not found:
+            return json.dumps(
+                {"error": f"Could not resolve class_id for task {task_id}"}
+            )
+
+    try:
+        result = client.delete_submission(class_id, tid, asset_id)
+        try:
+            from .__main__ import (
+                DEFAULT_SNAPSHOT_PATH,
+                load_snapshot,
+                find_task_by_id,
+                update_snapshot_with_class_tasks,
+            )
+
+            if result.get("remaining_submissions", 0) == 0:
+                old_snapshot = load_snapshot(DEFAULT_SNAPSHOT_PATH)
+                existing = find_task_by_id(old_snapshot, tid)
+                if existing:
+                    existing["status"] = "not-submitted"
+                    existing["has_submit_button"] = True
+                    update_snapshot_with_class_tasks(
+                        DEFAULT_SNAPSHOT_PATH, [existing], client=client
+                    )
+        except Exception:
+            pass
         return json.dumps(result, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -316,20 +446,29 @@ def get_teacher_feedback(
     cid, tid = parse_task_url(target)
     if not (cid and tid):
         tid = target
-        result = client.crawl_all(max_pages=5, fetch_details=False)
-        for task in result["upcoming"] + result["past"] + result["overdue"]:
-            if task.get("id") == tid:
-                c_id, t_id = parse_task_url(task.get("link", ""))
-                if c_id and t_id:
-                    cid, tid = c_id, t_id
-                    break
+        from .__main__ import DEFAULT_SNAPSHOT_PATH, load_snapshot, find_task_by_id
+        snapshot = load_snapshot(DEFAULT_SNAPSHOT_PATH)
+        snap_task = find_task_by_id(snapshot, tid)
+        if snap_task and snap_task.get("link"):
+            c_id, t_id = parse_task_url(snap_task["link"])
+            if c_id and t_id:
+                cid, tid = c_id, t_id
 
-        if not cid:
-            found = client.find_task_by_id(tid, max_pages=10)
-            if found and found.get("link"):
-                c_id, t_id = parse_task_url(found["link"])
-                if c_id and t_id:
-                    cid, tid = c_id, t_id
+        if not (cid and tid):
+            result = client.crawl_all(max_pages=5, fetch_details=False)
+            for task in result["upcoming"] + result["past"] + result["overdue"]:
+                if task.get("id") == tid:
+                    c_id, t_id = parse_task_url(task.get("link", ""))
+                    if c_id and t_id:
+                        cid, tid = c_id, t_id
+                        break
+
+            if not cid:
+                found = client.find_task_by_id(tid, max_pages=10)
+                if found and found.get("link"):
+                    c_id, t_id = parse_task_url(found["link"])
+                    if c_id and t_id:
+                        cid, tid = c_id, t_id
 
     if not (cid and tid):
         return json.dumps({"error": f"Could not find or resolve task with ID: {target}"})
