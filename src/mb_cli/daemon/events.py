@@ -5,8 +5,129 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import re
 from typing import Any
 import uuid
+
+STANDARD_TASK_FIELDS: tuple[str, ...] = (
+    "task_id",
+    "class_id",
+    "class_name",
+    "title",
+    "due_date",
+    "due_iso",
+    "has_submit_button",
+    "category",
+    "status",
+    "grade_letter",
+    "grade_score",
+    "url",
+)
+
+TASK_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "task_created",
+        "task_updated",
+        "task_graded",
+        "deadline_approaching",
+    }
+)
+
+
+def standardize_task_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Ensure standard task fields are consistently present and formatted.
+
+    Standard fields:
+        task_id: int | str | None
+        class_id: int | str | None
+        class_name: str | None
+        title: str
+        due_date: str | None
+        due_iso: str | None (ISO-8601 string)
+        has_submit_button: bool
+        category: str | None
+        status: str | None
+        grade_letter: str | None
+        grade_score: str | None
+        url: str | None
+    """
+    payload = dict(data)
+
+    # 1. task_id
+    raw_tid = payload.get("task_id")
+    if raw_tid is None:
+        raw_tid = payload.get("id")
+    if raw_tid is not None and str(raw_tid).isdigit():
+        payload["task_id"] = int(raw_tid)
+    else:
+        payload["task_id"] = raw_tid
+
+    # 2. class_id
+    raw_cid = payload.get("class_id")
+    if raw_cid is not None and str(raw_cid).isdigit():
+        payload["class_id"] = int(raw_cid)
+    else:
+        payload["class_id"] = raw_cid
+
+    # 3. class_name
+    cls_name = payload.get("class_name")
+    payload["class_name"] = str(cls_name) if cls_name is not None else None
+
+    # 4. title
+    title = payload.get("title") or payload.get("task_title") or ""
+    if isinstance(title, str):
+        cleaned_title = re.sub(
+            r"^(?:New\s+Task|Updated\s+Task|Task):\s*", "", title, flags=re.IGNORECASE
+        ).strip()
+        payload["title"] = cleaned_title or title
+    else:
+        payload["title"] = str(title)
+
+    # 5. due_date
+    due_date = payload.get("due_date")
+    payload["due_date"] = str(due_date) if due_date is not None else None
+
+    # 6. due_iso
+    due_iso = payload.get("due_iso")
+    if not due_iso and due_date:
+        try:
+            from ..client import parse_due_date
+
+            dt = parse_due_date(str(due_date))
+            if dt is not None:
+                due_iso = dt.isoformat()
+        except Exception:
+            due_iso = None
+    payload["due_iso"] = str(due_iso) if due_iso else None
+
+    # 7. has_submit_button
+    payload["has_submit_button"] = bool(payload.get("has_submit_button", False))
+
+    # 8. category
+    cat = payload.get("category")
+    if not cat:
+        labels = payload.get("labels")
+        if isinstance(labels, list) and labels:
+            cat = labels[0]
+    payload["category"] = str(cat) if cat is not None else None
+
+    # 9. status
+    status = payload.get("status")
+    payload["status"] = str(status) if status is not None else None
+
+    # 10. grade_letter
+    gl = payload.get("grade_letter")
+    payload["grade_letter"] = str(gl) if gl is not None else None
+
+    # 11. grade_score
+    gs = payload.get("grade_score")
+    payload["grade_score"] = str(gs) if gs is not None else None
+
+    # 12. url
+    url = payload.get("url") or payload.get("link")
+    payload["url"] = str(url) if url is not None else None
+
+    return payload
 
 
 @dataclass
@@ -34,6 +155,83 @@ class MBEvent:
         if indent is None:
             return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
+
+    def validate(self, strict: bool = True) -> bool:
+        """Validate event envelope and task schema compliance."""
+        errors: list[str] = []
+        if not self.event or not isinstance(self.event, str):
+            errors.append("Field 'event' must be a non-empty string.")
+        if not isinstance(self.data, dict):
+            errors.append("Field 'data' must be a dictionary.")
+        if not self.event_id or not isinstance(self.event_id, str):
+            errors.append("Field 'event_id' must be a non-empty string.")
+        if not self.timestamp or not isinstance(self.timestamp, str):
+            errors.append("Field 'timestamp' must be a non-empty string.")
+        if not self.version or not isinstance(self.version, str):
+            errors.append("Field 'version' must be a non-empty string.")
+
+        if self.event in TASK_EVENT_TYPES and isinstance(self.data, dict):
+            for f in STANDARD_TASK_FIELDS:
+                if f not in self.data:
+                    errors.append(f"Missing standard task field: '{f}'")
+            if "has_submit_button" in self.data and not isinstance(
+                self.data["has_submit_button"], bool
+            ):
+                errors.append("Field 'has_submit_button' must be a boolean.")
+
+        if errors:
+            if strict:
+                raise ValueError("; ".join(errors))
+            return False
+        return True
+
+    @classmethod
+    def from_task(
+        cls,
+        event: str,
+        task: dict[str, Any],
+        event_id: str | None = None,
+        timestamp: str | None = None,
+        version: str = "1.0",
+        **extra_fields: Any,
+    ) -> MBEvent:
+        """Factory constructing a standardized MBEvent from task data."""
+        payload = standardize_task_payload(task)
+        if extra_fields:
+            payload.update(extra_fields)
+        kwargs: dict[str, Any] = {
+            "event": event,
+            "data": payload,
+            "version": version,
+        }
+        if event_id is not None:
+            kwargs["event_id"] = event_id
+        if timestamp is not None:
+            kwargs["timestamp"] = timestamp
+        return cls(**kwargs)
+
+    @classmethod
+    def create(
+        cls,
+        event: str,
+        data: dict[str, Any],
+        event_id: str | None = None,
+        timestamp: str | None = None,
+        version: str = "1.0",
+        standardize: bool = False,
+    ) -> MBEvent:
+        """Factory creating an MBEvent envelope with optional payload standardization."""
+        payload = standardize_task_payload(data) if standardize else data
+        kwargs: dict[str, Any] = {
+            "event": event,
+            "data": payload,
+            "version": version,
+        }
+        if event_id is not None:
+            kwargs["event_id"] = event_id
+        if timestamp is not None:
+            kwargs["timestamp"] = timestamp
+        return cls(**kwargs)
 
 
 @dataclass
