@@ -290,8 +290,10 @@ class DaemonService:
                     elif event.data.get("task_title"):
                         combined["title"] = event.data["task_title"]
 
-                    if not combined.get("url") and class_id and task_id:
-                        combined["url"] = f"{self.client.base}/student/classes/{class_id}/core_tasks/{task_id}"
+                    c_id = combined.get("class_id") or class_id
+                    t_id = combined.get("task_id") or combined.get("id") or task_id
+                    if not combined.get("url") and c_id and t_id:
+                        combined["url"] = f"{self.client.base}/student/classes/{c_id}/core_tasks/{t_id}"
 
                     event.data = standardize_task_payload(combined)
                     event.data["task_title"] = event.data["title"]
