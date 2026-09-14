@@ -72,6 +72,11 @@ class TestManageBacClientInit:
             assert loaded == mock_client
             mock_build.assert_called_once_with(profile="testprofile")
 
+            mock_build.reset_mock()
+            loaded_default = ManageBacClient.from_config()
+            assert loaded_default == mock_client
+            mock_build.assert_called_once_with(profile=None)
+
     def test_headers_set(self, client):
         for key, val in HEADERS.items():
             assert client.session.headers.get(key) == val
