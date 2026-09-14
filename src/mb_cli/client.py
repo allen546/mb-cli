@@ -132,6 +132,18 @@ class ManageBacClient:
         self._url_locks: dict[str, threading.Lock] = {}
         self._url_locks_mutex = threading.Lock()
 
+    @property
+    def subdomain(self) -> str:
+        """Alias for school subdomain."""
+        return self.school
+
+    @classmethod
+    def from_config(cls, profile: str | None = None) -> ManageBacClient:
+        """Construct an authenticated ManageBacClient from local config/credentials."""
+        from .auth import build_client
+        _state, client, _email = build_client(profile=profile)
+        return client
+
     # ── Auth ────────────────────────────────────────────────────────────
 
     def login(self, email: str, password: str, remember: bool = True) -> bool:

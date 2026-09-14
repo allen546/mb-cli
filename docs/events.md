@@ -62,7 +62,7 @@ Downstream systems can consume ManageBac events via two primary channels:
   ```
   Or daemonized in the background:
   ```bash
-  mb daemon start --webhook-url http://127.0.0.1:8000/webhook
+  mb daemon start -b --webhook-url http://127.0.0.1:8000/webhook
   ```
 - **HTTP Request Specification**:
   - Method: `POST`
@@ -682,7 +682,7 @@ class TodoistSyncService:
 
 
 async def main() -> None:
-    # 1. Initialize client using saved credentials (~/.config/managebac/credentials.json)
+    # 1. Initialize client using saved credentials (~/.config/mb-crawler/)
     client = ManageBacClient.from_config()
     logger.info("Connected to ManageBac for student: %s (%s)", client.student_name, client.subdomain)
 
