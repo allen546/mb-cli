@@ -331,6 +331,7 @@ class DaemonService:
             "new_notifications": new_notifications_count,
             "reminders_dispatched": reminders_dispatched_count,
             "total_dispatched": len(dispatched_events),
+            "dispatched_events": dispatched_events,
         }
 
     def run_forever(self) -> None:
