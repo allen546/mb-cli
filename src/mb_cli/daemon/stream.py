@@ -105,6 +105,7 @@ class ManageBacDaemon:
                 if item is _STOP_SENTINEL:
                     self._queue.task_done()
                     break
+                assert isinstance(item, MBEvent)
                 yield item
                 self._queue.task_done()
         finally:
