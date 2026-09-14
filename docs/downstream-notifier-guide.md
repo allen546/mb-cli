@@ -199,7 +199,7 @@ mb daemon run --webhook-url http://127.0.0.1:42617/webhook
 
 To test the channel immediately, trigger a test ping:
 ```bash
-mb daemon test-webhook --webhook-url http://127.0.0.1:42617/webhook
+mb daemon test-webhook http://127.0.0.1:42617/webhook
 ```
 
 ---
@@ -268,9 +268,7 @@ Wants=mb-webhook-bark.service
 Type=simple
 ExecStart=/opt/mb-tools/.venv/bin/mb daemon run \
     --webhook-url http://127.0.0.1:42617/webhook \
-    --interval 1800 \
-    --active-hours-start 7 \
-    --active-hours-end 23
+    --poll-interval 1800
 Restart=always
 RestartSec=10
 StandardOutput=journal

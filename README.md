@@ -12,11 +12,11 @@ Supports both international (`managebac.com`) and China (`managebac.cn`) instanc
    - Authenticate seamlessly via credentials or saved session cookies (`ManageBacClient.from_config()`).
    - Programmatic access to tasks, submissions, grades, calendar feeds, weekly timetables, and MNN notifications.
    - Clean separation of concerns: produces pure, typed data with zero vendor-specific assumptions or hardcoded push rules.
-2. **Interactive CLI** (`mb auth`, `mb tasks`, `mb view`, `mb grades`, `mb submit`, `mb daemon`):
+2. **Interactive CLI** (`mb login`, `mb list`, `mb view`, `mb grades`, `mb submit`, `mb daemon`):
    - Fast terminal workflows for everyday student tasks: listing assignments, viewing details, uploading files, inspecting grades, checking schedules, and managing background daemons.
    - Smart output formatting: human-friendly colored tables on interactive TTYs, structured JSON when piped to files or other tools (`jq`).
 3. **MCP Server for AI Coding Assistants**:
-   - Built-in Model Context Protocol server (`mb-mcp`) with 12 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
+   - Built-in Model Context Protocol server (`mb-mcp`) with 14 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
 4. **Real-Time Event Streaming & Webhook Engine**:
    - In-process async event streaming (`async for event in daemon.stream()`) for Python bots and background tasks.
    - Background daemon service (`mb daemon run --webhook-url ...`) dispatching typed `MBEvent` payloads to HTTP webhooks with HMAC-SHA256 signatures, exponential backoff retries, stealth jitter, and active-hours scheduling.
@@ -70,16 +70,17 @@ client = ManageBacClient.from_config()
 
 # 1. Fetch upcoming tasks and coursework
 tasks_data = client.crawl_all(fetch_details=True)
-for task in tasks_data.get("tasks", []):
+for task in tasks_data.get("upcoming", []):
     print(f"[{task.get('due_date')}] {task.get('title')} ({task.get('class_name')})")
 
 # 2. View one task in detail
-task_detail = client.get_task(class_id="1000024", task_id="1000025")
-print(task_detail.get("task", {}).get("description"))
+task_detail = client.get_task_detail("/student/classes/1000024/core_tasks/1000025")
+if task_detail:
+    print(task_detail.get("description"))
 
 # 3. Check class grades and computed expected scores
 grades = client.get_class_grades(class_id="1000023")
-print(f"Class: {grades.get('class_name')}, Expected Grade: {grades.get('expected_grade')}")
+print(f"Expected Grade: {grades.get('expected_grade')}")
 
 # 4. View calendar events
 events = client.get_calendar_events(start="2026-09-01", end="2026-09-07")
@@ -92,7 +93,6 @@ client.submit_file(
     class_id="1000023",
     task_id="1000026",
     file_path="homework.pdf",
-    comments="Completed assignment"
 )
 ```
 
@@ -152,7 +152,7 @@ mb daemon configure-webhook http://127.0.0.1:8000/webhook
 mb daemon start --interval 1800 --active-hours-start 7 --active-hours-end 23
 
 # Test the webhook connection with a mock ping
-mb daemon test-webhook --webhook-url http://127.0.0.1:8000/webhook
+mb daemon test-webhook http://127.0.0.1:8000/webhook
 ```
 
 ### Webhook HTTP Contract
@@ -246,7 +246,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-The MCP server exposes 12 tools: `list_tasks`, `view_task`, `submit_file`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`, and `count_grade_frequencies`.
+The MCP server exposes 14 tools: `list_tasks`, `view_task`, `submit_file`, `delete_submission`, `get_teacher_feedback`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`, and `count_grade_frequencies`.
 
 ---
 
