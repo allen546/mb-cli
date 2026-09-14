@@ -59,6 +59,19 @@ class TestManageBacClientInit:
         assert c.domain == "managebac.com"
         assert c.base == "https://bj80.managebac.com"
 
+    def test_subdomain_property(self):
+        c = ManageBacClient("bj80")
+        assert c.subdomain == "bj80"
+
+    def test_from_config_classmethod(self):
+        from unittest.mock import patch
+        with patch("mb_cli.auth.build_client") as mock_build:
+            mock_client = ManageBacClient("configschool")
+            mock_build.return_value = (None, mock_client, "user@school.org")
+            loaded = ManageBacClient.from_config(profile="testprofile")
+            assert loaded == mock_client
+            mock_build.assert_called_once_with(profile="testprofile")
+
     def test_headers_set(self, client):
         for key, val in HEADERS.items():
             assert client.session.headers.get(key) == val
