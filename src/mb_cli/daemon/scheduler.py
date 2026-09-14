@@ -10,7 +10,12 @@ from typing import Any
 
 from ..client import parse_due_date
 from ..task_status import is_task_submitted, is_task_submitted_or_graded
-from .events import MBEvent, ReminderThreshold, DEFAULT_REMINDER_THRESHOLDS
+from .events import (
+    DEFAULT_REMINDER_THRESHOLDS,
+    MBEvent,
+    ReminderThreshold,
+    standardize_task_payload,
+)
 from .state import DaemonStateManager
 
 log = logging.getLogger(__name__)
@@ -108,25 +113,42 @@ class DDLScheduler:
                         raw_c_id = c_id
                         num_c_id = int(raw_c_id) if raw_c_id is not None and str(raw_c_id).isdigit() else raw_c_id
 
+                        task_url = task.get("url") or task.get("link")
+                        if not task_url and num_c_id and t_id:
+                            task_url = f"/student/classes/{num_c_id}/core_tasks/{t_id}"
+
+                        cat = task.get("category")
+                        if not cat:
+                            labels = task.get("labels")
+                            if isinstance(labels, list) and labels:
+                                cat = labels[0]
+
+                        event_data = standardize_task_payload(
+                            {
+                                "task_id": t_id,
+                                "class_id": num_c_id,
+                                "class_name": task.get("class_name"),
+                                "title": task.get("title", ""),
+                                "due_date": due_str,
+                                "due_iso": due_dt.isoformat(),
+                                "has_submit_button": task.get(
+                                    "has_submit_button", False
+                                ),
+                                "category": cat,
+                                "status": status,
+                                "grade_letter": task.get("grade_letter"),
+                                "grade_score": task.get("grade_score"),
+                                "url": task_url,
+                                "time_remaining_minutes": round(minutes_left, 1),
+                                "reminder_threshold": reminder.name,
+                            }
+                        )
+
                         event = MBEvent(
                             event="deadline_approaching",
                             event_id=f"evt_{task_id}_reminder_{reminder.name}",
                             timestamp=task_now.isoformat(),
-                            data={
-                                "task_id": t_id,
-                                "title": task.get("title", ""),
-                                "class_name": task.get("class_name", ""),
-                                "class_id": num_c_id,
-                                "due_date": due_str,
-                                "due_iso": due_dt.isoformat(),
-                                "time_remaining_minutes": round(minutes_left, 1),
-                                "reminder_threshold": reminder.name,
-                                "status": status,
-                                "has_submit_button": task.get(
-                                    "has_submit_button", False
-                                ),
-                                "url": task.get("url") or task.get("link") or "",
-                            },
+                            data=event_data,
                         )
                         events.append(event)
                         log.info(

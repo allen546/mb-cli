@@ -122,3 +122,59 @@ def test_scheduler_extracts_class_id_from_link_for_live_check(tmp_path: Path):
     assert checked_calls == [("11516095", "27538237")]
     assert mgr.get_task("27538237")["status"] == "submitted"
 
+
+def test_scheduler_emits_standardized_deadline_approaching_payload(tmp_path: Path):
+    from mb_cli.daemon.events import STANDARD_TASK_FIELDS
+
+    state_file = tmp_path / "state.json"
+    mgr = DaemonStateManager(state_file)
+
+    now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+    due_dt = now + timedelta(minutes=45)
+    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    mgr.update_task(
+        {
+            "id": "27535638",
+            "task_id": "27535638",
+            "class_id": "11511739",
+            "class_name": "English Language Arts I (Hons)",
+            "title": "Vocab Quiz 2",
+            "due_date": due_str,
+            "status": "not-submitted",
+            "has_submit_button": False,
+            "labels": ["Quiz"],
+            "url": "https://example.managebac.cn/student/classes/11511739/core_tasks/27535638",
+        }
+    )
+
+    reminders = [
+        ReminderThreshold(threshold_minutes=60, name="1h"),
+    ]
+    scheduler = DDLScheduler(mgr, reminders)
+    events = scheduler.evaluate_deadlines(now=now)
+
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.event == "deadline_approaching"
+    assert ev.validate() is True
+
+    for f in STANDARD_TASK_FIELDS:
+        assert f in ev.data, f"Missing standard field: {f}"
+
+    assert ev.data["task_id"] == 27535638
+    assert ev.data["class_id"] == 11511739
+    assert ev.data["class_name"] == "English Language Arts I (Hons)"
+    assert ev.data["title"] == "Vocab Quiz 2"
+    assert ev.data["due_date"] == due_str
+    assert ev.data["due_iso"] is not None
+    assert ev.data["has_submit_button"] is False
+    assert ev.data["category"] == "Quiz"
+    assert ev.data["status"] == "not-submitted"
+    assert ev.data["grade_letter"] is None
+    assert ev.data["grade_score"] is None
+    assert ev.data["url"] == "https://example.managebac.cn/student/classes/11511739/core_tasks/27535638"
+    assert ev.data["time_remaining_minutes"] == 45.0
+    assert ev.data["reminder_threshold"] == "1h"
+
+

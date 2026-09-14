@@ -1,14 +1,174 @@
-"""Tests for daemon event schemas and configurations."""
+"""Tests for daemon event schemas, standard MBEvent payloads, and configurations."""
 
 import json
+import pytest
 from mb_cli.daemon.events import (
     DEFAULT_REMINDER_THRESHOLDS,
+    STANDARD_TASK_FIELDS,
     DaemonConfig,
     MBEvent,
     ReminderThreshold,
     StealthConfig,
     WebhookConfig,
+    standardize_task_payload,
 )
+
+
+def test_standard_mbevent_serialization():
+    """Verify that MBEvent(event="task_graded", data={...}) serializes all standard fields cleanly."""
+    data_payload = {
+        "task_id": 12345,
+        "class_id": 67890,
+        "class_name": "AP Physics 1",
+        "title": "Lab Practical",
+        "due_date": "2026-09-20 12:00:00",
+        "due_iso": "2026-09-20T12:00:00+08:00",
+        "has_submit_button": False,
+        "category": "Quiz",
+        "status": "not-submitted",
+        "grade_letter": "A",
+        "grade_score": "95 / 100",
+        "url": "https://example.managebac.cn/student/classes/67890/core_tasks/12345",
+    }
+    event = MBEvent(
+        event="task_graded",
+        data=data_payload,
+    )
+    d = event.to_dict()
+
+    # Verify envelope fields
+    assert d["event"] == "task_graded"
+    assert d["version"] == "1.0"
+    assert "timestamp" in d
+    assert "event_id" in d
+    assert d["event_id"].startswith("evt_")
+    assert "data" in d
+
+    # Verify all standard fields in data are serialized cleanly
+    for field_name in STANDARD_TASK_FIELDS:
+        assert field_name in d["data"], f"Missing field: {field_name}"
+
+    assert d["data"]["task_id"] == 12345
+    assert d["data"]["class_id"] == 67890
+    assert d["data"]["class_name"] == "AP Physics 1"
+    assert d["data"]["title"] == "Lab Practical"
+    assert d["data"]["due_date"] == "2026-09-20 12:00:00"
+    assert d["data"]["due_iso"] == "2026-09-20T12:00:00+08:00"
+    assert d["data"]["has_submit_button"] is False
+    assert d["data"]["category"] == "Quiz"
+    assert d["data"]["status"] == "not-submitted"
+    assert d["data"]["grade_letter"] == "A"
+    assert d["data"]["grade_score"] == "95 / 100"
+    assert d["data"]["url"] == "https://example.managebac.cn/student/classes/67890/core_tasks/12345"
+
+    # Verify to_json() behaves properly
+    json_str = event.to_json()
+    loaded = json.loads(json_str)
+    assert loaded == d
+    assert loaded["event"] == "task_graded"
+    assert loaded["data"]["task_id"] == 12345
+
+    # Verify indented to_json()
+    json_indented = event.to_json(indent=2)
+    assert "\n" in json_indented
+    assert json.loads(json_indented) == d
+
+
+def test_standardize_task_payload():
+    """Verify standardization of sparse or raw task data into standard schema."""
+    raw = {
+        "id": "27535638",
+        "class_id": "11511739",
+        "title": "New Task: Vocab Quiz 2",
+        "due_date": "2026-09-15 10:00:00",
+        "has_submit_button": 0,
+        "labels": ["Quiz", "Formative"],
+        "link": "https://example.managebac.cn/student/classes/11511739/core_tasks/27535638",
+    }
+    std = standardize_task_payload(raw)
+
+    assert std["task_id"] == 27535638
+    assert std["class_id"] == 11511739
+    assert std["class_name"] is None
+    assert std["title"] == "Vocab Quiz 2"
+    assert std["due_date"] == "2026-09-15 10:00:00"
+    assert std["due_iso"] is not None
+    assert "2026-09-15" in std["due_iso"]
+    assert std["has_submit_button"] is False
+    assert std["category"] == "Quiz"
+    assert std["status"] is None
+    assert std["grade_letter"] is None
+    assert std["grade_score"] is None
+    assert std["url"] == "https://example.managebac.cn/student/classes/11511739/core_tasks/27535638"
+
+
+def test_mbevent_factories():
+    """Verify MBEvent factory methods from_task and create."""
+    task = {
+        "task_id": "999",
+        "class_id": "888",
+        "title": "Essay",
+        "due_date": "2026-10-01 12:00:00",
+        "has_submit_button": True,
+    }
+    evt1 = MBEvent.from_task("task_created", task, custom_field="extra_value")
+    assert evt1.event == "task_created"
+    assert evt1.data["task_id"] == 999
+    assert evt1.data["has_submit_button"] is True
+    assert evt1.data["custom_field"] == "extra_value"
+    assert evt1.data["due_iso"] is not None
+
+    evt2 = MBEvent.create("task_updated", task, standardize=True)
+    assert evt2.event == "task_updated"
+    assert evt2.data["task_id"] == 999
+    assert evt2.data["category"] is None
+    assert evt2.data["status"] is None
+
+
+def test_mbevent_validation():
+    """Verify validation of event envelope and standard task fields."""
+    valid_data = {
+        "task_id": 1,
+        "class_id": 2,
+        "class_name": "Math",
+        "title": "Homework",
+        "due_date": "2026-09-15 10:00:00",
+        "due_iso": "2026-09-15T10:00:00",
+        "has_submit_button": True,
+        "category": "Homework",
+        "status": "not-submitted",
+        "grade_letter": None,
+        "grade_score": None,
+        "url": "https://example.com/task/1",
+    }
+    event = MBEvent(event="task_created", data=valid_data)
+    assert event.validate() is True
+
+    # Missing standard field in task event
+    invalid_data = dict(valid_data)
+    del invalid_data["due_iso"]
+    invalid_event = MBEvent(event="task_created", data=invalid_data)
+    assert invalid_event.validate(strict=False) is False
+    with pytest.raises(ValueError, match="Missing standard task field: 'due_iso'"):
+        invalid_event.validate(strict=True)
+
+    # Non-boolean has_submit_button
+    bad_bool_data = dict(valid_data)
+    bad_bool_data["has_submit_button"] = "yes"  # type: ignore
+    bad_bool_event = MBEvent(event="task_created", data=bad_bool_data)
+    assert bad_bool_event.validate(strict=False) is False
+    with pytest.raises(ValueError, match="Field 'has_submit_button' must be a boolean"):
+        bad_bool_event.validate(strict=True)
+
+    # Non-task event (e.g. file_uploaded) does not require task fields
+    file_event = MBEvent(event="file_uploaded", data={"filename": "notes.pdf"})
+    assert file_event.validate() is True
+
+    # Empty event name
+    empty_event = MBEvent(event="", data={})
+    assert empty_event.validate(strict=False) is False
+    with pytest.raises(ValueError, match="Field 'event' must be a non-empty string"):
+        empty_event.validate(strict=True)
 
 
 def test_mbevent_serialization():
