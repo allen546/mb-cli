@@ -684,7 +684,7 @@ class TodoistSyncService:
 async def main() -> None:
     # 1. Initialize client using saved credentials (~/.config/mb-crawler/)
     client = ManageBacClient.from_config()
-    logger.info("Connected to ManageBac for student: %s (%s)", client.student_name, client.subdomain)
+    logger.info("Connected to ManageBac for student: %s (%s)", client.student_name or "Configured Profile", client.subdomain)
 
     # 2. Instantiate daemon with 60-second polling interval
     daemon = ManageBacDaemon(client, poll_interval_seconds=60)
