@@ -54,6 +54,8 @@ pip install -e .
 
 ## Python SDK Quickstarts
 
+> 📖 **Full Library Reference**: For complete method signatures, parameter types, status enums, MNN Hub integration, and production recipes, see [docs/library.md](docs/library.md).
+
 ### 1. Basic Client Usage (`ManageBacClient`)
 
 Use `ManageBacClient` for synchronous fetching and actions:
