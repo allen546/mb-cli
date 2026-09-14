@@ -10,6 +10,7 @@ from bark_webhook_receiver import (
     MAX_TASK_LEN,
     clean_task_title,
     format_event_for_bark,
+    is_task_event_suppressed,
     load_course_aliases,
     resolve_course_name,
     truncate,
@@ -374,5 +375,57 @@ def test_format_event_task_created_with_enriched_grade_shows_grade_posted():
     lines = message.split("\n")
     assert lines[1] == "作业: 语文早读小测1"
     assert lines[2] == "得分: A 90 / 100 pts"
+
+
+def test_bark_receiver_suppression_logic():
+    # 1. deadline_approaching with submitted status
+    ev1 = {
+        "event": "deadline_approaching",
+        "data": {"status": "submitted", "task_id": 1},
+    }
+    assert is_task_event_suppressed(ev1) is True
+
+    # 2. deadline_approaching with grade_score
+    ev2 = {
+        "event": "deadline_approaching",
+        "data": {"grade_score": "7/7", "task_id": 2},
+    }
+    assert is_task_event_suppressed(ev2) is True
+
+    # 3. deadline_approaching with enriched_task grade_letter
+    ev3 = {
+        "event": "deadline_approaching",
+        "data": {"enriched_task": {"grade_letter": "A"}, "task_id": 3},
+    }
+    assert is_task_event_suppressed(ev3) is True
+
+    # 4. deadline_approaching for unsubmitted/ungraded task -> NOT suppressed
+    ev4 = {
+        "event": "deadline_approaching",
+        "data": {"status": "not-submitted", "grade_score": "-", "task_id": 4},
+    }
+    assert is_task_event_suppressed(ev4) is False
+
+    # 5. task_updated for submitted task -> suppressed
+    ev5 = {
+        "event": "task_updated",
+        "data": {"status": "submitted", "task_id": 5},
+    }
+    assert is_task_event_suppressed(ev5) is True
+
+    # 6. task_updated for graded task -> suppressed
+    ev6 = {
+        "event": "task_updated",
+        "data": {"grade_score": "95/100", "task_id": 6},
+    }
+    assert is_task_event_suppressed(ev6) is True
+
+    # 7. task_graded / grade_posted -> NOT suppressed (must notify user!)
+    ev7 = {
+        "event": "task_graded",
+        "data": {"grade_score": "95/100", "task_id": 7},
+    }
+    assert is_task_event_suppressed(ev7) is False
+
 
 
