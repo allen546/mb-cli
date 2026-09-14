@@ -19,7 +19,7 @@ from ..task_status import (
     is_task_graded,
     is_task_submitted_or_graded,
 )
-from .events import DaemonConfig, MBEvent
+from .events import DaemonConfig, MBEvent, standardize_task_payload
 from .provider import AbstractNotificationProvider, MNNHubProvider
 from .scheduler import DDLScheduler
 from .state import DaemonStateManager
@@ -174,9 +174,11 @@ class DaemonService:
                 # 2. Stealth task detail enrichment
                 class_id = event.data.get("class_id")
                 task_id = event.data.get("task_id")
+                old_task = self.state_manager.get_task(str(task_id)) if task_id else None
+                task_info = None
+
                 if class_id and task_id:
                     # Snapshot old state BEFORE updating so we can detect grade transitions
-                    old_task = self.state_manager.get_task(task_id)
                     task_info = self.stealth_crawler.fetch_task_details(class_id, task_id)
                     if task_info:
                         is_new = old_task is None
@@ -264,6 +266,35 @@ class DaemonService:
                             "Grade detected in event data for task %s: promoting to task_graded",
                             task_id or event.data.get("title"),
                         )
+
+                # Normalize event names to standard vocabulary
+                if event.event == "new_task":
+                    event.event = "task_created"
+                elif event.event == "updated_task":
+                    event.event = "task_updated"
+                elif event.event in ("assignment_graded", "grade_posted"):
+                    event.event = "task_graded"
+
+                # Standardize task events payload
+                if event.event in ("task_created", "task_updated", "task_graded"):
+                    combined: dict[str, Any] = {}
+                    if old_task:
+                        combined.update(old_task)
+                    if task_info:
+                        combined.update(task_info)
+                    combined.update(event.data)
+
+                    # Ensure the genuine task title takes precedence
+                    if task_info and task_info.get("title"):
+                        combined["title"] = task_info["title"]
+                    elif event.data.get("task_title"):
+                        combined["title"] = event.data["task_title"]
+
+                    if not combined.get("url") and class_id and task_id:
+                        combined["url"] = f"{self.client.base}/student/classes/{class_id}/core_tasks/{task_id}"
+
+                    event.data = standardize_task_payload(combined)
+                    event.data["task_title"] = event.data["title"]
 
                 # Dispatch event to webhooks
                 results = self.dispatcher.dispatch(event)
