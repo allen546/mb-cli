@@ -3,6 +3,7 @@
 __version__ = "0.2.4"
 
 from .client import ManageBacClient
+from .daemon.stream import ManageBacDaemon
 from .notifications import MNNHubClient
 
-__all__ = ["ManageBacClient", "MNNHubClient"]
+__all__ = ["ManageBacClient", "MNNHubClient", "ManageBacDaemon"]
