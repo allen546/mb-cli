@@ -195,7 +195,33 @@ By moving alerting policy out of `mb-cli` and into the consumer application (`mb
 
 ---
 
-## 7. Verification Plan
+## 7. Documentation & Developer Guides
+
+Documentation is a core deliverable of this separation to ensure external developers and consumer applications (such as the Web Dashboard and Todoist Sync) can easily build on `mb-cli`.
+
+### 7.1 `README.md` Refresh
+* Update project description: clean, unopinionated ManageBac Python SDK, CLI, and real-time Event Engine.
+* Add **Python SDK Quickstart**:
+  - Basic usage (`ManageBacClient`).
+  - Real-time event streaming (`ManageBacDaemon.stream()`).
+* Add **CLI Quickstart**:
+  - Task viewing, grading, and submissions.
+  - Running the webhook daemon: `mb daemon run --webhook-url <url>`.
+* Remove all mentions of Bark, sound files, or personal school aliases.
+
+### 7.2 Event Stream Reference (`docs/events.md`)
+* Complete catalog of event types (`task_created`, `task_updated`, `task_graded`, `submission_created`, `file_uploaded`, `announcement_created`, `deadline_approaching`).
+* JSON schema definitions for all payloads.
+* Downstream integration recipes:
+  - Example 1: FastAPI webhook receiver.
+  - Example 2: Async Python subscriber loop (Todoist sync pattern).
+
+### 7.3 Downstream Notifier Guide
+* Documentation on how the standalone `mb-notifier` connects to `mb-cli` (either as an imported library or via webhook receiver on the Raspberry Pi).
+
+---
+
+## 8. Verification Plan
 
 1. **Unit & Integration Tests**:
    - Verify `ManageBacDaemon.stream()` yields events properly on a running `asyncio` event loop.
@@ -205,3 +231,6 @@ By moving alerting policy out of `mb-cli` and into the consumer application (`mb
    - Run full test suite with `pytest`.
 2. **Backwards Compatibility**:
    - Ensure `mb daemon run --webhook-url` continues to dispatch valid JSON payloads over HTTP.
+3. **Documentation Verification**:
+   - Verify code examples in `README.md` and `docs/events.md` are accurate, runnable, and syntactically valid.
+
