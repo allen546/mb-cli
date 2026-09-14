@@ -213,7 +213,7 @@ For continuous, reliable background notifications, run both `mb daemon` and `bar
 | File | Server Path |
 | :--- | :--- |
 | Virtualenv Python | `/opt/mb-tools/.venv/bin/python` |
-| Webhook Receiver Script | `/opt/mb-crawler/bark_webhook_receiver.py` |
+| Webhook Receiver Script | `/opt/mb-notifier/bark_webhook_receiver.py` |
 | Course Aliases | `~/.config/managebac/course_aliases.json` |
 | Bark CLI Binary | `/opt/mb-tools/bark` |
 | Systemd Service Units | `~/.config/systemd/user/` |
@@ -222,10 +222,10 @@ For continuous, reliable background notifications, run both `mb daemon` and `bar
 
 ```bash
 # Create target directories
-ssh user@server "mkdir -p /opt/mb-crawler ~/.config/managebac ~/.config/systemd/user"
+ssh user@server "mkdir -p /opt/mb-notifier ~/.config/managebac ~/.config/systemd/user"
 
 # Copy receiver and aliases
-scp extras/mb-notifier/bark_webhook_receiver.py user@server:/opt/mb-crawler/
+scp extras/mb-notifier/bark_webhook_receiver.py user@server:/opt/mb-notifier/
 scp extras/mb-notifier/course_aliases.json user@server:~/.config/managebac/course_aliases.json
 ```
 
@@ -240,7 +240,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/mb-tools/.venv/bin/python /opt/mb-crawler/bark_webhook_receiver.py \
+ExecStart=/opt/mb-tools/.venv/bin/python /opt/mb-notifier/bark_webhook_receiver.py \
     --host 127.0.0.1 \
     --port 42617 \
     --bark-bin /opt/mb-tools/bark \

@@ -112,3 +112,64 @@ Sep 04 14:13:03 raspberrypi python3[58569]: Bark pushed successfully: ✅ 已推
 3. **Daemon Webhook Connection**:
    - The daemon connects to the local receiver at `http://127.0.0.1:42617/webhook`.
    - Health check endpoint: `curl http://127.0.0.1:42617/health` returns `{"status":"ok","service":"bark_webhook_receiver"}`.
+
+---
+
+## 5. Deployment Record: Modular Architecture Separation (2026-09-14)
+
+**Date**: 2026-09-14  
+**Target Host**: `100.95.33.78` (Raspberry Pi 4 / Debian aarch64, Tailscale network)  
+**Package Version**: `mb-cli` 0.3.0 (`dist/mb_cli-0.3.0-py3-none-any.whl`)  
+**Notifier Root**: `/mnt/pi-data/mb-notifier`  
+
+### Changes Deployed
+1. **Core Package Upgrade (`mb-cli` 0.3.0)**:
+   - Upgraded core package inside remote virtual environment `/mnt/pi-data/tools/.venv/`.
+   - Standardized `MBEvent` schema and purged proprietary push/course alias logic from core engine.
+   - Added `ManageBacDaemon.stream()` async event generator.
+2. **Dedicated Downstream Notifier Staging (`/mnt/pi-data/mb-notifier`)**:
+   - Extracted `bark_webhook_receiver.py`, `course_aliases.json`, and documentation into `/mnt/pi-data/mb-notifier/`.
+   - Completely decoupled downstream consumer from `mb-crawler` core working directory.
+3. **Updated Systemd Service Configuration**:
+   - Updated `~/.config/systemd/user/mb-webhook-bark.service` to execute from `/mnt/pi-data/mb-notifier/bark_webhook_receiver.py` with `--course-aliases /mnt/pi-data/mb-notifier/course_aliases.json`.
+   - Maintained `mb-daemon.service` running `mb daemon run --webhook-url http://127.0.0.1:42617/webhook`.
+
+### Remote Deployment Commands
+```bash
+# 1. Build and copy wheel and notifier files
+uv build
+scp dist/mb_cli-0.3.0-py3-none-any.whl 100.95.33.78:/mnt/pi-data/mb-crawler/
+ssh 100.95.33.78 "mkdir -p /mnt/pi-data/mb-notifier /mnt/pi-data/mb-notifier/logs"
+scp extras/mb-notifier/bark_webhook_receiver.py extras/mb-notifier/course_aliases.json extras/mb-notifier/README.md 100.95.33.78:/mnt/pi-data/mb-notifier/
+
+# 2. Upgrade core mb-cli in remote virtualenv
+ssh 100.95.33.78 "/mnt/pi-data/tools/.venv/bin/pip install --upgrade --no-deps /mnt/pi-data/mb-crawler/mb_cli-0.3.0-py3-none-any.whl"
+
+# 3. Update systemd service and restart
+ssh 100.95.33.78 "systemctl --user daemon-reload && systemctl --user restart mb-webhook-bark mb-daemon"
+
+# 4. Live webhook test ping
+ssh 100.95.33.78 "/mnt/pi-data/tools/.venv/bin/mb daemon test-webhook http://127.0.0.1:42617/webhook"
+```
+
+### Live Verification Output
+```text
+● mb-webhook-bark.service - ManageBac Bark Webhook Receiver
+     Loaded: loaded (/home/allen/.config/systemd/user/mb-webhook-bark.service; enabled; preset: enabled)
+     Active: active (running) since Mon 2026-09-14 22:08:07 CST
+   Main PID: 114778 (python3)
+     CGroup: /user.slice/user-1000.slice/user@1000.service/app.slice/mb-webhook-bark.service
+             └─114778 /usr/bin/python3 /mnt/pi-data/mb-notifier/bark_webhook_receiver.py --port 42617 --host 127.0.0.1 --course-aliases /mnt/pi-data/mb-notifier/course_aliases.json
+
+Sep 14 22:08:08 raspberrypi python3[114778]: 2026-09-14 22:08:08 [INFO] Starting Bark Webhook Receiver on http://127.0.0.1:42617/webhook ...
+Sep 14 22:09:08 raspberrypi python3[114778]: 2026-09-14 22:09:08 [INFO] Received event: test_ping
+Sep 14 22:09:08 raspberrypi python3[114778]: 2026-09-14 22:09:08 [INFO] Dispatching to Bark:
+Sep 14 22:09:08 raspberrypi python3[114778]: Title: '🔔 Test Notification'
+Sep 14 22:09:08 raspberrypi python3[114778]: Message:
+Sep 14 22:09:08 raspberrypi python3[114778]: 通道: 实时推送正常
+Sep 14 22:09:08 raspberrypi python3[114778]: 设备: Mac & iPhone
+Sep 14 22:09:08 raspberrypi python3[114778]: 时间: 09-14 22:09
+Sep 14 22:09:08 raspberrypi python3[114778]: Sound: 'bell', Priority: 5, URL: ''
+Sep 14 22:09:10 raspberrypi python3[114778]: 2026-09-14 22:09:10 [INFO] Bark pushed successfully: ✅ 已推送 (2 设备)
+```
+
