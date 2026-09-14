@@ -1,259 +1,269 @@
-# mb-cli
+# mb-cli: ManageBac CLI, Python SDK & Real-Time Event Engine
 
-Crawl **ManageBac** tasks, grades, submissions, notifications, calendar, and timetable from the command line or via MCP.
+An unopinionated, robust toolkit for **ManageBac**: typed Python SDK, command-line interface, Model Context Protocol (MCP) server for AI assistants, and a real-time event streaming and webhook engine.
 
-Supports both `managebac.com` and `managebac.cn` (China) instances.
+Supports both international (`managebac.com`) and China (`managebac.cn`) instances.
+
+---
+
+## Core Capabilities
+
+1. **Unopinionated Python SDK** (`ManageBacClient`, `ManageBacDaemon`):
+   - Authenticate seamlessly via credentials or saved session cookies (`ManageBacClient.from_config()`).
+   - Programmatic access to tasks, submissions, grades, calendar feeds, weekly timetables, and MNN notifications.
+   - Clean separation of concerns: produces pure, typed data with zero vendor-specific assumptions or hardcoded push rules.
+2. **Interactive CLI** (`mb auth`, `mb tasks`, `mb view`, `mb grades`, `mb submit`, `mb daemon`):
+   - Fast terminal workflows for everyday student tasks: listing assignments, viewing details, uploading files, inspecting grades, checking schedules, and managing background daemons.
+   - Smart output formatting: human-friendly colored tables on interactive TTYs, structured JSON when piped to files or other tools (`jq`).
+3. **MCP Server for AI Coding Assistants**:
+   - Built-in Model Context Protocol server (`mb-mcp`) with 12 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
+4. **Real-Time Event Streaming & Webhook Engine**:
+   - In-process async event streaming (`async for event in daemon.stream()`) for Python bots and background tasks.
+   - Background daemon service (`mb daemon run --webhook-url ...`) dispatching typed `MBEvent` payloads to HTTP webhooks with HMAC-SHA256 signatures, exponential backoff retries, stealth jitter, and active-hours scheduling.
+   - For the full event contract and JSON schema, see [Event Stream Specification](docs/events.md). For operational push notification setups (such as Bark for iOS), see [Downstream Notifier Guide](docs/downstream-notifier-guide.md).
+
+---
 
 ## Disclaimer
 
-**Use at your own risk.** This tool is an unofficial, community-maintained scraper. It is not affiliated with or endorsed by Faria Education or ManageBac. By using this tool, you acknowledge and accept the following:
+**Use at your own risk.** This tool is an unofficial, community-maintained client and scraper. It is not affiliated with or endorsed by Faria Education Group or ManageBac. By using this tool, you acknowledge and accept the following:
 
-Faria/ManageBac's legal documents explicitly prohibit automated access:
-
-- **robots.txt** (managebac.com): Disallows `/login`, `/admin`, `/api` for all user agents. ~~doesn’t exist for managebac.cn~~
+Faria/ManageBac's legal documents restrict automated access:
+- **robots.txt** (managebac.com): Disallows `/login`, `/admin`, `/api` for all user agents.
 - **Terms of Use §1.2.6**: "Accounts registered by 'bots' or screen scrapers and/or other automated means are not permitted and access will be terminated without notice."
 - **Terms of Service §5.5**: "Misuse of the Service, including but not limited to reverse engineering... may result in permanent and/or temporary suspension or termination of the School's account."
 - **Terms of Service §1.4**: Violations may result in account termination without notice.
 - **Terms of Service §9.4**: Schools exceeding 200 GB/month bandwidth may face caps or additional invoices.
 
-**The author of this tool bears no responsibility for any consequences resulting from its use, including but not limited to account suspension, termination, or school-level penalties.** You are solely responsible for ensuring your use complies with your school's policies and ManageBac's Terms of Service.
+**The authors bear no responsibility for any consequences resulting from its use, including account suspension or school-level penalties.** You are solely responsible for ensuring your use complies with your school's policies and ManageBac's Terms of Service.
 
-## Install
+---
+
+## Installation
 
 ```bash
 pip install .
 ```
 
-## Commands
-
+Or install in editable mode for local development:
 ```bash
-mb login
-mb list
-mb view
-mb submit
-mb notifications
-mb calendar
-mb timetable
-mb grades
-mb count-grade-freq
-mb logout
-mb daemon start
-mb daemon stop
-mb daemon configure-webhook
+pip install -e .
 ```
 
-Output defaults:
+---
 
-- interactive TTY: `pretty`
-- non-interactive / piped: `json`
-- override with `--format pretty` or `--format json`
+## Python SDK Quickstarts
 
-Stdout is reserved for command output. Stderr is reserved for crawl/auth progress logs.
+### 1. Basic Client Usage (`ManageBacClient`)
 
-## MCP Server
+Use `ManageBacClient` for synchronous fetching and actions:
 
-An MCP (Model Context Protocol) server is also available for AI agent integration:
+```python
+from mb_cli import ManageBacClient
+
+# Option A: Authenticate automatically from saved local CLI credentials
+client = ManageBacClient.from_config()
+
+# Option B: Explicit authentication
+# client = ManageBacClient(school="your-school", domain="managebac.com")
+# client.login("student@example.com", "your-password")
+
+# 1. Fetch upcoming tasks and coursework
+tasks_data = client.crawl_all(fetch_details=True)
+for task in tasks_data.get("tasks", []):
+    print(f"[{task.get('due_date')}] {task.get('title')} ({task.get('class_name')})")
+
+# 2. View one task in detail
+task_detail = client.get_task(class_id="1000024", task_id="1000025")
+print(task_detail.get("task", {}).get("description"))
+
+# 3. Check class grades and computed expected scores
+grades = client.get_class_grades(class_id="1000023")
+print(f"Class: {grades.get('class_name')}, Expected Grade: {grades.get('expected_grade')}")
+
+# 4. View calendar events
+events = client.get_calendar_events(start="2026-09-01", end="2026-09-07")
+
+# 5. Fetch weekly timetable
+timetable = client.get_timetable()
+
+# 6. Upload homework file to assignment dropbox
+client.submit_file(
+    class_id="1000023",
+    task_id="1000026",
+    file_path="homework.pdf",
+    comments="Completed assignment"
+)
+```
+
+### 2. Real-Time Async Event Streaming (`ManageBacDaemon`)
+
+Use `ManageBacDaemon.stream()` to consume live ManageBac events asynchronously in your Python application:
+
+```python
+import asyncio
+from mb_cli import ManageBacClient, ManageBacDaemon
+
+async def main():
+    # Load authenticated client
+    client = ManageBacClient.from_config()
+
+    # Create daemon instance (crawling runs in worker threads, non-blocking)
+    daemon = ManageBacDaemon(client, poll_interval_seconds=60)
+
+    print("Subscribed to ManageBac event stream (Ctrl+C to stop)...")
+    async for event in daemon.stream():
+        print(f"\n[Event: {event.event} @ {event.timestamp}]")
+        
+        if event.event == "task_created":
+            print(f"  📝 New Task: {event.data.get('title')}")
+            print(f"     Class: {event.data.get('class_name')}")
+            print(f"     Due: {event.data.get('due_date')}")
+            print(f"     URL: {event.data.get('url')}")
+            
+        elif event.event == "deadline_approaching":
+            print(f"  ⏰ Deadline Warning: {event.data.get('title')}")
+            print(f"     Threshold: {event.data.get('reminder_threshold')}")
+            print(f"     Remaining: {event.data.get('time_remaining_minutes')} mins")
+            
+        elif event.event == "task_graded":
+            print(f"  📊 Grade Released: {event.data.get('title')}")
+            print(f"     Score: {event.data.get('grade_letter')} {event.data.get('grade_score')}")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nDisconnected from event stream.")
+```
+
+---
+
+## Real-Time Webhook Engine
+
+`mb-cli` includes a robust background daemon that can dispatch events to HTTP webhook receivers (e.g. local scripts, microservices, or custom bots):
+
+```bash
+# Run daemon in foreground with webhook dispatching
+mb daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "your-hmac-secret"
+
+# Or configure webhook URL persistently and run daemon
+mb daemon configure-webhook http://127.0.0.1:8000/webhook
+mb daemon start --interval 1800 --active-hours-start 7 --active-hours-end 23
+
+# Test the webhook connection with a mock ping
+mb daemon test-webhook --webhook-url http://127.0.0.1:8000/webhook
+```
+
+### Webhook HTTP Contract
+- **Method**: `POST`
+- **Headers**:
+  - `Content-Type: application/json; charset=utf-8`
+  - `User-Agent: mb-crawler-daemon/1.0`
+  - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
+  - `X-MB-Signature: sha256=<hex_hmac>` (when `--secret` is configured)
+- **Retry Mechanism**: Exponential backoff (`1s`, `2s`, `4s`) on network or server errors.
+- **Specification**: See [docs/events.md](docs/events.md) for full payload schemas and documentation.
+
+---
+
+## Interactive CLI Reference
+
+```bash
+# Authentication & Session
+mb login --school your-school --domain managebac.com -e student@example.com
+mb logout
+
+# Tasks & Coursework
+mb list                                 # list upcoming tasks
+mb list --view past                     # past tasks
+mb list --subject "Math"                # filter by class/subject
+mb list --view overdue --details        # overdue tasks with full descriptions
+mb view 1000025                        # view single task by ID
+mb view "https://your-school.managebac.com/student/classes/1000024/core_tasks/1000025"
+
+# File Submission
+mb submit 1000026 homework.pdf         # upload file to assignment dropbox
+
+# Grades & Analytics
+mb grades                               # list all enrolled classes
+mb grades --class-id 1000023           # detailed task grades for one class
+mb grades --subject "Physics"           # fuzzy match class name
+mb count-grade-freq                     # grade distribution across all classes
+
+# Notifications & Feed
+mb notifications                        # list MNN notifications (page 1)
+mb notifications --read 235151424       # mark notification as read
+mb notifications --read-all             # mark all notifications read
+
+# Schedule & Calendar
+mb calendar                             # calendar events for next 7 days
+mb calendar --today                     # today's events
+mb calendar --ical -o calendar.ics      # export raw iCal feed
+mb timetable                            # view weekly class timetable
+
+# Background Daemon
+mb daemon run --webhook-url http://127.0.0.1:8000/webhook
+mb daemon start                         # run background loop
+mb daemon stop                          # stop background loop
+mb daemon status                        # show daemon process status
+```
+
+### Output Formatting
+- **Interactive TTY**: Formatted tables with color highlights.
+- **Piped / Non-TTY**: Structured JSON output.
+- **Explicit Override**: Add `--format pretty` or `--format json` to any command.
+- **Streams**: Standard output (`stdout`) is reserved for command data; logs and progress go to standard error (`stderr`).
+
+### Configuration Files
+By default, `mb-cli` stores credentials and daemon states in `~/.config/mb-crawler/`:
+- `config.json` — School domain, preferences, and webhook settings
+- `session.json` — Authenticated session cookies and tokens
+- `snapshot.json` — Coursework state cache for delta detection
+- `daemon.log` / `daemon.pid` — Background daemon runtime files
+
+Override default paths with `--config <file>`, `--session-file <file>`, or environment variables `MB_CRAWLER_CONFIG` and `MB_CRAWLER_SESSION`.
+
+---
+
+## MCP Server (AI Coding Assistants)
+
+`mb-cli` includes a built-in Model Context Protocol (MCP) server for integration with Claude Desktop, Cursor, Gemini, and other AI agents:
 
 ```bash
 mb-mcp
 ```
 
-This starts the server on stdio transport with 12 tools: `list_tasks`, `view_task`, `submit_file`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`, `count_grade_frequencies`.
-
-## Config files
-
-By default, `mb-cli` stores JSON files in `~/.config/mb-crawler/`:
-
-- `config.json`
-- `session.json`
-- `daemon.json`
-- `snapshot.json`
-- `daemon.pid`
-- `daemon.log`
-
-Override config/session paths with:
-
-- `--config /path/to/config.json`
-- `--session-file /path/to/session.json`
-- `MB_CRAWLER_CONFIG`
-- `MB_CRAWLER_SESSION`
-
-## Login
-
-```bash
-mb login --school myschool --domain managebac.cn -e you@example.com
+### Example Claude Desktop Configuration
+Add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "managebac": {
+      "command": "mb-mcp"
+    }
+  }
+}
 ```
 
-Or with password inline:
+The MCP server exposes 12 tools: `list_tasks`, `view_task`, `submit_file`, `get_notifications`, `mark_notification`, `mark_all_notifications_read`, `get_calendar_events`, `get_ical_feed`, `get_timetable`, `list_classes`, `get_class_grades`, and `count_grade_frequencies`.
 
-```bash
-mb login --school myschool --domain managebac.cn -e you@example.com -p yourpassword
-```
+---
 
-Or with an existing session cookie:
+## Downstream Integrations
 
-```bash
-mb login --school myschool --domain managebac.cn -c "YOUR_COOKIE_VALUE"
-```
+`mb-cli` intentionally avoids coupling itself to specific push providers, notification line limits, or personal course naming conventions. Instead, downstream consumers subscribe to events and apply customized logic:
 
-Note that this will invalidate the session of the browser you obtained the cookie from.
+- **[Event Stream Specification](docs/events.md)**: Full specification of the event data contract, lifecycle states, and JSON payloads.
+- **[Downstream Notifier Guide](docs/downstream-notifier-guide.md)**: Operational guide for deploying `extras/mb-notifier` (Bark push alerts, 3-field / 4-line mobile screen budgeting, course aliases, and sound customization).
 
-## List tasks
+---
 
-```bash
-mb list
-mb list --view past
-mb list --subject EL
-mb list --details
-mb list --view overdue --details
-```
+## Stability Note
 
-## View one task
+This tool interfaces with ManageBac via automated HTTP requests and HTML parsing. If ManageBac updates its frontend layout, CSS selectors, or internal API structures, scrapers may require updates.
 
-```bash
-mb view 1000025
-mb view "https://myschool.managebac.cn/student/classes/1000024/core_tasks/1000025"
-```
-
-## Submit files
-
-Upload a file to a task's dropbox:
-
-```bash
-mb submit 1000026 homework.pdf
-mb submit "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026" homework.pdf
-```
-
-## Notifications
-
-View and manage notifications via the MNN Hub API:
-
-```bash
-mb notifications                         # list (page 1)
-mb notifications --page 2 --per-page 10  # pagination
-mb notifications --read 235151424         # mark as read
-mb notifications --read-all               # mark all as read
-mb notifications --unread 235151424       # mark as unread
-```
-
-Unread notifications are marked with `*`.
-
-## Calendar
-
-View calendar events via the JSON API or raw iCal feed:
-
-```bash
-mb calendar                           # next 7 days
-mb calendar --start 2026-05-01 --end 2026-05-07
-mb calendar --today                   # today only
-mb calendar --ical                    # raw iCal feed output
-mb calendar --ical -o calendar.ics   # save iCal to file
-```
-
-## Timetable
-
-View the weekly timetable (HTML scrape):
-
-```bash
-mb timetable                          # this week
-mb timetable --date 2026-04-28        # week starting from date
-mb timetable --today                  # this week
-```
-
-Current day is marked with `*`.
-
-## Grades
-
-View all grades for a class and its expected grade:
-
-```bash
-mb grades                              # list all classes
-mb grades --class-id 1000023          # detailed grades for one class
-mb grades --subject EL                 # fuzzy match class name
-```
-
-Shows per-task grades, category weights, and a computed expected grade.
-
-## Count grade frequency
-
-Count how many times each grade letter appears across all or one class:
-
-```bash
-mb count-grade-freq                    # all classes
-mb count-grade-freq --subject EL       # one class only
-```
-
-## Daemon
-
-Configure webhook:
-
-```bash
-mb daemon configure-webhook http://127.0.0.1:42617/webhook
-```
-
-Run one daemon cycle without posting:
-
-```bash
-mb daemon start --once --dry-run
-```
-
-Run loop mode:
-
-```bash
-mb daemon start
-mb daemon start --interval 1800                        # 30 min base (randomized ±20%)
-mb daemon start --active-hours-start 8 --active-hours-end 22  # only check 8am-10pm
-```
-
-The daemon randomizes its polling interval (±20% of base) and only runs during active hours (default 7am-11pm local time). Outside active hours it sleeps 10 minutes between checks.
-
-Stop loop mode:
-
-```bash
-mb daemon stop
-```
-
-## Logout
-
-```bash
-mb logout
-mb logout --all
-```
-
-## Library usage
-
-```python
-from mb_cli import ManageBacClient, MNNHubClient
-from mb_cli.notifications import hub_for_domain
-
-client = ManageBacClient("myschool", domain="managebac.cn")
-client.login("you@example.com", "password")
-
-# Tasks
-result = client.crawl_all(fetch_details=True)
-
-# Calendar
-events = client.get_calendar_events("2026-04-29", "2026-05-05")
-
-# Timetable
-timetable = client.get_timetable()
-
-# Grades
-grades = client.get_class_grades("1000023")
-
-# Notifications
-hub_endpoint, token = client.get_notification_token()
-hub = MNNHubClient(hub_for_domain(client.domain), token)
-notifications = hub.list()
-hub.mark_read(235151424)
-
-# File submission
-client.submit_file("1000023", "1000026", "/path/to/file.pdf")
-```
-
-## Stability note
-
-This tool is fundamentally a web scraper. It parses ManageBac HTML pages and relies on internal markup structure (CSS classes, DOM layout). If Faria Education changes their frontend, parsing may break without warning. The student name heuristic (`_capture_student_name`) is particularly fragile — it looks for a profile link with specific text patterns and may fail silently if the page layout changes.
+---
 
 ## License
 
