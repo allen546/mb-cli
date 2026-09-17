@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from .cache import ResponseCache
@@ -12,7 +13,20 @@ from .exceptions import CommandError
 
 log = logging.getLogger(__name__)
 
-_CREDS_PATH = str(Path.home() / ".config" / "mb-crawler" / "creds.json")
+_CREDS_PATH_ENV = "MB_CRAWLER_CREDS_PATH"
+_CREDS_PATH = os.environ.get(
+    _CREDS_PATH_ENV,
+    str(Path.home() / ".config" / "mb-crawler" / "creds.json"),
+)
+
+
+def _creds_path() -> str:
+    """Resolve the creds path per-call so tests can redirect it via env.
+
+    ``build_client`` and friends must never touch the developer's real saved
+    password when running under pytest.
+    """
+    return os.environ.get(_CREDS_PATH_ENV, _CREDS_PATH)
 
 
 def build_client(
@@ -44,7 +58,7 @@ def build_client(
     email_val = email or state.profile.email or state.session.email
     if not email_val:
         try:
-            creds = load_creds(_CREDS_PATH)
+            creds = load_creds(_creds_path())
             if creds:
                 email_val = creds.get("email")
         except Exception:
@@ -75,7 +89,10 @@ def build_client(
             )
         if not client.login(email_val, password, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
-        save_creds(_CREDS_PATH, email_val, password)
+        # `remember=False` (mb --temp) means "do not persist my password to
+        # disk".  Persisting it anyway would silently defeat that flag.
+        if remember:
+            save_creds(_creds_path(), email_val, password)
     elif state.session.cookie and not reauth:
         # Health check: try saved cookie, re-login if stale
         client.set_cookie(state.session.cookie)
@@ -86,7 +103,7 @@ def build_client(
             _relogin_from_creds(client, state)
     else:
         # No session cookie and no explicit password — try loading from config
-        creds = load_creds(_CREDS_PATH)
+        creds = load_creds(_creds_path())
         login_email = email_val or (creds.get("email") if creds else None)
         login_pass = password or (creds.get("password") if creds else None)
         if not login_email or not login_pass:
@@ -132,11 +149,11 @@ def _is_session_alive(client: ManageBacClient) -> bool:
 
 def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
     """Re-login using credentials from mb_config.json. Raises CommandError on failure."""
-    creds = load_creds(_CREDS_PATH)
+    creds = load_creds(_creds_path())
     if not creds or "email" not in creds or "password" not in creds:
         raise CommandError(
             "missing_credentials",
-            f"Cookie expired and no creds found in {_CREDS_PATH}",
+            f"Cookie expired and no creds found in {_creds_path()}",
         )
     if not client.login(creds["email"], creds["password"], remember=True):
         raise CommandError("authentication_failed", "Silent re-login failed")

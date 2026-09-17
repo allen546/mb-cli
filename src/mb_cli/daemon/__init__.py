@@ -78,6 +78,19 @@ def _ensure_parent(path: Path) -> None:
         pass
 
 
+# Secrets may be supplied via the environment instead of argv, because
+# argv is world-readable via `ps` on most systems.
+SECRET_ENV = "MB_WEBHOOK_SECRET"
+
+
+def _resolve_secret(cli_secret: str | None) -> str | None:
+    """Prefer the environment over argv for the HMAC secret."""
+    if cli_secret:
+        return cli_secret
+    val = os.environ.get(SECRET_ENV)
+    return val or None
+
+
 # ── Backward Compatibility API ──────────────────────────────────────────
 
 
@@ -424,15 +437,25 @@ def _is_mb_cli_pid(pid: int) -> bool:
         if result.returncode != 0:
             return False
         cmdline = result.stdout.strip()
-        return "mb-cli" in cmdline or "mb_cli" in cmdline or "mb_crawler" in cmdline
+        # No bare "mb" here: it matches unrelated processes (systemd, etc.)
+        # and a stale pid file would then signal the wrong process.
+        return any(
+            k in cmdline for k in ("mb-cli", "mb_cli", "mb_crawler", "mb.cli")
+        )
     except (subprocess.TimeoutExpired, OSError):
         return False
 
 
 def _log(path: Path, message: str) -> None:
     _ensure_parent(path)
-    line = f"[{datetime.now().isoformat()}] {message}"
-    with path.open("a", encoding="utf-8") as handle:
+    # Messages embed scraped task titles, so strip control characters to
+    # prevent forged log lines and terminal escape sequences.
+    safe = "".join(
+        ch for ch in str(message) if ch == "\t" or (0x20 <= ord(ch) != 0x7F)
+    )
+    line = f"[{datetime.now().isoformat()}] {safe}"
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
         handle.write(line + "\n")
 
 

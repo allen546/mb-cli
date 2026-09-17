@@ -162,7 +162,7 @@ completed = client.get_tasks_by_view(view="completed", max_pages=5)
 ```python
 # Pass either a relative URL or full ManageBac URL
 task_detail = client.get_task_detail(
-    "/student/classes/1000024/core_tasks/1000025",
+    "/student/classes/1000001/core_tasks/1000009",
     bypass_cache=False,
 )
 
@@ -461,7 +461,7 @@ client.invalidate_cache()
 client.invalidate_task_cache(class_id="1000023", task_id="1000026")
 
 # Force bypass cache on specific reads
-detail = client.get_task_detail("/student/classes/1000023/core_tasks/1000026", bypass_cache=True)
+detail = client.get_task_detail("/student/classes/1000001/core_tasks/1000010", bypass_cache=True)
 grades = client.get_class_grades(class_id="1000023", bypass_cache=True)
 ```
 

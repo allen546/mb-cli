@@ -41,7 +41,7 @@ def sample_task_tile_html_no_grade():
     """Return HTML for a task tile without a grade."""
     return """
     <div class="f-task-tile">
-      <a class="f-tile__title-link" href="/student/classes/1000023/core_tasks/27254394">Essay Draft</a>
+      <a class="f-tile__title-link" href="/student/classes/1000023/core_tasks/1000027">Essay Draft</a>
       <div class="f-tile__description">
         <span>Apr 20</span>
         <a href="/student/classes/1000023">English A</a>
@@ -186,7 +186,7 @@ def sample_dropbox_page_html():
     <html>
     <head><meta name="csrf-token" content="csrf_token_xyz789"></head>
     <body>
-      <form id="edit_dropbox_123" action="/student/classes/1000023/core_tasks/1000026/dropbox" method="post">
+      <form id="edit_dropbox_123" action="/student/classes/1000001/core_tasks/1000099/dropbox" method="post">
         <input type="file" name="dropbox[assets_attributes][0][file]">
       </form>
       <table>
@@ -222,7 +222,7 @@ def sample_grades_page_html():
         </div>
       </div>
       <div class="fusion-card-item">
-        <h4 class="title"><a href="/student/classes/1000023/core_tasks/1001">Homework 1</a></h4>
+        <h4 class="title"><a href="/student/classes/1000001/core_tasks/1000099">Homework 1</a></h4>
         <span class="grade">A</span>
         <div class="points">95/100</div>
         <span class="submitted">Submitted</span>
@@ -231,7 +231,7 @@ def sample_grades_page_html():
         </div>
       </div>
       <div class="fusion-card-item">
-        <h4 class="title"><a href="/student/classes/1000023/core_tasks/1002">Essay</a></h4>
+        <h4 class="title"><a href="/student/classes/1000001/core_tasks/1000099">Essay</a></h4>
         <span class="grade">B+</span>
         <div class="points">88/100</div>
         <span class="not-submitted">Not Submitted</span>

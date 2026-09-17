@@ -78,7 +78,7 @@ When a task notification or full synchronization triggers, the crawler enforces 
 ### 2.3 Deadline Countdown & Reminder Scheduler
 * Evaluates all upcoming tasks in memory every 60 seconds against configured thresholds (default: $24\text{h}, 6\text{h}, 1\text{h}, 15\text{m}$).
 * **Submission Awareness**: If a task has `status == "submitted"`, all upcoming countdown reminders for that task are automatically suppressed.
-* **State Deduplication**: Dispatched milestone keys (e.g. `task_1000099:ddl_1h`) are recorded in `daemon_state.json` so no reminder is sent twice, even if the daemon restarts.
+* **State Deduplication**: Dispatched milestone keys (e.g. `task_1000018:ddl_1h`) are recorded in `daemon_state.json` so no reminder is sent twice, even if the daemon restarts.
 
 ### 2.4 Webhook Dispatcher
 * Delivers standard JSON event envelopes via HTTP POST with exponential retry backoff.
@@ -93,18 +93,18 @@ When a task notification or full synchronization triggers, the crawler enforces 
 {
   "version": "1.0",
   "event": "deadline_approaching",
-  "event_id": "evt_1000099_reminder_1h",
+  "event_id": "evt_1000018_reminder_1h",
   "timestamp": "2026-09-02T17:40:00Z",
   "data": {
-    "task_id": 1000099,
+    "task_id": 1000018,
     "title": "NAME LIST",
     "class_name": "AP AP Physics 1 CLASS 2 BLUE 2026-2027 (Grade 10)",
-    "class_id": 1000012,
+    "class_id": 1000011,
     "due_date": "2026-09-10T09:10:00+08:00",
     "time_remaining_minutes": 60,
     "status": "not-submitted",
     "has_submit_button": true,
-    "url": "https://demo-school.managebac.cn/student/classes/1000012/core_tasks/1000099",
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000011",
     "teacher": {
       "name": "Hao (Hao) Li",
       "initials": "HL"
@@ -175,15 +175,15 @@ When a task notification or full synchronization triggers, the crawler enforces 
   "last_synced_at": "2026-09-02T17:40:00Z",
   "processed_notification_ids": [244677168, 244677167],
   "dispatched_reminders": [
-    "task_1000099:ddl_24h",
-    "task_1000099:ddl_6h"
+    "task_1000018:ddl_24h",
+    "task_1000018:ddl_6h"
   ],
   "tasks_cache": {
-    "1000099": {
+    "1000018": {
       "title": "NAME LIST",
       "due_date": "2026-09-10T09:10:00+08:00",
       "status": "not-submitted",
-      "class_id": 1000012
+      "class_id": 1000011
     }
   }
 }

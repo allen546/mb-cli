@@ -142,15 +142,15 @@ def test_stealth_crawler_parses_fusion_layout_without_matching_hero_class():
             <div class="flex-1">
               <div class="h4 title">
                 Materials Check
-                <span class="fusion-popover px-1" data-bs-content-url="/student/classes/1000010/events/27564524/hint">
+                <span class="fusion-popover px-1" data-bs-content-url="/student/classes/1000014/events/1000099/hint">
                   <svg><path d="icon"></path></svg>
                 </span>
               </div>
             </div>
           </div>
-          <a href="/student/classes/1000010">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>
+          <a href="/student/classes/1000014">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>
           <p>Due: September 11, 2026 at 12:10 PM</p>
-          <a href="/student/classes/1000010/core_tasks/27564524/dropbox">Upload</a>
+          <a href="/student/classes/1000014/core_tasks/1000099/dropbox">Upload</a>
         </div>
       </body>
     </html>
@@ -158,7 +158,7 @@ def test_stealth_crawler_parses_fusion_layout_without_matching_hero_class():
     mock_client._get.return_value = BeautifulSoup(sample_html, "html.parser")
     crawler = StealthTaskCrawler(mock_client, StealthConfig(enabled=False))
 
-    task = crawler.fetch_task_details(class_id=1000010, task_id=27564524)
+    task = crawler.fetch_task_details(class_id=1000014, task_id=1000099)
     assert task is not None
     assert task["title"] == "Materials Check"
     assert task["class_name"] == "AP English Language Arts I (Hons) - Group 2 (Grade 10)"

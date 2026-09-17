@@ -86,7 +86,7 @@ Formally decouple `mb-cli` into a clean, unopinionated core library/daemon that 
     "status": "not-submitted",
     "grade_letter": "N/A",
     "grade_score": null,
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/1000014"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000012"
   }
 }
 ```

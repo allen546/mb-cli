@@ -77,18 +77,18 @@ def test_standard_mbevent_serialization():
 def test_standardize_task_payload():
     """Verify standardization of sparse or raw task data into standard schema."""
     raw = {
-        "id": "1000014",
-        "class_id": "1000010",
+        "id": "1000099",
+        "class_id": "1000014",
         "title": "New Task: Vocab Quiz 2",
         "due_date": "2026-09-15 10:00:00",
         "has_submit_button": 0,
         "labels": ["Quiz", "Formative"],
-        "link": "https://example.managebac.cn/student/classes/1000010/core_tasks/1000014",
+        "link": "https://example.managebac.cn/student/classes/1000014/core_tasks/1000099",
     }
     std = standardize_task_payload(raw)
 
-    assert std["task_id"] == 1000014
-    assert std["class_id"] == 1000010
+    assert std["task_id"] == 1000099
+    assert std["class_id"] == 1000014
     assert std["class_name"] is None
     assert std["title"] == "Vocab Quiz 2"
     assert std["due_date"] == "2026-09-15 10:00:00"
@@ -99,7 +99,7 @@ def test_standardize_task_payload():
     assert std["status"] is None
     assert std["grade_letter"] is None
     assert std["grade_score"] is None
-    assert std["url"] == "https://example.managebac.cn/student/classes/1000010/core_tasks/1000014"
+    assert std["url"] == "https://example.managebac.cn/student/classes/1000014/core_tasks/1000099"
 
 
 def test_mbevent_factories():

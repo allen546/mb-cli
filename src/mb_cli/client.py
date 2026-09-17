@@ -9,18 +9,55 @@ import re
 import threading
 import time
 from datetime import datetime
-from urllib.parse import urljoin, unquote
+from urllib.parse import urljoin, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from .cache import ResponseCache
+from .exceptions import CommandError
 from .filters import classify_task_view, is_task_submitted
 
 log = logging.getLogger(__name__)
 
 # Retryable HTTP status codes (server errors that may resolve on retry)
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Only these domains are acceptable targets; anything else risks sending the
+# session cookie (and the login password) to an unintended host.
+ALLOWED_DOMAINS = frozenset({"managebac.com", "managebac.cn"})
+
+# A school subdomain must be a plain DNS label.
+_SCHOOL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$")
+
+
+def _validate_school_domain(school: str, domain: str) -> tuple[str, str]:
+    """Normalise and validate the school subdomain and base domain.
+
+    ``school``/``domain`` fully determine the host every authenticated request
+    (password POST, session cookie, hub JWT) is sent to, so both must be
+    constrained to a ManageBac host.  A value like ``evil.com/x`` would
+    otherwise turn the base URL into an attacker-chosen destination.
+    """
+    school_clean = str(school or "").strip().lower()
+    school_clean = school_clean.replace(f".{domain}", "")
+    school_clean = school_clean.rstrip(".")
+    if not school_clean:
+        raise CommandError("invalid_school", "School subdomain must not be empty")
+    if not _SCHOOL_RE.match(school_clean):
+        raise CommandError(
+            "invalid_school",
+            f"Invalid school subdomain {school!r}: expected a plain hostname label",
+        )
+
+    domain_clean = str(domain or "").strip().lower().rstrip(".")
+    if domain_clean not in ALLOWED_DOMAINS:
+        raise CommandError(
+            "invalid_domain",
+            f"Unsupported domain {domain!r}: expected one of "
+            + ", ".join(sorted(ALLOWED_DOMAINS)),
+        )
+    return school_clean, domain_clean
 
 HEADERS = {
     "User-Agent": (
@@ -117,9 +154,8 @@ class ManageBacClient:
         retry: int = 3,
         request_delay: float = 1.0,
     ):
-        self.school = school.replace(f".{domain}", "")
-        self.domain = domain
-        self.base = f"https://{self.school}.{domain}"
+        self.school, self.domain = _validate_school_domain(school, domain)
+        self.base = f"https://{self.school}.{self.domain}"
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self.session.verify = verify
@@ -175,7 +211,14 @@ class ManageBacClient:
         if "/sessions" in r.url and not r.history:
             log.warning("login failed — server returned 200 on /sessions (bad credentials?)")
             return False
-        if "/login" in r.url or "login" in r.url.split("/")[-1]:
+        # Decide on the final path only, and require that we are still on our
+        # own host — a cross-host landing page must not count as success.
+        final = urlparse(r.url)
+        if final.netloc.lower() != urlparse(self.base).netloc.lower():
+            log.warning("login failed — redirected off-host to %s", final.netloc)
+            return False
+        last_segment = final.path.rstrip("/").split("/")[-1]
+        if last_segment == "login":
             log.warning("login failed — redirected back to login page")
             return False
         return True
@@ -212,6 +255,33 @@ class ManageBacClient:
             return exc.response.status_code in _RETRYABLE_STATUS_CODES
         return False
 
+    def _assert_same_host(self, url: str) -> None:
+        """Refuse to send an authenticated request to a host outside ManageBac.
+
+        requests follows redirects by merging the whole cookie jar into the
+        new target and, on 307/308, replays the request body.  Since the login
+        POST body contains the plaintext password and the jar holds
+        ``_managebac_session``, a redirect off the ManageBac estate would
+        exfiltrate both.
+
+        Hosts within an allowed domain (e.g. the school subdomain and the
+        shared calendar host ``managebac.com``) are permitted, since ManageBac
+        legitimately redirects between them.
+        """
+        expected = urlparse(self.base).netloc.lower()
+        actual = urlparse(url).netloc.lower()
+        if not actual or actual == expected:
+            return
+        if any(
+            actual == d or actual.endswith("." + d) for d in ALLOWED_DOMAINS
+        ):
+            return
+        raise CommandError(
+            "cross_host_redirect_blocked",
+            f"Refusing to send authenticated request to {actual!r} "
+            f"(expected {expected!r})",
+        )
+
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         # Enforce rate limit / delay between requests
         now = time.time()
@@ -229,6 +299,10 @@ class ManageBacClient:
         for attempt in range(self.retry + 1):
             try:
                 r = self.session.request(method, url, headers=headers, **kwargs)
+                # Verify the final destination stayed on our host.  This
+                # catches redirects without disabling redirect-following
+                # (login needs it to reach the dashboard).
+                self._assert_same_host(r.url)
                 r.raise_for_status()
                 self._last_url = url
                 return r

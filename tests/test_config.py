@@ -248,3 +248,24 @@ class TestClearSession:
         state = load_state()
         clear_session(state)
         assert not session_path.exists()
+
+
+def test_write_json_is_atomic_and_0600(tmp_path):
+    """Credential/session files must never exist world-readable."""
+    from mb_cli.config import _write_json
+    target = tmp_path / "creds.json"
+    _write_json(target, {"email": "a@b.c", "password": "s3cret"})
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o600, oct(mode)
+    # No temp files left behind.
+    assert list(tmp_path.glob(".*tmp")) == []
+
+
+def test_write_json_replaces_existing_content(tmp_path):
+    from mb_cli.config import _write_json
+    target = tmp_path / "session.json"
+    _write_json(target, {"v": 1})
+    _write_json(target, {"v": 2})
+    import json
+    assert json.loads(target.read_text()) == {"v": 2}
+    assert target.stat().st_mode & 0o777 == 0o600

@@ -166,7 +166,7 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
             <a href="/student/classes/1000012">AP US History</a>
             <span class="badge label-status">Not Submitted</span>
             <p>Due: September 15, 2026 at 23:59</p>
-            <a href="/student/classes/1000012/core_tasks/300100/dropbox">Submit</a>
+            <a href="/student/classes/1000012/core_tasks/1000300/dropbox">Submit</a>
           </body>
         </html>
         """
@@ -178,7 +178,7 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
             "title": "New assignment created",
             "event_name": "task_created",
             "created_at": "2026-09-10T08:25:00.000Z",
-            "body": '<p>Teacher posted <a href="https://school.managebac.cn/student/classes/1000012/core_tasks/300100">History Essay</a></p><p>When: September 15, 2026 at 23:59</p>',
+            "body": '<p>Teacher posted <a href="https://school.managebac.cn/student/classes/1000012/core_tasks/1000300">History Essay</a></p><p>When: September 15, 2026 at 23:59</p>',
             "body_preview": "New assignment posted by Mr. Smith",
             "sender": {"name": "Mr. Smith"},
             "origin": {"name": "AP US History"},

@@ -19,8 +19,23 @@ DEFAULT_PID_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.pid"
 DEFAULT_LOG_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.log"
 
 
+def _harden_dir(path: Path) -> None:
+    """Best-effort restrict a directory to the current user."""
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
 def _is_mb_cli_process(pid: int) -> bool:
-    """Verify PID corresponds to an mb-cli process to prevent terminating recycled PIDs."""
+    """Verify PID corresponds to an mb-cli process to prevent terminating recycled PIDs.
+
+    The bare ``"mb"`` substring is deliberately absent: it matches any process
+    whose command line merely contains those two letters (``systemd``,
+    ``kubelet``, ``Kubernetes``…), which would let a stale PID file cause a
+    signal to be delivered to an unrelated process.  Only the full module and
+    package names are accepted.
+    """
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -33,7 +48,7 @@ def _is_mb_cli_process(pid: int) -> bool:
         cmdline = result.stdout.strip()
         return any(
             k in cmdline
-            for k in ("mb-cli", "mb_cli", "mb_crawler", "pytest", "mb")
+            for k in ("mb-cli", "mb_cli", "mb_crawler", "mb.cli")
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -78,14 +93,26 @@ class ServiceManager:
 
     def write_pid(self, pid: int | None = None) -> None:
         self.pid_path.parent.mkdir(parents=True, exist_ok=True)
+        _harden_dir(self.pid_path.parent)
         cur_pid = pid or os.getpid()
-        self.pid_path.write_text(str(cur_pid) + "\n", encoding="utf-8")
+        # Create 0600 so the pid file is never briefly world-writable.
+        fd = os.open(str(self.pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(str(cur_pid) + "\n")
 
     def clean_pid(self) -> None:
         self.pid_path.unlink(missing_ok=True)
 
-    def start_background(self, extra_args: list[str] | None = None) -> dict[str, Any]:
-        """Start the daemon as a detached background process."""
+    def start_background(
+        self,
+        extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Start the daemon as a detached background process.
+
+        ``env`` entries are passed to the child through its environment rather
+        than argv, so credentials do not appear in ``ps`` output.
+        """
         running = self.get_running_pid()
         if running:
             return {
@@ -95,7 +122,21 @@ class ServiceManager:
             }
 
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(self.log_path, "a", encoding="utf-8")
+        _harden_dir(self.log_path.parent)
+        # Open with 0600 so the log never exists world-readable.
+        log_fd = os.open(
+            str(self.log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+        )
+        try:
+            os.chmod(self.log_path, 0o600)
+        except OSError:
+            pass
+        log_file = os.fdopen(log_fd, "a", encoding="utf-8")
+
+        child_env = None
+        if env:
+            child_env = os.environ.copy()
+            child_env.update(env)
 
         cmd = [sys.executable, "-m", "mb_cli", "daemon", "run"]
         if extra_args:
@@ -107,6 +148,7 @@ class ServiceManager:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=child_env,
         )
         self.write_pid(proc.pid)
         return {

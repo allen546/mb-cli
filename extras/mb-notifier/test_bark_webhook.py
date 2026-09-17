@@ -1,4 +1,6 @@
+import io
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -6,14 +8,21 @@ import pytest
 
 from bark_webhook_receiver import (
     DEFAULT_ALIASES_PATH,
+    MAX_BODY_BYTES,
     MAX_COURSE_LEN,
     MAX_TASK_LEN,
+    _log_safe,
     clean_task_title,
+    compute_signature,
     format_event_for_bark,
     is_task_event_suppressed,
     load_course_aliases,
+    make_request_handler,
+    reset_replay_cache,
     resolve_course_name,
+    sanitize_tap_url,
     truncate,
+    verify_signature,
 )
 
 
@@ -275,10 +284,13 @@ def test_webhook_handler_post(tmp_path):
     alias_file = tmp_path / "aliases.json"
     alias_file.write_text(json.dumps({"English Language Arts Hons": "ELA Hons"}), encoding="utf-8")
 
-    handler_cls = make_request_handler(mock_pusher, aliases_path=alias_file)
+    handler_cls = make_request_handler(
+        mock_pusher, aliases_path=alias_file, secret="test-secret"
+    )
 
     payload = {
         "event": "task_created",
+        "event_id": "evt-webhook-handler-1",
         "data": {
             "class_name": "English Language Arts Hons",
             "task_title": "Novel Essay",
@@ -286,10 +298,16 @@ def test_webhook_handler_post(tmp_path):
         },
     }
     body_bytes = json.dumps(payload).encode("utf-8")
+    signature = compute_signature("test-secret", body_bytes)
 
     # Simulate BaseHTTPRequestHandler
     handler = handler_cls.__new__(handler_cls)
-    handler.headers = {"Content-Length": str(len(body_bytes)), "X-MB-Event": "task_created"}
+    handler.headers = {
+        "Content-Length": str(len(body_bytes)),
+        "X-MB-Event": "task_created",
+        "X-MB-Signature": signature,
+        "X-MB-Timestamp": f"{datetime.now().timestamp():.3f}",
+    }
     handler.rfile = io.BytesIO(body_bytes)
     handler.wfile = io.BytesIO()
     handler.send_response = MagicMock()
@@ -305,6 +323,128 @@ def test_webhook_handler_post(tmp_path):
     assert "课程: ELA Hons" in msg
     assert "作业: Novel Essay" in msg
     assert "教师" not in msg
+
+
+def _post(handler_cls, body: bytes, headers: dict):
+    """Drive do_POST with mocked socket plumbing; return the status sent."""
+    handler = handler_cls.__new__(handler_cls)
+    handler.headers = {"Content-Length": str(len(body)), **headers}
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = io.BytesIO()
+    statuses: list[int] = []
+    handler.send_response = lambda code, *a, **k: statuses.append(code)
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.do_POST()
+    return statuses[0] if statuses else None
+
+
+def test_webhook_rejects_unsigned_push():
+    """A push with no signature must be refused — the daemon's signing is not decorative."""
+    reset_replay_cache()
+    pusher = MagicMock()
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+    body = json.dumps({"event": "task_created", "event_id": "e1", "data": {}}).encode()
+    status = _post(handler_cls, body, {"X-MB-Event": "task_created"})
+    assert status == 401
+    assert not pusher.push.called
+
+
+def test_webhook_rejects_bad_signature():
+    reset_replay_cache()
+    pusher = MagicMock()
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+    body = json.dumps({"event": "task_created", "event_id": "e2", "data": {}}).encode()
+    status = _post(
+        handler_cls,
+        body,
+        {
+            "X-MB-Event": "task_created",
+            "X-MB-Signature": "sha256=" + "0" * 64,
+            "X-MB-Timestamp": f"{datetime.now().timestamp():.3f}",
+        },
+    )
+    assert status == 401
+    assert not pusher.push.called
+
+
+def test_webhook_fails_closed_without_configured_secret():
+    reset_replay_cache()
+    pusher = MagicMock()
+    handler_cls = make_request_handler(pusher, secret=None)
+    body = json.dumps({"event": "task_created", "event_id": "e3", "data": {}}).encode()
+    status = _post(handler_cls, body, {"X-MB-Event": "task_created"})
+    assert status == 503
+    assert not pusher.push.called
+
+
+def test_webhook_rejects_replayed_event_id():
+    reset_replay_cache()
+    pusher = MagicMock()
+    pusher.push.return_value = True
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+    payload = {"event": "task_created", "event_id": "evt-replay-1", "data": {}}
+    body = json.dumps(payload).encode()
+    headers = {
+        "X-MB-Event": "task_created",
+        "X-MB-Signature": compute_signature("s3cret", body),
+        "X-MB-Timestamp": f"{datetime.now().timestamp():.3f}",
+    }
+    assert _post(handler_cls, body, dict(headers)) == 200
+    # Same event_id again must be refused as a replay.
+    assert _post(handler_cls, body, dict(headers)) == 409
+    assert pusher.push.call_count == 1
+
+
+def test_webhook_rejects_stale_timestamp():
+    reset_replay_cache()
+    pusher = MagicMock()
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+    payload = {"event": "task_created", "event_id": "evt-stale-1", "data": {}}
+    body = json.dumps(payload).encode()
+    status = _post(
+        handler_cls,
+        body,
+        {
+            "X-MB-Event": "task_created",
+            "X-MB-Signature": compute_signature("s3cret", body),
+            "X-MB-Timestamp": f"{datetime.now().timestamp() - 99999:.3f}",
+        },
+    )
+    assert status == 401
+    assert not pusher.push.called
+
+
+def test_webhook_rejects_oversized_body():
+    reset_replay_cache()
+    pusher = MagicMock()
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+    body = b"x" * 10
+    status = _post(
+        handler_cls,
+        body,
+        {
+            "Content-Length": str(MAX_BODY_BYTES + 1),
+            "X-MB-Event": "task_created",
+            "X-MB-Signature": compute_signature("s3cret", body),
+        },
+    )
+    assert status == 413
+    assert not pusher.push.called
+
+
+def test_sanitize_tap_url_blocks_offsite_and_non_https():
+    assert sanitize_tap_url("https://demo-school.managebac.cn/x") == "https://demo-school.managebac.cn/x"
+    assert sanitize_tap_url("https://evil.example.com/phish") == ""
+    assert sanitize_tap_url("file:///etc/passwd") == ""
+    assert sanitize_tap_url("http://demo-school.managebac.cn/x") == ""
+    assert sanitize_tap_url("https://notmanagebac.com.evil.net/x") == ""
+    assert sanitize_tap_url("") == ""
+
+
+def test_log_safe_strips_control_chars():
+    assert _log_safe("ok\nFAKE LOG LINE") == "okFAKE LOG LINE"
+    assert "\x1b" not in _log_safe("a\x1b[31mb")
 
 
 def test_format_event_fallback_when_task_title_matches_class_name():

@@ -70,7 +70,9 @@ Downstream systems can consume ManageBac events via two primary channels:
     - `Content-Type: application/json; charset=utf-8`
     - `User-Agent: mb-crawler-daemon/1.0`
     - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
-    - `X-MB-Signature: sha256=<hex_hmac>` (present if `--secret` is configured)
+    - `X-MB-Signature: sha256=<hex_hmac>` (always present; the receiver refuses
+  the request if it is missing or does not match)
+- `X-MB-Timestamp: <unix seconds>` (used for replay/freshness checks)
   - Retries: Up to 3 attempts with exponential backoff (`1s`, `2s`, `4s`).
 
 #### Channel B: Python Async SDK (`ManageBacDaemon.stream()`)
@@ -126,7 +128,7 @@ All task-related events (`task_created`, `task_updated`, `task_graded`, `deadlin
 | `status` | `string` | Yes | Submission status: `"not-submitted"`, `"submitted"`, or `"graded"`. | `"not-submitted"` |
 | `grade_letter` | `string` | Yes | Letter grade or evaluation status (e.g. `"A"`, `"7"`, `"N/A"`). | `"A"` |
 | `grade_score` | `string` | Yes | Raw numerical or fraction score, or `null`. | `"95 / 100"` |
-| `url` | `string` | Yes | Direct canonical URL to the task details page. | `"https://demo-school.managebac.cn/student/classes/1000010/core_tasks/1000014"` |
+| `url` | `string` | Yes | Direct canonical URL to the task details page. | `"https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000001"` |
 
 ---
 
@@ -158,7 +160,7 @@ Discovered when a teacher publishes a new task on ManageBac.
     "status": "not-submitted",
     "grade_letter": null,
     "grade_score": null,
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/1000014"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000002"
   }
 }
 ```
@@ -191,7 +193,7 @@ Discovered when a teacher modifies an existing task (e.g. rescheduled due date, 
     "status": "not-submitted",
     "grade_letter": null,
     "grade_score": null,
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/1000014"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000003"
   }
 }
 ```
@@ -214,7 +216,7 @@ Discovered when a teacher enters, changes, or publishes grades/evaluations for a
   "event_id": "evt_8f7e6d5c4b3a",
   "timestamp": "2026-09-14T11:45:00Z",
   "data": {
-    "task_id": 27419820,
+    "task_id": 1000015,
     "class_id": 1000010,
     "class_name": "English Language Arts I (Hons) - Group 2",
     "title": "Unit 1 Critical Essay",
@@ -225,7 +227,7 @@ Discovered when a teacher enters, changes, or publishes grades/evaluations for a
     "status": "graded",
     "grade_letter": "A",
     "grade_score": "96 / 100",
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/27419820"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000004"
   }
 }
 ```
@@ -263,7 +265,7 @@ Triggered by the countdown scheduler when an uncompleted, unsubmitted task appro
     "status": "not-submitted",
     "grade_letter": null,
     "grade_score": null,
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/1000014",
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000005",
     "time_remaining_minutes": 59.8,
     "reminder_threshold": "1h"
   }
@@ -286,7 +288,7 @@ Discovered when a coursework file or text submission is registered in the task d
   "event_id": "evt_5c6d7e8f9a0b",
   "timestamp": "2026-09-14T14:20:00Z",
   "data": {
-    "task_id": 27419820,
+    "task_id": 1000015,
     "class_id": 1000010,
     "class_name": "English Language Arts I (Hons) - Group 2",
     "title": "Unit 1 Critical Essay",
@@ -294,7 +296,7 @@ Discovered when a coursework file or text submission is registered in the task d
     "file_name": "Allen_Sun_Essay_Final.pdf",
     "file_size": 248102,
     "submitted_at_iso": "2026-09-14T14:19:55+08:00",
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/core_tasks/27419820"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000006"
   }
 }
 ```
@@ -319,7 +321,7 @@ Discovered when a teacher uploads course materials, slides, or resource files to
     "class_name": "English Language Arts I (Hons) - Group 2",
     "title": "Unit 2 Reading Packet",
     "file_name": "Unit2_Readings_and_Notes.pdf",
-    "file_url": "https://demo-school.managebac.cn/student/classes/1000010/files/99812/download",
+    "file_url": "https://demo-school.managebac.cn/student/classes/1000001/files/1000007/download",
     "author_name": "Dr. Henderson",
     "created_at_iso": "2026-09-14T03:09:40+08:00"
   }
@@ -348,7 +350,7 @@ Discovered when a class bulletin, teacher message, or general announcement is po
     "body_preview": "Please meet directly in the 3rd floor library tomorrow morning at 08:30 for research orientation.",
     "author_name": "Dr. Henderson",
     "created_at_iso": "2026-09-14T05:29:10+08:00",
-    "url": "https://demo-school.managebac.cn/student/classes/1000010/messages/55120"
+    "url": "https://demo-school.managebac.cn/student/classes/1000001/messages/1000008"
   }
 }
 ```
@@ -363,7 +365,9 @@ Below are two production-ready recipes demonstrating how to receive and process 
 
 This recipe implements an HTTP server that:
 - Validates the incoming JSON payload against Pydantic models.
-- Verifies the `X-MB-Signature` header using HMAC-SHA256 (if a webhook secret is set).
+- Verifies the `X-MB-Signature` header using HMAC-SHA256 in constant time, and
+  **rejects the request when no secret is configured** (fail closed).
+- Enforces a timestamp freshness window and rejects replayed `event_id`s.
 - Dispatches each event to its dedicated asynchronous handler function.
 
 Save this file as `webhook_receiver.py`:
@@ -386,6 +390,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 from typing import Any, Optional
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -402,8 +407,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Set to match the --secret passed to mb daemon, or leave empty if unauthenticated
-WEBHOOK_SECRET: Optional[str] = "your-secret-key"
+# MUST match the --secret passed to `mb daemon run`. When empty, this
+# receiver rejects every request (fail closed) rather than accepting
+# unauthenticated pushes.
+WEBHOOK_SECRET: Optional[str] = os.environ.get("MB_WEBHOOK_SECRET")
 
 
 class TaskPayload(BaseModel):
@@ -460,7 +467,10 @@ async def receive_webhook(
     body = await request.body()
 
     # 1. Verify HMAC signature if secret configured
-    if WEBHOOK_SECRET and not verify_hmac_signature(body, x_mb_signature, WEBHOOK_SECRET):
+    if not WEBHOOK_SECRET:
+        logger.error("Rejected webhook request: no WEBHOOK_SECRET configured")
+        raise HTTPException(status_code=503, detail="Receiver not configured")
+    if not verify_hmac_signature(body, x_mb_signature, WEBHOOK_SECRET):
         logger.warning("Rejected webhook request: invalid HMAC signature")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
