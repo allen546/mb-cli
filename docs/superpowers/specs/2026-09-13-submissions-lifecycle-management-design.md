@@ -80,7 +80,7 @@ mb submissions [target] [--id TASK_ID] [--list] [--add FILE_PATH] [--delete ASSE
 ```
 
 #### Behavior & Arguments
-* `target` (positional) or `--id TASK_ID`: Identifies the task. Can be a numeric ID (e.g. `27575545`) or full URL.
+* `target` (positional) or `--id TASK_ID`: Identifies the task. Can be a numeric ID (e.g. `1000099`) or full URL.
 * If `target` is specified without action flags, default to `--list`.
 * If no `target` and no action flags are specified, print an error and exit with code 1.
 * Actions:

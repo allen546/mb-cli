@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 import sys
+import tempfile
 import unicodedata
 from textwrap import indent
 
@@ -445,9 +448,26 @@ def print_payload(
         else render_pretty(payload)
     )
     if output_path:
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(rendered)
-            f.write("\n")
+        # Payloads can contain grade data or (via daemon status) a webhook
+        # secret, so the file is created 0600 from birth rather than at the
+        # umask default (0644).
+        dest = Path(output_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(rendered)
+                f.write("\n")
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, dest)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     else:
         print(rendered)
 

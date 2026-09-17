@@ -97,10 +97,10 @@ class TestViewTaskTool:
         mock, mock_client = mock_build_client
         mock_client.get_task_detail.return_value = {"description": "Task details"}
         result = view_task(
-            task_url="https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026"
+            task_url="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099"
         )
         data = json.loads(result)
-        assert data["task"]["id"] == "1000026"
+        assert data["task"]["id"] == "1000099"
         assert data["detail"]["description"] == "Task details"
 
     def test_view_task_no_target(self, mock_build_client):
@@ -118,13 +118,13 @@ class TestSubmitFileTool:
             "task_url": "http://x",
         }
         result = submit_file(
-            task_id="https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026",
+            task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
             file_path="/tmp/hw.pdf",
         )
         data = json.loads(result)
         assert data["ok"] is True
         mock_client.submit_file.assert_called_once_with(
-            "1000023", "1000026", "/tmp/hw.pdf"
+            "1000014", "1000099", "/tmp/hw.pdf"
         )
 
     def test_submit_not_found(self, mock_build_client):
@@ -137,15 +137,15 @@ class TestSubmitFileTool:
     def test_submit_numeric_id_resolves(self, mock_build_client):
         mock, mock_client = mock_build_client
         mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
-            [{"id": "1000026", "link": "/student/classes/1000023/core_tasks/1000026"}]
+            [{"id": "1000099", "link": "/student/classes/1000014/core_tasks/1000099"}]
             if view == "upcoming" else []
         )
         mock_client.submit_file.return_value = {"ok": True}
-        result = submit_file(task_id="1000026", file_path="/tmp/hw.pdf")
+        result = submit_file(task_id="1000099", file_path="/tmp/hw.pdf")
         data = json.loads(result)
         assert data["ok"] is True
         mock_client.submit_file.assert_called_once_with(
-            "1000023", "1000026", "/tmp/hw.pdf"
+            "1000014", "1000099", "/tmp/hw.pdf"
         )
 
 

@@ -778,3 +778,27 @@ class TestFileNaming:
             cache.put(f"https://example.com/{i}", f"body-{i}", 200)
         for p in tmp_path.glob("*.json"):
             json.loads(p.read_text())  # should not raise
+
+
+def test_cache_file_created_0600(tmp_path):
+    c = ResponseCache(cache_dir=tmp_path / "cd", ttl=60)
+    c.put("https://x.managebac.cn/a", "<html>secret grade</html>", 200)
+    p = next((tmp_path / "cd").glob("*.json"))
+    assert p.stat().st_mode & 0o777 == 0o600, oct(p.stat().st_mode & 0o777)
+    assert not list((tmp_path / "cd").glob(".*tmp"))
+
+
+def test_cache_dir_hardened_0700(tmp_path):
+    root = tmp_path / "deep" / "nested"
+    c = ResponseCache(cache_dir=root, ttl=60)
+    c.put("https://x.managebac.cn/a", "body", 200)
+    assert root.stat().st_mode & 0o777 == 0o700, oct(root.stat().st_mode & 0o777)
+
+
+def test_cache_clear_removes_jwt_and_grades(tmp_path):
+    c = ResponseCache(cache_dir=tmp_path, ttl=60)
+    c.put("https://x.managebac.cn/jwt", "Bearer abc", 200)
+    c.put("https://x.managebac.cn/grades", "<html>A+</html>", 200)
+    removed = c.clear()
+    assert removed == 2
+    assert list(tmp_path.glob("*.json")) == []

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import tempfile
 
 CONFIG_ENV = "MB_CRAWLER_CONFIG"
 SESSION_ENV = "MB_CRAWLER_SESSION"
@@ -77,11 +78,27 @@ def _read_json(path: Path) -> dict:
 
 
 def _write_json(path: Path, data: dict) -> None:
+    """Write JSON to *path* with 0600 permissions, atomically.
+
+    The file is created via ``mkstemp`` (0600 from birth) and then
+    ``os.replace``d into place, so the plaintext password is never visible
+    at a permissive mode, even briefly.
+    """
     _ensure_parent(path)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )
-    os.chmod(path, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def load_state(
@@ -175,12 +192,8 @@ def save_session(state: AppState) -> None:
 def save_creds(path: str | Path, email: str, password: str) -> None:
     """Save email/password to an external JSON file for silent re-login."""
     p = Path(path)
-    _ensure_parent(p)
-    p.write_text(
-        json.dumps({"email": email, "password": password, "version": 1}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    os.chmod(p, 0o600)
+    # Written 0600 from birth via _write_json's atomic temp-file path.
+    _write_json(p, {"email": email, "password": password, "version": 1})
 
 
 def load_creds(path: str | Path) -> dict | None:

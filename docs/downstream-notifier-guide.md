@@ -358,7 +358,7 @@ curl -X POST http://127.0.0.1:42617/webhook \
       "due_date": "2026-09-14T22:30:00",
       "reminder_threshold": "1h",
       "time_remaining_minutes": 60,
-      "url": "https://school.managebac.cn/student/classes/11511740/core_tasks/1000015"
+      "url": "https://school.managebac.cn/student/classes/1000012/core_tasks/1000099"
     }
   }'
 ```
@@ -372,7 +372,7 @@ Receiver Output Log:
        课程: AP Calc BC
        作业: Chapter 3 Problem Set: Derivatives
        截止: 09-14 22:30 (还剩 1小时)
-       Sound: 'alarm', Priority: 10, URL: 'https://school.managebac.cn/student/classes/11511740/core_tasks/1000015'
+       Sound: 'alarm', Priority: 10, URL: 'https://school.managebac.cn/student/classes/1000012/core_tasks/1000099'
 ```
 
 ---

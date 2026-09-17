@@ -107,7 +107,7 @@ def test_scheduler_live_check_detects_graded_task(tmp_path: Path):
         {
             "id": "301",
             "title": "Lab Practical",
-            "class_id": "11516148",
+            "class_id": "1000014",
             "due_date": due_str,
             "status": "not-submitted",
         }
@@ -128,7 +128,7 @@ def test_scheduler_live_check_detects_graded_task(tmp_path: Path):
     events = scheduler.evaluate_deadlines(now=now)
 
     assert len(events) == 0, "Reminder should be suppressed when live checker discovers grade"
-    assert checked_calls == [("11516148", "301")]
+    assert checked_calls == [("1000014", "301")]
     # Task should not be blindly marked as submitted if it was graded
     assert mgr.get_task("301")["status"] != "submitted"
     assert mgr.get_task("301")["grade_score"] == "100/100"
@@ -145,7 +145,7 @@ def test_service_pre_alarm_check_with_graded_stealth_details(tmp_path: Path):
     task = {
         "id": "888",
         "task_id": "888",
-        "class_id": "11516148",
+        "class_id": "1000014",
         "title": "In-Class Essay",
         "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
         "status": "not-submitted",
@@ -164,7 +164,7 @@ def test_service_pre_alarm_check_with_graded_stealth_details(tmp_path: Path):
         return_value={
             "id": "888",
             "task_id": "888",
-            "class_id": "11516148",
+            "class_id": "1000014",
             "title": "In-Class Essay",
             "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
             "status": "not-submitted",
@@ -295,8 +295,8 @@ def test_service_promotes_task_created_to_task_graded_when_score_released(tmp_pa
         data={
             "notification_id": 99901,
             "title": "New Task: 语文早读小测1",
-            "task_id": 1000013,
-            "class_id": 1000001,
+            "task_id": 1000099,
+            "class_id": 1000014,
         },
     )
     provider = MockProvider([mock_event])
@@ -307,8 +307,8 @@ def test_service_promotes_task_created_to_task_graded_when_score_released(tmp_pa
     )
     service.stealth_crawler.fetch_task_details = MagicMock(
         return_value={
-            "id": "1000013",
-            "class_id": "1000001",
+            "id": "1000099",
+            "class_id": "1000014",
             "title": "语文早读小测1",
             "class_name": "AP Chinese Language Arts I 高一语文1班 (Grade 10) E103",
             "due_date": "Sep 11, 10:10 AM",

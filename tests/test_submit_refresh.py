@@ -93,9 +93,9 @@ def test_resolve_task_ids_snapshot_fast_path(tmp_path: Path):
         "crawled_at": "2026-09-13T10:00:00",
         "upcoming": [
             {
-                "id": "27546408",
+                "id": "1000021",
                 "title": "kinematics",
-                "link": "https://demo-school.managebac.cn/student/classes/1000012/core_tasks/27546408",
+                "link": "https://demo-school.managebac.cn/student/classes/1000011/core_tasks/1000021",
             }
         ],
         "past": [],
@@ -107,9 +107,9 @@ def test_resolve_task_ids_snapshot_fast_path(tmp_path: Path):
     # crawl_all should NOT be called because the task is in the snapshot!
     client.crawl_all.side_effect = RuntimeError("Should not crawl!")
 
-    cid, tid = _resolve_task_ids(client, "27546408", snapshot_path=snapshot_path)
-    assert cid == "1000012"
-    assert tid == "27546408"
+    cid, tid = _resolve_task_ids(client, "1000021", snapshot_path=snapshot_path)
+    assert cid == "1000011"
+    assert tid == "1000021"
     client.crawl_all.assert_not_called()
 
 
@@ -121,17 +121,17 @@ def test_resolve_task_ids_fallback_to_crawl(tmp_path: Path):
     client.crawl_all.return_value = {
         "upcoming": [
             {
-                "id": "99999",
-                "link": "https://demo-school.managebac.cn/student/classes/12345/core_tasks/99999",
+                "id": "1000099",
+                "link": "https://demo-school.managebac.cn/student/classes/12345/core_tasks/1000099",
             }
         ],
         "past": [],
         "overdue": [],
     }
 
-    cid, tid = _resolve_task_ids(client, "99999", snapshot_path=snapshot_path)
+    cid, tid = _resolve_task_ids(client, "1000099", snapshot_path=snapshot_path)
     assert cid == "12345"
-    assert tid == "99999"
+    assert tid == "1000099"
     client.crawl_all.assert_called_once()
 
 
@@ -208,10 +208,10 @@ def test_update_snapshot_with_class_tasks(tmp_path: Path):
 
 def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
     parser = build_parser()
-    submit_args = parser.parse_args(["submit", "27546408", str(tmp_path / "work.pdf")])
+    submit_args = parser.parse_args(["submit", "1000021", str(tmp_path / "work.pdf")])
     (tmp_path / "work.pdf").write_bytes(b"%PDF-test")
 
-    # Prepare snapshot where task 27546408 is unsubmitted
+    # Prepare snapshot where task 1000021 is unsubmitted
     snapshot_path = tmp_path / "snapshot.json"
     initial_snapshot = {
         "crawled_at": "2026-09-13T12:00:00",
@@ -220,11 +220,11 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
         "base_url": "https://demo-school.managebac.cn",
         "upcoming": [
             {
-                "id": "27546408",
+                "id": "1000021",
                 "title": "kinematics classwork1",
                 "class_name": "AP Physics 1",
                 "due_date": "Dec 13, 5:55 PM",
-                "link": "https://demo-school.managebac.cn/student/classes/1000012/core_tasks/27546408",
+                "link": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000099",
                 "status": "not-submitted",
                 "has_submit_button": True,
                 "labels": ["Formative", "Pending"],
@@ -244,16 +244,16 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
     mock_client.submit_file.return_value = {
         "ok": True,
         "filename": "work.pdf",
-        "task_url": "https://demo-school.managebac.cn/student/classes/1000012/core_tasks/27546408",
+        "task_url": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000099",
     }
-    # Return fresh class tasks where task 27546408 is submitted
+    # Return fresh class tasks where task 1000021 is submitted
     mock_client.get_class_tasks.return_value = [
         {
-            "id": "27546408",
+            "id": "1000021",
             "title": "kinematics classwork1",
             "class_name": "AP Physics 1",
             "due_date": "Dec 13, 5:55 PM",
-            "link": "https://demo-school.managebac.cn/student/classes/1000012/core_tasks/27546408",
+            "link": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000099",
             "status": "submitted",
             "has_submit_button": False,
             "labels": ["Formative", "Submitted"],

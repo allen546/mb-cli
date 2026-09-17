@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,6 +63,15 @@ class ResponseCache:
             return
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
+        # Harden the parents too — mkdir(parents=True) would otherwise leave
+        # ~/.config/mb-crawler and its cache/ at the umask default (0755),
+        # making the credential-bearing tree traversable by other local users.
+        for parent in (self.cache_dir, *self.cache_dir.parents):
+            try:
+                if parent.is_dir():
+                    os.chmod(parent, 0o700)
+            except OSError:
+                pass
         data = {
             "url": url,
             "body": body,
@@ -69,8 +79,39 @@ class ResponseCache:
             "ts": time.time()
         }
         p = self._path(url)
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        os.chmod(p, 0o600)
+        # Create 0600 from birth via a temp file, then atomically replace —
+        # avoids any window where cached grade pages/JWTs are world-readable.
+        fd, tmp = tempfile.mkstemp(
+            dir=str(self.cache_dir), prefix=".cache_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def clear(self) -> int:
+        """Delete every cache entry. Returns the number of files removed.
+
+        Cached bodies include full grade pages and the MNN-hub Bearer JWT, so
+        ``mb logout`` calls this to avoid leaving credentials on disk.
+        """
+        removed = 0
+        if not self.cache_dir.exists():
+            return 0
+        for f in self.cache_dir.glob("*.json"):
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+        return removed
 
     def invalidate(self, url: str | None = None) -> None:
         """Mark one entry as invalidated (setting ts=0 and invalidated=True), or mark all entries if *url* is ``None``."""

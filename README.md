@@ -147,7 +147,10 @@ if __name__ == "__main__":
 
 ```bash
 # Run daemon in foreground with webhook dispatching
-mb daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "your-hmac-secret"
+# Pass the secret via the environment so it does not appear in `ps` output
+# or your shell history.
+export MB_WEBHOOK_SECRET="your-hmac-secret"
+mb daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "$MB_WEBHOOK_SECRET"
 
 # Or configure webhook URL persistently and run daemon
 mb daemon configure-webhook http://127.0.0.1:8000/webhook
@@ -156,6 +159,12 @@ mb daemon start --interval 1800 --active-hours-start 7 --active-hours-end 23
 # Test the webhook connection with a mock ping
 mb daemon test-webhook http://127.0.0.1:8000/webhook
 ```
+
+> **Verify the signature.** The daemon signs every payload with HMAC-SHA256,
+> but a receiver that ignores `X-MB-Signature` accepts forged events from
+> anything that can reach its port. The bundled receiver in
+> `extras/mb-notifier/` requires `--secret` (or `MB_WEBHOOK_SECRET`) and refuses
+> unsigned, replayed, or stale pushes. Write your receiver the same way.
 
 ### Webhook HTTP Contract
 - **Method**: `POST`
@@ -221,10 +230,27 @@ mb daemon status                        # show daemon process status
 By default, `mb-cli` stores credentials and daemon states in `~/.config/mb-crawler/`:
 - `config.json` — School domain, preferences, and webhook settings
 - `session.json` — Authenticated session cookies and tokens
+- `creds.json` — **Plaintext ManageBac password**, stored to allow silent re-login
 - `snapshot.json` — Coursework state cache for delta detection
 - `daemon.log` / `daemon.pid` — Background daemon runtime files
+- `cache/` — Cached HTTP responses, including grade pages and the MNN hub JWT
+- `daemon_state.json` — Notification/reminder dedup state
 
-Override default paths with `--config <file>`, `--session-file <file>`, or environment variables `MB_CRAWLER_CONFIG` and `MB_CRAWLER_SESSION`.
+Every file holding a credential or personal data is written with `0600` and the
+directory with `0700`.
+
+> **`creds.json` holds your password in cleartext.** It is only written when a
+> password login succeeds *without* `--temp`. Use `mb login --temp` for a
+> one-off session that is not persisted. `mb logout` clears the session cookie
+> and the response cache, but does **not** delete `creds.json` — remove it
+> manually if you want the password gone:
+> ```bash
+> rm ~/.config/mb-crawler/creds.json
+> ```
+
+Override default paths with `--config <file>`, `--session-file <file>`, or
+environment variables `MB_CRAWLER_CONFIG`, `MB_CRAWLER_SESSION`, and
+`MB_CRAWLER_CREDS_PATH`.
 
 ---
 

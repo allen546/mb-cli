@@ -29,6 +29,13 @@ from .webhook import WebhookDispatcher
 log = logging.getLogger(__name__)
 
 
+def _safe_log(value: Any) -> str:
+    """Strip control characters from a remotely-sourced string before logging."""
+    return "".join(
+        ch for ch in str(value or "") if ch == "\t" or (0x20 <= ord(ch) != 0x7F)
+    )[:200]
+
+
 class DaemonService:
     """Core daemon service running the real-time notification loop."""
 
@@ -169,7 +176,7 @@ class DaemonService:
                 if notif_id and self.state_manager.is_notification_processed(int(notif_id)):
                     continue
 
-                log.info("New notification received: [%s] %s", event.event, event.data.get("title"))
+                log.info("New notification received: [%s] %s", _safe_log(event.event), _safe_log(event.data.get("title")))
 
                 # 2. Stealth task detail enrichment
                 class_id = event.data.get("class_id")

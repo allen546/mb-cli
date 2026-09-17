@@ -161,3 +161,10 @@ downloaded_attachments/
 /course_aliases.json
 
 
+
+# Personal data / infrastructure details — never commit these.
+DEPLOYMENT.md
+docs/deployments/
+course_aliases.json
+snapshot.json
+daemon_state.json

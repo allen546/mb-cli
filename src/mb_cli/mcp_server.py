@@ -27,6 +27,33 @@ mcp = FastMCP(
 )
 
 
+# ── Error sanitisation ───────────────────────────────────────────────
+# Tool results land in the assistant's context, which may be influenced by
+# content scraped from ManageBac.  Raw exception text can therefore leak
+# local paths, session cookies, or a remote endpoint's response body.
+_SENSITIVE_KEY_RE = re.compile(
+    r"(cookie|token|password|passwd|secret|authorization|bearer|session)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_error(exc: Exception) -> str:
+    """Return a short, redacted description of *exc* safe for tool output."""
+    text = str(exc)
+    # Drop obvious credential material and keep the message short.
+    if _SENSITIVE_KEY_RE.search(text):
+        text = "an authentication or credential error occurred"
+    text = "".join(
+        ch for ch in text if ch == "\t" or (0x20 <= ord(ch) != 0x7F)
+    )
+    return text[:200]
+
+
+def _error_payload(exc: Exception) -> str:
+    """Build the JSON error string returned by MCP tools."""
+    return json.dumps({"error": _sanitize_error(exc)})
+
+
 # ── Tasks ───────────────────────────────────────────────────────────────
 
 
@@ -214,7 +241,7 @@ def submit_file(
     PREFER passing the full task URL (e.g. from the list_tasks results) to bypass resolution.
 
     Args:
-        task_id: Task ID or full URL (e.g. "1000026" or "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026")
+        task_id: Task ID or full URL (e.g. "1000026" or "https://myschool.managebac.cn/student/classes/1000001/core_tasks/1000099")
         file_path: Local path to the file to upload
         school: School subdomain
         domain: Base domain
@@ -304,7 +331,7 @@ def submit_file(
             pass
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error_payload(e)
 
 
 @mcp.tool()
@@ -324,7 +351,7 @@ def delete_submission(
     The asset_id can be a numeric asset ID or the filename.
 
     Args:
-        task_id: Task ID or full URL (e.g. "1000026" or "https://myschool.managebac.cn/student/classes/1000023/core_tasks/1000026")
+        task_id: Task ID or full URL (e.g. "1000026" or "https://myschool.managebac.cn/student/classes/1000001/core_tasks/1000099")
         asset_id: The asset ID (e.g. "82189817") or filename of the submission to delete
         school: School subdomain
         domain: Base domain
@@ -398,7 +425,7 @@ def delete_submission(
             pass
         return json.dumps(result, indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return _error_payload(e)
 
 
 @mcp.tool()
@@ -422,8 +449,8 @@ def get_teacher_feedback(
     expensive task-list resolution.
 
     Args:
-        task_id: Numeric task ID (e.g. "27395861")
-        task_url: Full task URL (e.g. "https://myschool.managebac.cn/student/classes/1000024/core_tasks/27395861")
+        task_id: Numeric task ID (e.g. "1000099")
+        task_url: Full task URL (e.g. "https://myschool.managebac.cn/student/classes/1000001/core_tasks/1000099")
         school: School subdomain
         domain: Base domain
         cookie: Session cookie override

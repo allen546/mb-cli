@@ -15,7 +15,7 @@ def test_mnnhub_provider_normalization():
         "title": "Updated Task",
         "event_name": "task_updated",
         "created_at": "2026-09-02T07:44:54.316Z",
-        "body": '<p>Updated <a href="https://school.managebac.cn/student/classes/1000012/core_tasks/1000099">Task</a></p><p>When: September 10, 2026 at 9:10 AM</p>',
+        "body": '<p>Updated <a href="https://school.managebac.cn/student/classes/1000001/core_tasks/1000015">Task</a></p><p>When: September 10, 2026 at 9:10 AM</p>',
         "body_preview": "Updated Task NAME LIST",
         "sender": {"name": "Teacher Name"},
         "origin": {"name": "Physics Class"},
@@ -24,10 +24,10 @@ def test_mnnhub_provider_normalization():
     event = provider.normalize_notification(raw_item)
     assert event.event == "task_updated"
     assert event.event_id == "notif_244677168"
-    assert event.data["task_id"] == 1000099
-    assert event.data["class_id"] == 1000012
+    assert event.data["task_id"] == 1000015
+    assert event.data["class_id"] == 1000001
     assert event.data["due_date"] == "September 10, 2026 at 9:10 AM"
-    assert event.data["url"] == "https://school.managebac.cn/student/classes/1000012/core_tasks/1000099"
+    assert event.data["url"] == "https://school.managebac.cn/student/classes/1000001/core_tasks/1000015"
 
 
 def test_mnnhub_provider_extracts_task_title_from_updated_task_body():
@@ -39,7 +39,7 @@ def test_mnnhub_provider_extracts_task_title_from_updated_task_body():
         "title": "Updated Task",
         "event_name": "task_updated",
         "created_at": "2026-09-11T02:00:00.000Z",
-        "body": '<p style="margin:0 0 10px"><strong style="font-weight:600">A. Teacher</strong> has just updated the Task <strong style="font-weight:600">Materials Check</strong> in <a href="https://demo-school.managebac.cn/student/classes/1000010/calendar">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>.</p> <p style="margin:0 0 10px"> <strong style="font-weight:600">When:</strong> September 11, 2026 at 12:10 PM </p> <p style="margin:0 0 10px"><a href="https://demo-school.managebac.cn/student/classes/1000010/core_tasks/27564524">View full details</a></p>',
+        "body": '<p style="margin:0 0 10px"><strong style="font-weight:600">A. Teacher</strong> has just updated the Task <strong style="font-weight:600">Materials Check</strong> in <a href="https://demo-school.managebac.cn/student/classes/1000010/calendar">AP English Language Arts I (Hons) - Group 2 (Grade 10)</a>.</p> <p style="margin:0 0 10px"> <strong style="font-weight:600">When:</strong> September 11, 2026 at 12:10 PM </p> <p style="margin:0 0 10px"><a href="https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000017">View full details</a></p>',
         "body_preview": "A. Teacher has just updated the Task Materials Check in AP English Language Arts I (Hons) - Group 2 (Grade 10). When: September 11, 2026 at 12:10 PM View full details",
         "sender": {"name": "A. Teacher"},
         "origin": {"name": "AP English Language Arts I (Hons) - Group 2 (Grade 10)"},

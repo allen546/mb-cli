@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import getpass
 import json
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -25,6 +27,7 @@ from .daemon import (
     start_loop,
     stop_daemon,
 )
+from .daemon import _resolve_secret
 from .exceptions import CommandError
 from .filters import (
     classify_task_view,
@@ -97,9 +100,50 @@ def load_snapshot(path: Path) -> dict:
 def save_snapshot(path: Path, data: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _harden_dir(path.parent)
+        # Write to a temp file in the same directory, restrict permissions,
+        # then atomically replace — avoids a world-readable window entirely.
+        import tempfile
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".snapshot_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         log.warning("Failed to save snapshot: %s", e)
+
+
+def _harden_dir(path: Path) -> None:
+    """Best-effort restrict a directory to the current user."""
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _redact_daemon_config(config: dict) -> dict:
+    """Return a copy of a daemon config safe to echo into CLI/MCP output.
+
+    The HMAC secret must never appear in stdout, an --output file, or a
+    journal, since those are far less protected than the config file itself.
+    """
+    redacted = copy.deepcopy(config)
+    for wh in redacted.get("webhooks") or []:
+        if isinstance(wh, dict) and wh.get("secret"):
+            wh["secret"] = "***redacted***"
+    delivery = redacted.get("delivery")
+    if isinstance(delivery, dict) and delivery.get("secret"):
+        delivery["secret"] = "***redacted***"
+    return redacted
 
 
 def merge_snapshot(old: dict, new: dict, client=None) -> dict:
@@ -481,12 +525,31 @@ def cmd_view(args) -> int:
 def cmd_logout(args) -> int:
     state = load_state(args.profile, args.config, args.session_file)
     clear_session(state, all_profiles=args.all)
+
+    # `logout` must actually mean logout: the response cache holds full grade
+    # pages and the MNN-hub Bearer JWT, which would otherwise survive.
+    cache_cleared = None
+    if not getattr(args, "keep_cache", False):
+        try:
+            import hashlib
+            from .cache import DEFAULT_CACHE_DIR, ResponseCache
+            email = state.session.email or state.profile.email
+            if email:
+                email_hash = hashlib.sha256(email.encode()).hexdigest()[:16]
+                target = DEFAULT_CACHE_DIR / email_hash
+            else:
+                target = DEFAULT_CACHE_DIR
+            cache_cleared = ResponseCache(cache_dir=target).clear()
+        except Exception as e:
+            log.warning("Failed to clear response cache on logout: %s", e)
+
     payload = ok(
         "logout",
         state.active_profile,
         {
             "logged_out": True,
             "all_profiles": args.all,
+            "cache_entries_removed": cache_cleared,
         },
     )
     print_payload(payload, args.output, args.format)
@@ -497,9 +560,13 @@ def cmd_daemon_run(args) -> int:
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
+    # `mb daemon start --background` hands the secret over via MB_WEBHOOK_SECRET
+    # rather than argv, so a foreground `daemon run` must read it from the
+    # environment — otherwise the daemon it spawns signs nothing.
+    secret = _resolve_secret(getattr(args, "secret", None))
     if getattr(args, "webhook_url", None):
         daemon_config["webhooks"] = [
-            {"url": args.webhook_url, "secret": getattr(args, "secret", None), "events": ["*"], "enabled": True}
+            {"url": args.webhook_url, "secret": secret, "events": ["*"], "enabled": True}
         ]
         daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
     if getattr(args, "poll_interval", None) is not None:
@@ -532,6 +599,9 @@ def cmd_daemon_start(args) -> int:
             log_path=getattr(args, "log_file", None),
         )
         extra_args = []
+        # Secrets go to the child through its environment, never argv: argv is
+        # readable by any local user via `ps` for the life of the daemon.
+        daemon_secret_env: dict[str, str] = {}
         if getattr(args, "profile", None):
             extra_args.extend(["--profile", args.profile])
         if getattr(args, "config", None):
@@ -545,21 +615,21 @@ def cmd_daemon_start(args) -> int:
         if getattr(args, "email", None):
             extra_args.extend(["--email", args.email])
         if getattr(args, "password", None):
-            extra_args.extend(["--password", args.password])
+            daemon_secret_env["MB_CRAWLER_PASSWORD"] = args.password
         if getattr(args, "cookie", None):
-            extra_args.extend(["--cookie", args.cookie])
+            daemon_secret_env["MB_CRAWLER_COOKIE"] = args.cookie
         if getattr(args, "daemon_config", None):
             extra_args.extend(["--daemon-config", args.daemon_config])
         if getattr(args, "webhook_url", None):
             extra_args.extend(["--webhook-url", args.webhook_url])
         if getattr(args, "secret", None):
-            extra_args.extend(["--secret", args.secret])
+            daemon_secret_env["MB_WEBHOOK_SECRET"] = args.secret
         if getattr(args, "interval", None) is not None:
             extra_args.extend(["--poll-interval", str(args.interval)])
         if getattr(args, "no_verify_tls", False):
             extra_args.append("--no-verify-tls")
 
-        res = mgr.start_background(extra_args=extra_args)
+        res = mgr.start_background(extra_args=extra_args, env=daemon_secret_env)
         payload = ok("daemon.start", getattr(args, "profile", "default") or "default", res)
         print_payload(payload, args.output, args.format)
         return 0 if res.get("started") else 1
@@ -573,7 +643,7 @@ def cmd_daemon_start(args) -> int:
             "webhook_url": args.webhook_url,
         }
         daemon_config["webhooks"] = [
-            {"url": args.webhook_url, "secret": getattr(args, "secret", None), "events": ["*"], "enabled": True}
+            {"url": args.webhook_url, "secret": _resolve_secret(getattr(args, "secret", None)), "events": ["*"], "enabled": True}
         ]
     if args.channel_id and args.recipient:
         daemon_config["delivery"] = {
@@ -589,7 +659,7 @@ def cmd_daemon_start(args) -> int:
         daemon_config["active_hours_end"] = args.active_hours_end
     result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
     payload = ok(
-        "daemon.start", state.active_profile, result | {"daemon": daemon_config}
+        "daemon.start", state.active_profile, result | {"daemon": _redact_daemon_config(daemon_config)}
     )
     print_payload(payload, args.output, args.format)
     return 0
@@ -1134,6 +1204,25 @@ def slugify(text: str) -> str:
     return text.strip("_")
 
 
+def _safe_filename(name: str, fallback: str = "download") -> str:
+    """Reduce a remotely-supplied filename to a single safe path component.
+
+    Attachment names are scraped from ManageBac HTML, so they must never be
+    able to escape the chosen output directory via ``../`` or an absolute
+    path.
+    """
+    raw = str(name or "").strip()
+    # Drop any directory component and all path separators.
+    base = raw.replace("\\", "/").split("/")[-1]
+    base = base.strip().strip(".")
+    # Remove NUL and control characters, and anything exotic.
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base)
+    base = re.sub(r"[^A-Za-z0-9._\- ]+", "_", base).strip()
+    if not base or base in (".", ".."):
+        return fallback
+    return base[:255]
+
+
 def cmd_download(args) -> int:
     state, client, email = _build_client(args, "download")
     _authenticate_client(state, client, email)
@@ -1198,15 +1287,22 @@ def cmd_download(args) -> int:
         return 0
 
     log.info("Downloading %d file(s) to %s...", len(files_to_download), out_dir)
+    # Resolve once so containment can be verified for every file written.
+    out_root = out_dir.resolve()
     success_count = 0
     for name, url, source_type in files_to_download:
-        dest_path = out_dir / name
-        stem = Path(name).stem
-        suffix = Path(name).suffix
+        safe_name = _safe_filename(name)
+        dest_path = out_dir / safe_name
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
         counter = 1
         while dest_path.exists():
             dest_path = out_dir / f"{stem} ({counter}){suffix}"
             counter += 1
+        # Defence in depth: never write outside the output directory.
+        if out_root not in dest_path.resolve().parents:
+            log.error("Refusing to write outside %s: %r", out_dir, name)
+            continue
 
         log.info("  [%s] Downloading %s...", source_type, name)
         try:
@@ -1416,6 +1512,11 @@ def build_parser() -> argparse.ArgumentParser:
     logout.add_argument("--config", help="Path to config TOML")
     logout.add_argument("--session-file", help="Path to session TOML")
     logout.add_argument("--all", action="store_true", help="Remove all saved sessions")
+    logout.add_argument(
+        "--keep-cache",
+        action="store_true",
+        help="Keep the on-disk response cache (it holds grade pages and a hub JWT)",
+    )
     logout.add_argument("--output", "-o", help="Write output to file")
     logout.add_argument(
         "--format",

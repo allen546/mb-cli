@@ -317,7 +317,7 @@ def test_get_submissions_task_page_modal_preview():
     """
     client = _make_client()
     with patch.object(client, "_get", return_value=_soup(html)):
-        subs = client.get_submissions("11516148", "27530452")
+        subs = client.get_submissions("1000014", "1000099")
 
     assert len(subs) == 1
     assert subs[0]["name"] == "essay.pdf"
