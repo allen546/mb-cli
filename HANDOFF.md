@@ -1,7 +1,7 @@
 # Handoff: `tahuti` — ManageBac toolkit
 
 **Date:** 2026-09-19
-**Branch:** `publish-prep` (21 commits ahead of the pre-work HEAD `2254a01`)
+**Branch:** `publish-prep` (24 commits ahead of the pre-work HEAD `2254a01`)
 **State:** 679 tests passing on **both** macOS (arm64) and Linux (aarch64),
 builds clean, `twine check` passes on both artifacts.
 **Nothing has been pushed to GitHub, published, or released.**
@@ -137,6 +137,71 @@ in the sdist. If you want the notifier to use it, copy it to
 `~/.config/tahuti/course_aliases.json` and edit that, as its own header comment
 says.
 
+### 2.1 Why the Linux keychain does not work on this host
+
+Established 2026-09-19 by direct experiment. Worth reading before anyone
+"fixes" this, because the obvious diagnosis is wrong.
+
+The symptom is:
+
+```
+secret-tool: Cannot autolaunch D-Bus without X11 $DISPLAY
+```
+
+That message names X11, which invites the conclusion that libsecret needs a
+graphical session. **It does not.** The failure is in D-Bus *autolaunch*: with
+`DBUS_SESSION_BUS_ADDRESS` unset, `secret-tool` tries to start a session bus
+itself, and only that autolaunch path is X11-dependent. Supply a bus and D-Bus
+is satisfied — `dbus-run-session` activates `org.freedesktop.secrets`
+successfully with no display at all.
+
+It then fails one layer deeper:
+
+```
+secret-tool: Cannot create an item in a locked collection
+Gtk-WARNING: cannot open display
+```
+
+The secret service is up and talking. The **default collection is locked**, and
+gnome-keyring unlocks it via `org.gnome.keyring.SystemPrompter` — a GTK dialog,
+which cannot run headless and exits 1. Both documented headless workarounds
+fail identically: `gnome-keyring-daemon --login` with a password on stdin, and
+`--unlock` with a password on stdin.
+
+The reason, read out of the keyring file itself: `~/.local/share/keyrings/
+default` points at `Default_Keyring`, whose leading byte is neither `0x00`
+(hashed credential — unlockable with a password) nor `0x01` (no credential). It
+carries no password to check against, having been created by a GUI session that
+no longer exists, so headless gnome-keyring has no way to unlock it by design.
+
+**Therefore `login` correctly falls back to `creds.json` at 0600 and warns.**
+That is the intended behavior, not a defect. The escape hatch — delete
+`Default_Keyring` so a fresh password-less one is created — is deliberately
+*not* recommended: it yields encryption-at-rest that is weaker than the 0600
+file it replaces, behind a GTK dependency.
+
+**Verified-working alternatives on this host, and why none was adopted:**
+
+| Option | Present | Works unattended | Why not |
+|---|---|---|---|
+| gnome-keyring | yes | no | locked collection, GUI prompter |
+| `systemd-creds` | yes | yes | **no TPM** (`/dev/tpm0`, `/dev/tpmrm0` absent) — nothing to seal to |
+| `keyctl` kernel keyring | yes | no | session-scoped; dies with the session |
+| `pass`/`gopass`/`age`/`sops` | no | yes | would add a runtime dep, ruled out by §7's stdlib-only rule |
+
+The real constraint is not headlessness but **unattended operation**: the
+daemon is a systemd service with nobody at a keyboard, so any store needing a
+passphrase at unlock time is unusable for it. That is why `creds.json` is the
+default and the keychain is opt-in. A genuine upgrade is `pass`/`age` with the
+key supplied via systemd `LoadCredential` — but that is a *daemon* feature, not
+a `login` feature, and a new dependency.
+
+**What still needs doing:** run the Linux keychain path on a host with a real
+graphical session (§6.5). `keychain.py`'s docstring also claims the Linux
+helper is "Absent on a headless box with no secret service" — now known to be
+wrong in a way that sends the reader chasing a dependency problem that does not
+exist. Worth correcting to say the *unlock* is impossible, not the service.
+
 ---
 
 ## 3. Release gates — four separate gates, not one
@@ -160,7 +225,9 @@ nobody has executed.
 2. **Linux** — **done for the unit suite**: 679/679 pass on this Pi. Still
    outstanding is the daemon end-to-end (systemd install, not just launchd) —
    the unit tests cover launchd and systemd *file generation*, but no real
-   service has been installed and started here yet.
+   service has been installed and started here yet. Also outstanding: the
+   Linux keychain has never worked here, for a reason that is *not* a missing
+   dependency — see §6.5.
 3. **Windows laptop** — manual verification available. Specifically:
    - `tahuti login --keychain` → store → `tahuti logout` → confirm the
      Credential Locker entry is gone
@@ -283,6 +350,13 @@ is the largest untapped audience but needs a second auth surface.
    The failure is benign but wrong: `stop_background(verify_process=True)`
    would report "not a tahuti process" and refuse to stop. Needs a
    `wmic`/`tasklist` path.
+5. **The Linux keychain path has never been verified working, on any host.**
+   Added 2026-09-19 after establishing *why* it fails here (see §2.1). It is
+   not a missing dependency, so it cannot be fixed by installing anything —
+   which is what makes it a release blocker rather than a known limit. The
+   macOS and Windows paths are exercised by tests and, for macOS, by real use;
+   **Linux is exercised by neither.** Needs verification on a box with a
+   graphical session — the Mac does not count, and this Pi cannot do it.
 
 ### Non-blocking, worth doing
 - `docs/library.md` should get the same polling-not-push treatment as
@@ -341,8 +415,9 @@ because every branch was merged in first:
 
 | Branch | Status |
 |---|---|
-| `publish-prep` | **checked out here** — 20 commits ahead of `2254a01` |
+| `publish-prep` | **checked out here** — 24 commits ahead of `2254a01` |
 | `docs-fixes`, `cli-rename`, `windows-support` | merged into `publish-prep`, still present as refs |
+| `worktree-finish-security-audit` | ancestor-less legacy clone; content already in `publish-prep`. Preserved for reference only |
 | `main` | still at `2254a01` on the Mac; the work has **not** reached it |
 
 The Mac's checkout at `~/Desktop/t8/mb-crawler` is unmodified and still on
@@ -367,10 +442,63 @@ Rebuild with `uv build`; it correctly produces `tahuti-0.3.0.{tar.gz,whl}`.
 2. **Push `publish-prep`**, then merge to `main`.
 3. **Enable private vulnerability reporting**, then publish to **TestPyPI
    first**, install from there to verify, before the real PyPI upload.
-4. `gh` is not installed on this host; install it if you need repo operations.
+4. `gh` **is** installed here (2.90.0, `/home/linuxbrew/.linuxbrew/bin/gh`) — an
+   earlier revision of this document said it was not. The token in
+   `~/.config/gh/hosts.yml` is **invalid**, so `gh auth login` must be run by a
+   human in an interactive terminal before any repo operation. Network is up
+   (`github.com` and `api.github.com` both answer 200). A gated, phase-by-phase
+   script covering rename → push → sdist inspection → TestPyPI → verification →
+   PyPI is at `/mnt/pi-data/tahuti-imported/publish.sh` (outside the repo, since
+   it holds personal data too). Do not upload the stale `mb_cli-0.2.x`–`0.3.0`
+   artifacts in `dist/` — they predate the rename.
 
 The Mac folder was *not* renamed to `tahuti/` — that step is moot here, since
 this checkout already lives at `/mnt/pi-data/tahuti`.
+
+---
+
+## 8.5 Real-time notification transport — measured, not assumed
+
+Written 2026-09-19 against the live account. Full detail and measurements in
+`docs/realtime-transport-findings.md`; probes in `extras/probe_*.py`.
+
+The question was whether tahuti can push notifications in true real time. Two
+separate services are involved and they behave differently:
+
+| Service | Transport | Evidence |
+|---|---|---|
+| `mnn-hub.prod.faria.cn` | **polled REST only** | 9 WebSocket paths → 404; 4 SSE paths → 404; 4 long-poll candidates all answered <0.1s; zero cable code in `MnnHub.es-*.js` and its 3 chunks |
+| `<school>.managebac.cn/websocket` | **AnyCable WebSocket, real push** | `101 Switching Protocols`, `X-AnyCable-Version: 1.0.5-2b1cbd6`, sends `welcome` then a `ping` every 3s |
+
+Two findings make fast polling the practical answer regardless:
+
+1. **The hub answers in 75 ms** (median of 20 un-jittered requests; min 71.1,
+   max 92.4).
+2. **The hub honours `If-None-Match` on both endpoints** — `/notifications`
+   returns 304 with **0 bytes** instead of 90774. A poll that costs 90 KB today
+   costs nothing when idle.
+
+Against that, `MNNHubClient._jitter()` (`notifications.py:37`) sleeps 1–3 s on
+every `stats()` and `list()` call — **26× the cost of the transport itself**, and
+inverted besides: it slows the two cheap reads and none of the five mutating
+methods. There are no `X-RateLimit-*` or `Retry-After` headers, so nothing
+declares a ceiling the jitter would be defending.
+
+**Open question blocking a true-push design:** the AnyCable channel name.
+Guessing produced no notification channel, and this is a *real* negative, not a
+probe failure — established by control: `ProgressChannel` and `PresenceChannel`
+both return `confirm_subscription`, `Chat::RoomChannel` returns
+`reject_subscription`, and a deliberately bogus name returns silence. Since
+AnyCable rejects channels it knows but will not authorise, silence means the
+name does not exist. Six plausible notification names were all silent.
+
+**One piece of browser evidence closes it:** with the notifications page open,
+filter the Network tab to **WS** and read the `subscribe` frame's `identifier`.
+Capture the identifier only — never the `Authorization` or JWT value.
+
+If the bell has no WS frame at all, ManageBac has no push channel for
+notifications and the ceiling is: poll `/notifications/stats` with
+`If-None-Match` on a short timer, full-fetch only when the Etag moves.
 
 ---
 
