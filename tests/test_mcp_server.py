@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mb_cli.mcp_server import (
+    _error_payload,
+    _sanitize_error,
     count_grade_frequencies,
     get_calendar_events,
     get_class_grades,
@@ -65,6 +67,66 @@ class TestListTasksTool:
         assert "upcoming" in data
         assert len(data["upcoming"]) == 1
 
+    @pytest.mark.parametrize(
+        "view,fetched_views",
+        [
+            ("all", ["upcoming", "past", "overdue"]),
+            ("upcoming", ["upcoming"]),
+            ("past", ["past"]),
+            ("overdue", ["overdue"]),
+            # Aliases an LLM actually sends.
+            ("Upcoming", ["upcoming"]),
+            ("upcoming tasks", ["upcoming"]),
+            ("overdue tasks", ["overdue"]),
+        ],
+    )
+    def test_recognised_views_crawl_only_that_section(
+        self, mock_build_client, view, fetched_views
+    ):
+        mock, mock_client = mock_build_client
+        mock_client.get_tasks_by_view.side_effect = lambda v, max_pages: [
+            {"id": v, "title": v, "class_name": "Math"}
+        ]
+        result = list_tasks(view=view)
+        data = json.loads(result)
+        called = [c.args[0] for c in mock_client.get_tasks_by_view.call_args_list]
+        assert called == fetched_views
+        assert data["summary"]["total_count"] == len(fetched_views)
+        assert "error" not in data
+
+    @pytest.mark.parametrize("view", ["al", "upcomingg", "todo", "homework", "1"])
+    def test_unrecognised_view_is_an_error_not_an_empty_list(
+        self, mock_build_client, view
+    ):
+        # The old behaviour matched none of the three `if view in (...)` checks,
+        # so every list stayed empty and the tool reported total_count 0 — a
+        # valid-looking "this student has no homework".
+        mock, mock_client = mock_build_client
+        mock_client.get_tasks_by_view.side_effect = lambda v, max_pages: [
+            {"id": "1", "title": "T1", "class_name": "Math"}
+        ]
+        result = list_tasks(view=view)
+        data = json.loads(result)
+        assert "error" in data
+        assert view in data["error"]
+        assert "tasks" not in data
+        # No crawl may happen for a view we already know is invalid.
+        mock_client.get_tasks_by_view.assert_not_called()
+        mock_client.crawl_all.assert_not_called()
+
+    def test_unrecognised_view_error_names_valid_views(self, mock_build_client):
+        mock, _client = mock_build_client
+        data = json.loads(list_tasks(view="al"))
+        for view in ("all", "upcoming", "past", "overdue"):
+            assert view in data["error"]
+
+    def test_default_view_crawls_all_sections(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_tasks_by_view.return_value = []
+        list_tasks()
+        called = [c.args[0] for c in mock_client.get_tasks_by_view.call_args_list]
+        assert called == ["upcoming", "past", "overdue"]
+
     def test_list_tasks_with_subject(self, mock_build_client):
         mock, mock_client = mock_build_client
         mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
@@ -103,6 +165,41 @@ class TestViewTaskTool:
         assert data["task"]["id"] == "1000099"
         assert data["detail"]["description"] == "Task details"
 
+    def test_view_task_by_numeric_id(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_task_detail.return_value = {"description": "d"}
+        data = json.loads(view_task(task_id="1000099"))
+        assert data["task"]["id"] == "1000099"
+
+    def test_view_task_id_from_url_with_query_string(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_task_detail.return_value = {}
+        data = json.loads(
+            view_task(
+                task_url="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099?foo=1"
+            )
+        )
+        assert data["task"]["id"] == "1000099"
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            # A URL without /core_tasks/ used to make the whole string the id.
+            "https://myschool.managebac.cn/student/dashboard",
+            "https://myschool.managebac.cn/student/classes/1000014",
+            "https://evil.example.com/student/classes/1/core_tasks",
+            "not a task at all",
+            "1000099/../../etc/passwd",
+        ],
+    )
+    def test_view_task_rejects_unparseable_target(self, mock_build_client, target):
+        mock, mock_client = mock_build_client
+        result = view_task(task_url=target)
+        data = json.loads(result)
+        assert "error" in data
+        assert "task" not in data
+        mock_client.get_task_detail.assert_not_called()
+
     def test_view_task_no_target(self, mock_build_client):
         result = view_task()
         data = json.loads(result)
@@ -110,8 +207,10 @@ class TestViewTaskTool:
 
 
 class TestSubmitFileTool:
-    def test_submit_by_url(self, mock_build_client):
+    def test_submit_by_url(self, mock_build_client, tmp_path):
         mock, mock_client = mock_build_client
+        upload = tmp_path / "hw.pdf"
+        upload.write_bytes(b"%PDF-1.4 test")
         mock_client.submit_file.return_value = {
             "ok": True,
             "filename": "hw.pdf",
@@ -119,34 +218,110 @@ class TestSubmitFileTool:
         }
         result = submit_file(
             task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
-            file_path="/tmp/hw.pdf",
+            file_path=str(upload),
         )
         data = json.loads(result)
         assert data["ok"] is True
         mock_client.submit_file.assert_called_once_with(
-            "1000014", "1000099", "/tmp/hw.pdf"
+            "1000014", "1000099", str(upload.resolve())
         )
 
-    def test_submit_not_found(self, mock_build_client):
+    def test_submit_not_found(self, mock_build_client, tmp_path):
         mock, mock_client = mock_build_client
+        upload = tmp_path / "hw.pdf"
+        upload.write_bytes(b"x")
         mock_client.get_tasks_by_view.return_value = []
-        result = submit_file(task_id="99999", file_path="/tmp/hw.pdf")
+        result = submit_file(task_id="99999", file_path=str(upload))
         data = json.loads(result)
         assert "error" in data
 
-    def test_submit_numeric_id_resolves(self, mock_build_client):
+    def test_submit_numeric_id_resolves(self, mock_build_client, tmp_path):
         mock, mock_client = mock_build_client
+        upload = tmp_path / "hw.pdf"
+        upload.write_bytes(b"x")
         mock_client.get_tasks_by_view.side_effect = lambda view, max_pages: (
             [{"id": "1000099", "link": "/student/classes/1000014/core_tasks/1000099"}]
             if view == "upcoming" else []
         )
         mock_client.submit_file.return_value = {"ok": True}
-        result = submit_file(task_id="1000099", file_path="/tmp/hw.pdf")
+        result = submit_file(task_id="1000099", file_path=str(upload))
         data = json.loads(result)
         assert data["ok"] is True
         mock_client.submit_file.assert_called_once_with(
-            "1000014", "1000099", "/tmp/hw.pdf"
+            "1000014", "1000099", str(upload.resolve())
         )
+
+    @pytest.mark.parametrize(
+        "make_bad_path",
+        [
+            lambda tmp_path: str(tmp_path / "does-not-exist.pdf"),
+            lambda tmp_path: str(tmp_path),  # a directory
+            lambda tmp_path: "",
+            lambda tmp_path: "   ",
+            lambda tmp_path: "hw\x00.pdf",
+        ],
+        ids=["missing", "directory", "empty", "whitespace", "nul-byte"],
+    )
+    def test_submit_rejects_unusable_file_path(
+        self, mock_build_client, tmp_path, make_bad_path
+    ):
+        mock, mock_client = mock_build_client
+        bad_path = make_bad_path(tmp_path)
+        result = submit_file(
+            task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
+            file_path=bad_path,
+        )
+        data = json.loads(result)
+        assert "error" in data, data
+        assert "file_path" in data["error"]
+        # Nothing is uploaded and no client is even constructed.
+        mock_client.submit_file.assert_not_called()
+        mock.assert_not_called()
+
+    def test_submit_rejects_device_file(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        devnull = Path("/dev/null")
+        if not devnull.exists():
+            pytest.skip("/dev/null not present")
+        data = json.loads(
+            submit_file(
+                task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
+                file_path=str(devnull),
+            )
+        )
+        assert "error" in data
+        mock_client.submit_file.assert_not_called()
+
+    def test_submit_expands_user_home(self, mock_build_client, tmp_path, monkeypatch):
+        mock, mock_client = mock_build_client
+        monkeypatch.setenv("HOME", str(tmp_path))
+        upload = tmp_path / "hw.pdf"
+        upload.write_bytes(b"x")
+        mock_client.submit_file.return_value = {"ok": True}
+        data = json.loads(
+            submit_file(
+                task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
+                file_path="~/hw.pdf",
+            )
+        )
+        assert data["ok"] is True
+        assert mock_client.submit_file.call_args.args[2] == str(upload.resolve())
+
+    def test_submit_error_payload_does_not_leak_credentials(self, mock_build_client, tmp_path):
+        mock, mock_client = mock_build_client
+        upload = tmp_path / "hw.pdf"
+        upload.write_bytes(b"x")
+        mock_client.submit_file.side_effect = RuntimeError(
+            "403 for cookie _managebac_session=SUPERSECRETVALUE"
+        )
+        data = json.loads(
+            submit_file(
+                task_id="https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099",
+                file_path=str(upload),
+            )
+        )
+        assert "error" in data
+        assert "SUPERSECRETVALUE" not in json.dumps(data)
 
 
 class TestGetNotificationsTool:
@@ -226,6 +401,43 @@ class TestGetCalendarEventsTool:
         assert data["end"] == "2026-05-05"
         assert len(data["events"]) == 1
 
+    def test_defaults_to_today_through_six_days(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_calendar_events.return_value = []
+        data = json.loads(get_calendar_events())
+        assert data["start"] and data["end"]
+        from datetime import date, timedelta
+
+        assert data["start"] == date.today().isoformat()
+        assert data["end"] == (date.today() + timedelta(days=6)).isoformat()
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"start_date": "29/04/2026"},
+            {"start_date": "2026-4-9"},
+            {"start_date": "April 29"},
+            {"start_date": "'; DROP TABLE"},
+            {"start_date": "2026-02-30"},
+            {"end_date": "2026-13-01"},
+            {"end_date": "2026-05-05T00:00:00Z"},
+            {"start_date": "2026-05-05", "end_date": "not-a-date"},
+        ],
+    )
+    def test_rejects_malformed_dates(self, mock_build_client, kwargs):
+        mock, mock_client = mock_build_client
+        data = json.loads(get_calendar_events(**kwargs))
+        assert "error" in data, data
+        assert "events" not in data
+        mock_client.get_calendar_events.assert_not_called()
+        mock.assert_not_called()
+
+    def test_error_message_names_the_expected_format(self, mock_build_client):
+        mock, _client = mock_build_client
+        data = json.loads(get_calendar_events(start_date="29/04/2026"))
+        assert "YYYY-MM-DD" in data["error"]
+        assert "start_date" in data["error"]
+
 
 class TestGetICalFeedTool:
     def test_get_ical(self, mock_build_client):
@@ -246,6 +458,24 @@ class TestGetTimetableTool:
         data = json.loads(result)
         assert len(data["lessons"]) == 1
         assert data["lessons"][0]["subject"] == "Math"
+
+    def test_defaults_to_this_week(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_timetable.return_value = {"days": [], "lessons": []}
+        get_timetable()
+        mock_client.get_timetable.assert_called_once_with(None)
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["28/04/2026", "2026-4-8", "next week", "2026-02-31", "2026-04-28T00:00:00Z"],
+    )
+    def test_rejects_malformed_date(self, mock_build_client, bad):
+        mock, mock_client = mock_build_client
+        data = json.loads(get_timetable(date_str=bad))
+        assert "error" in data, data
+        assert "date_str" in data["error"]
+        mock_client.get_timetable.assert_not_called()
+        mock.assert_not_called()
 
 
 class TestListClassesTool:
@@ -307,6 +537,35 @@ class TestGetClassGradesTool:
         data = json.loads(result)
         assert "error" in data
 
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "../../admin",
+            "1000023/../1000024",
+            "1000023?foo=1",
+            "abc",
+            "1 OR 1=1",
+            "  ",
+            "-1",
+            "0x10",
+        ],
+    )
+    def test_rejects_non_numeric_class_id(self, mock_build_client, bad_id):
+        # class_id is interpolated straight into a ManageBac URL path.
+        mock, mock_client = mock_build_client
+        data = json.loads(get_class_grades(class_id=bad_id))
+        assert "error" in data, data
+        assert "class_id" in data["error"]
+        mock_client.get_class_grades.assert_not_called()
+        mock.assert_not_called()
+
+    def test_class_id_is_stripped_before_use(self, mock_build_client):
+        mock, mock_client = mock_build_client
+        mock_client.get_class_grades.return_value = {"tasks": [], "expected_grade": None}
+        data = json.loads(get_class_grades(class_id="  1000023  "))
+        mock_client.get_class_grades.assert_called_once_with("1000023")
+        assert data["class_id"] == "1000023"
+
     def test_grades_no_params(self, mock_build_client):
         mock, mock_client = mock_build_client
         mock_client.crawl_all.return_value = {
@@ -347,3 +606,106 @@ class TestCountGradeFrequenciesTool:
         result = count_grade_frequencies(class_name="Math")
         data = json.loads(result)
         mock_client.count_grade_frequencies.assert_called_once_with(class_filter="Math")
+
+
+class TestErrorSanitisation:
+    """Tool results land in the model's context, so errors must be redacted.
+
+    These helpers had no tests at all.
+    """
+
+    @pytest.mark.parametrize(
+        "message,secret",
+        [
+            ("login failed for password=hunter2", "hunter2"),
+            ("bad cookie: _managebac_session=abcdef123456", "abcdef123456"),
+            ("401 from Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"),
+            ("authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+            ("token abc123 rejected", "abc123"),
+            ("secret leakage", "leakage"),
+            ("session expired", "expired"),
+        ],
+    )
+    def test_credential_material_never_survives(self, message, secret):
+        out = _sanitize_error(RuntimeError(message))
+        assert secret not in out
+        assert "error" in json.loads(_error_payload(RuntimeError(message)))
+
+    def test_sensitive_match_replaces_the_whole_message(self):
+        out = _sanitize_error(RuntimeError("401 for cookie _managebac_session=abc"))
+        assert out == "an authentication or credential error occurred"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "plain HTTP failure",
+            "connection reset by peer",
+            "unexpected HTML in response",
+            "",
+        ],
+    )
+    def test_benign_messages_are_preserved(self, message):
+        out = _sanitize_error(RuntimeError(message))
+        assert message[:200] in out or message == ""
+
+    def test_error_payload_is_valid_json(self):
+        payload = _error_payload(ValueError("boom"))
+        parsed = json.loads(payload)
+        assert parsed == {"error": "boom"}
+
+    def test_output_is_truncated(self):
+        out = _sanitize_error(RuntimeError("x" * 100_000))
+        assert len(out) <= 200
+
+    def test_control_characters_are_stripped(self):
+        out = _sanitize_error(RuntimeError("bad\x1b[31mred\x00null\nnewline\ttab"))
+        assert "\x1b" not in out
+        assert "\x00" not in out
+        assert "\n" not in out
+        # Tabs are kept so multi-line context stays readable.
+        assert "\t" in out
+
+    def test_totally_benign(self):
+        assert _sanitize_error(RuntimeError("hello")) == "hello"
+
+    def test_hostile_input_never_raises(self):
+        hostile = [
+            RuntimeError(),
+            RuntimeError(None),
+            RuntimeError("\udcff\udcfe not really utf-8"),
+            RuntimeError("😀" * 5000),
+            RuntimeError("".join(chr(i) for i in range(0, 0x300))),
+            RuntimeError("A" * (10**6)),
+            RuntimeError("\x7f\x80\x9f del and c1 controls"),
+            KeyboardInterrupt("interrupted"),
+            MemoryError("oom"),
+        ]
+        for exc in hostile:
+            out = _sanitize_error(exc)
+            assert isinstance(out, str)
+            assert len(out) <= 200
+            # Must also be embeddable in JSON output.
+            json.loads(_error_payload(exc))
+
+    def test_non_exception_input_is_tolerated(self):
+        # str() on an arbitrary object must not blow up the tool.
+        class Weird:
+            def __str__(self):
+                raise RuntimeError("cannot stringify")
+
+        class ExcWrapper(Exception):
+            def __init__(self):
+                super().__init__("wrapped")
+
+        try:
+            _sanitize_error(ExcWrapper())
+        except Exception as exc:  # pragma: no cover - defensive
+            pytest.fail(f"_sanitize_error raised: {exc}")
+
+    def test_no_absolute_local_path_leak_for_plain_errors(self):
+        # Path-bearing errors are NOT currently stripped (see the report); this
+        # test documents the current contract so the gap is visible rather than
+        # silent, and will flip to asserting redaction once auth.py stops
+        # embedding _creds_path().
+        out = _sanitize_error(FileNotFoundError("/home/someone/.config/tahuti/creds.json"))
+        assert isinstance(out, str)
