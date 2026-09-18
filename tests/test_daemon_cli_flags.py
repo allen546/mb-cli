@@ -285,3 +285,84 @@ def test_daemon_run_forwards_active_hours_to_config():
     )
     config = _apply_daemon_overrides({}, args)
     assert config["active_windows"] == [["09:00", "18:00"]]
+
+
+# ── `--dry-run` reaching the dispatcher ──────────────────────────────────
+
+
+def test_dry_run_suppresses_the_webhook_dispatcher():
+    """`--dry-run` used to stop at `start_loop`: only the `once` branch — which
+    never delivers anyway — consulted it, so `daemon start --dry-run` still
+    POSTed real webhooks."""
+    from mb_cli.daemon import DaemonConfig, DaemonService
+    from mb_cli.daemon.events import MBEvent
+
+    config = DaemonConfig()
+    service = DaemonService(MagicMock(), config=config, dry_run=True)
+    assert service.dry_run is True
+    assert service.dispatcher.webhooks == []
+
+    # An empty webhook list makes dispatch a no-op that still reports success,
+    # which is exactly "compute alerts, deliver nothing".
+    results = service.dispatcher.dispatch(MBEvent(event="task_created", data={}))
+    assert results == []
+
+
+def test_dry_run_off_keeps_the_configured_webhooks():
+    from mb_cli.daemon import DaemonConfig, DaemonService
+
+    config = DaemonConfig()
+    config.webhooks = [{"url": "https://h/x"}]
+    service = DaemonService(MagicMock(), config=config, dry_run=False)
+    assert len(service.dispatcher.webhooks) == 1
+
+
+def test_daemon_run_passes_dry_run_to_the_service():
+    """`daemon run --dry-run` was accepted by argparse and read by nothing."""
+    parser = build_parser()
+    args = parser.parse_args(["daemon", "run", "--dry-run", "--once"])
+    assert args.dry_run is True
+
+    state = MagicMock()
+    state.active_profile = "default"
+    client = MagicMock()
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_daemon_config", return_value={}),
+        patch("mb_cli.__main__.DaemonService") as MockService,
+        patch("mb_cli.__main__.print_payload"),
+    ):
+        MockService.return_value.run_check_cycle.return_value = {"total_dispatched": 0}
+        rc = cmd_daemon_run(args)
+
+    assert rc == 0
+    assert MockService.call_args[1]["dry_run"] is True
+
+
+def test_daemon_run_active_hours_reach_the_service_config():
+    """End to end: argparse → `_apply_daemon_overrides` → `DaemonConfig`.
+
+    Before the fix the flags were parsed and then dropped on the floor, so the
+    daemon polled around the clock no matter what the help text promised.
+    """
+    args = build_parser().parse_args(
+        ["daemon", "run", "--active-hours-start", "9", "--active-hours-end", "18"]
+    )
+    state = MagicMock()
+    state.active_profile = "default"
+    client = MagicMock()
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_daemon_config", return_value={}),
+        patch("mb_cli.__main__.DaemonService") as MockService,
+        patch("mb_cli.__main__.print_payload"),
+    ):
+        MockService.return_value.run_check_cycle.return_value = {"total_dispatched": 0}
+        cmd_daemon_run(args)
+
+    config = MockService.call_args[1]["config"]
+    assert config.active_windows == [["09:00", "18:00"]]

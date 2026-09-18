@@ -286,3 +286,89 @@ def test_daemon_service_standardizes_emitted_task_events(tmp_path: Path):
     assert ev.data["grade_letter"] is None
     assert ev.data["grade_score"] is None
     assert ev.data["url"] == "https://school.managebac.cn/student/classes/77777/core_tasks/55555"
+
+
+# ── Active-hours gating ──────────────────────────────────────────────────
+
+from datetime import datetime
+from unittest.mock import patch
+
+
+def _service(tmp_path: Path, **config_kwargs) -> DaemonService:
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    return DaemonService(
+        client=mock_client,
+        config=DaemonConfig(**config_kwargs),
+        state_manager=DaemonStateManager(tmp_path / "state.json"),
+        provider=MockProvider([]),
+    )
+
+
+def test_no_windows_means_always_active(tmp_path: Path):
+    """The default must stay poll-every-interval: gating is opt-in."""
+    service = _service(tmp_path)
+    assert service.config.active_windows == []
+    assert service._in_active_window() is True
+
+
+def test_window_excluding_now_blocks_polling(tmp_path: Path):
+    # A window that already closed today (09:00-10:00 against a frozen 12:00).
+    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+        service = _service(tmp_path, active_windows=[["09:00", "10:00"]])
+        assert service._in_active_window() is False
+
+
+def test_window_containing_now_allows_polling(tmp_path: Path):
+    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+        service = _service(tmp_path, active_windows=[["09:00", "17:00"]])
+        assert service._in_active_window() is True
+
+
+def test_malformed_window_fails_open(tmp_path: Path):
+    """A typo in daemon.json must not silently stop the notifier."""
+    service = _service(tmp_path, active_windows=[["not-a-time", "23:00"]])
+    assert service._in_active_window() is True
+
+
+def test_start_does_not_poll_outside_active_window(tmp_path: Path):
+    """`--active-hours-*` used to be accepted and then ignored by the loop."""
+    polls: list[int] = []
+
+    class _CountingProvider(MockProvider):
+        def poll_events(self):
+            polls.append(1)
+            return []
+
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    service = DaemonService(
+        client=mock_client,
+        config=DaemonConfig(active_windows=[["09:00", "10:00"]]),
+        state_manager=DaemonStateManager(tmp_path / "state.json"),
+        provider=_CountingProvider([]),
+    )
+
+    def _sleep(seconds):
+        # A real daemon would sleep for hours here; stop the test instead.
+        service._running = False
+
+    with (
+        patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)),
+        patch("mb_cli.daemon.service.time.sleep", side_effect=_sleep),
+    ):
+        service.start()
+
+    assert polls == []
+
+
+def test_active_windows_round_trip_through_the_config():
+    from mb_cli.daemon.events import DaemonConfig
+
+    config = DaemonConfig.from_dict({"active_windows": [["09:00", "17:00"]]})
+    assert config.active_windows == [["09:00", "17:00"]]
+    assert config.to_dict()["active_windows"] == [["09:00", "17:00"]]
+    # A missing or junk value means "no gating", not a crash.
+    assert DaemonConfig.from_dict({}).active_windows == []
+    assert DaemonConfig.from_dict({"active_windows": None}).active_windows == []
+    assert DaemonConfig.from_dict({"active_windows": ["nonsense"]}).active_windows == []
