@@ -852,7 +852,11 @@ def cmd_daemon_status(args) -> int:
     res = mgr.status()
     payload = ok("daemon.status", "default", res)
     print_payload(payload, args.output, args.format)
-    return 0
+    # The status *query* succeeded either way, so the envelope stays `ok` and
+    # `data.running` is the answer. The exit code carries it too, because
+    # `systemctl is-active`-style callers need "no daemon" (3) to be distinct
+    # from "the status call itself failed" (1).
+    return EXIT_OK if res.get("running") else EXIT_NOT_RUNNING
 
 
 def cmd_daemon_test_webhook(args) -> int:
