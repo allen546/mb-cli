@@ -704,7 +704,12 @@ def cmd_daemon_run(args) -> int:
             log.warning("Silent re-login failed: %s", err)
             return False
 
-    service = DaemonService(client, config=config, auth_refresh_fn=refresh_fn)
+    service = DaemonService(
+        client,
+        config=config,
+        auth_refresh_fn=refresh_fn,
+        dry_run=getattr(args, "dry_run", False),
+    )
     if getattr(args, "once", False):
         res = service.run_check_cycle()
         payload = ok("daemon.run", state.active_profile, res)
@@ -1741,13 +1746,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--active-hours-start",
         type=int,
         metavar="HOUR",
-        help="Start of active hours (0-23, default: 7)",
+        help="First hour the daemon polls, 0-23 local time (default: 7); "
+        "outside the active window it sleeps instead of polling",
     )
     daemon_run.add_argument(
         "--active-hours-end",
         type=int,
         metavar="HOUR",
-        help="End of active hours (0-23, default: 23)",
+        help="Last hour the daemon polls, 0-23 local time (default: 23)",
     )
     daemon_run.add_argument(
         "--dry-run",
@@ -1783,13 +1789,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--active-hours-start",
         type=int,
         metavar="HOUR",
-        help="Start of active hours (0-23, default: 7)",
+        help="First hour the daemon polls, 0-23 local time (default: 7); "
+        "outside the active window it sleeps instead of polling",
     )
     daemon_start.add_argument(
         "--active-hours-end",
         type=int,
         metavar="HOUR",
-        help="End of active hours (0-23, default: 23)",
+        help="Last hour the daemon polls, 0-23 local time (default: 23)",
     )
     daemon_start.add_argument(
         "--dry-run",

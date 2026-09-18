@@ -59,11 +59,10 @@ DEFAULT_DAEMON_PATH = config_dir() / "daemon.json"
 DEFAULT_WEBHOOK_URL = "http://127.0.0.1:42617/webhook"
 DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
 
-DEFAULT_ACTIVE_WINDOWS: list[list[str]] = [
-    ["07:00", "07:30"],
-    ["11:30", "13:30"],
-    ["17:30", "23:00"],
-]
+# Empty means "no gating": the daemon polls on its interval around the clock.
+# Active hours are opt-in — either `--active-hours-start/--active-hours-end` or
+# an `active_windows` entry in daemon.json.
+DEFAULT_ACTIVE_WINDOWS: list[list[str]] = []
 
 
 def _ensure_parent(path: Path) -> None:
@@ -393,7 +392,10 @@ def _is_in_window(now: dt_time, start: dt_time, end: dt_time) -> bool:
 
 
 def _next_active_window(daemon_config: dict) -> datetime:
-    windows = daemon_config.get("active_windows", DEFAULT_ACTIVE_WINDOWS)
+    windows = daemon_config.get("active_windows") or DEFAULT_ACTIVE_WINDOWS
+    if not windows:
+        # No gating configured: "now" is always inside a window.
+        return _now_local()
     now = _now_local()
     now_t = now.time()
 
@@ -489,9 +491,12 @@ def start_loop(
                 "delivered": False,
                 "snapshot_file": str(snapshot_path),
             }
-        # In multi-loop mode run DaemonService
+        # In multi-loop mode run DaemonService. `dry_run` used to stop at this
+        # branch: only the `once` path above ever consulted it, so
+        # `daemon start --dry-run` (without --once) POSTed real webhooks. It has
+        # to reach the service, which owns the dispatcher.
         config = DaemonConfig.from_dict(daemon_config)
-        service = DaemonService(client, config=config, on_start=on_start)
+        service = DaemonService(client, config=config, on_start=on_start, dry_run=dry_run)
         service.run_forever()
         return {"stopped": True}
     finally:

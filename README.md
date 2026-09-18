@@ -211,7 +211,7 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 
 > **Latency and polling interval.** Events are detected by polling, so a receiver
 > sees a new task or grade after the daemon's next cycle, not at the moment
-> ManageBac publishes it. The cycle sleeps
+> ManageBac publishes it. Inside an active window the cycle sleeps
 > `poll_interval_seconds + random(0, poll_jitter_seconds)` (defaults 30s and 5s, so
 > 30-35s); the jitter keeps request timing irregular rather than a fixed cadence.
 > `mb daemon run` sets this with `--poll-interval`, `mb daemon start` with
@@ -220,6 +220,13 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 > rate limiting or account flagging. There is no push channel to subscribe to
 > instead; see the notification transport findings in
 > [docs/events.md](docs/events.md#11-notification-transport-polling-not-push).
+>
+> **Active hours gate the polling, they do not throttle it.** With no
+> `active_windows` configured the daemon polls around the clock. Set
+> `--active-hours-start` / `--active-hours-end` (or an `active_windows` entry in
+> the daemon JSON) and the loop sleeps outside the window instead of polling —
+> useful for keeping a school-hours-only notifier from hammering ManageBac
+> overnight. `--once` ignores the window: one cycle always runs.
 
 ---
 
@@ -228,6 +235,7 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 ```bash
 # Authentication & Session
 mb login --school your-school --domain managebac.com -e student@example.com
+mb --version                           # print the installed version and exit
 mb logout
 
 # Tasks & Coursework
@@ -245,20 +253,32 @@ mb submit 1000026 homework.pdf         # upload file to assignment dropbox
 mb submissions 1000026 --list          # list current submissions for a task
 mb submissions 1000026 --add hw.pdf    # upload to the task dropbox
 mb submissions 1000026 --delete hw.pdf # delete a submission by asset ID or filename
-mb submissions 1000026 --check-feedback # check teacher feedback (optionally filter by asset ID/name)
-mb download 1000026                    # download all attachments + submissions for a task
+mb submissions 1000026 --check-feedback # teacher feedback for a task
+mb submissions 1000026 --check-feedback hw.pdf  # …narrowed to one submission (asset ID or filename)
+mb download 1000026                    # download every attachment + submission for a task
 mb download 1000026 --no-attachments --output-dir ./math  # student submissions only
+mb download 1000026 --pages 5          # search 5 pages server-side when the task is not in snapshot.json
 mb feedback 1000026                    # fetch teacher feedback for a submitted task
 
+> **`mb download` reports what it wrote.** Every run ends in one payload:
+> `downloaded` and `failed` lists with `downloaded_count` / `failed_count`, the
+> resolved `output_dir`, and the task title. A partial failure is still a success
+> — exit 0 as long as at least one file landed — and exit 1 means nothing landed,
+> or the task could not be resolved at all (`task_not_found`, `no_task_link`,
+> `detail_fetch_failed`). Without `--output-dir` the files land in
+> `./task_<id>_<slug>/` under the current directory.
+
 # Grades & Analytics
-mb grades                               # list all enrolled classes
+mb grades                               # grades for every enrolled class
 mb grades --class-id 1000023           # detailed task grades for one class
 mb grades --subject "Physics"           # fuzzy match class name
 mb count-grade-freq                     # grade distribution across all classes
 
 # Notifications & Feed
 mb notifications                        # list MNN notifications (page 1)
+mb notifications --unread-only          # unread only
 mb notifications --read 235151424       # mark notification as read
+mb notifications --unread 235151424     # mark it unread again
 mb notifications --read-all             # mark all notifications read
 
 # Schedule & Calendar
@@ -288,11 +308,12 @@ mb daemon configure-channel qq 123456789  # deliver via a zeroclaw channel inste
 > both, `stop` accepts only `--pid-file`, and `install` accepts only
 > `--log-file`.
 >
-> **`--interval` vs `--poll-interval`.** `mb daemon start` takes `--interval`;
-> `mb daemon run` takes `--poll-interval`. Same setting, two names — the flag
-> names differ for historical reasons and are kept as-is so existing commands do
-> not break. `start -b` translates `--interval` into `--poll-interval` when it
-> spawns the detached process, so passing both to one command is an error.
+> **`--interval` and `--poll-interval` are the same flag.** `daemon start`
+> historically spelled it `--interval` and `daemon run` `--poll-interval`; both
+> names are now accepted on both commands, so a command copied between the two
+> keeps working. They share one destination, so passing both is not an error —
+> the last one on the line wins. `start -b` forwards whichever you used to the
+> detached child as `--poll-interval`.
 >
 > **`--daemon-config` is not `--config`.** The daemon subcommands above read
 > their webhook URL, interval, and active-hours window from a separate JSON file
@@ -346,13 +367,13 @@ permissions are the only barrier protecting a cleartext password. Set
 session paths, as do the environment variables `MB_CRAWLER_CONFIG`,
 `MB_CRAWLER_SESSION`, and `MB_CRAWLER_CREDS_PATH`. These come from the shared
 auth-flag helper, so they exist on the task, grades, calendar, and submission
-commands — but **not universally**. The daemon subcommands act on the daemon
-process and its own JSON settings rather than on your ManageBac login, so none of
-them accept `--config` or `--session-file`. Where they need a path they take
-`--daemon-config` (on `run`, `stop`, `test-webhook`, `configure-webhook`, and
-`configure-channel`) and/or `--pid-file` / `--log-file` (`stop` takes
-`--pid-file`, `status` takes both, `install` takes `--log-file`); `uninstall`
-takes no path flag at all.
+commands — and on `daemon run` / `daemon start`, which do log in to ManageBac.
+They are **not** on the purely process-level daemon commands, which act on the
+daemon and its own JSON settings rather than on your login. Where those need a
+path they take `--daemon-config` (on `run`, `stop`, `test-webhook`,
+`configure-webhook`, and `configure-channel`) and/or `--pid-file` / `--log-file`
+(`start` and `status` take both, `stop` takes only `--pid-file`, `install` takes
+only `--log-file`); `uninstall` takes no path flag at all.
 
 Secrets may also be supplied through the environment, which keeps them out of
 your shell history and out of `ps` output:

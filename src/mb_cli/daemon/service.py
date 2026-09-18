@@ -44,6 +44,7 @@ class DaemonService:
         provider: AbstractNotificationProvider | None = None,
         auth_refresh_fn: Callable[[], bool] | None = None,
         on_start: Callable[[DaemonService], None] | None = None,
+        dry_run: bool = False,
     ):
         self.client = client
         self.config = config or DaemonConfig()
@@ -58,14 +59,57 @@ class DaemonService:
             self.config.reminders,
             submission_checker=self._check_is_task_submitted_or_graded,
         )
+        # `--dry-run` has to reach the dispatcher: the loop only computes what it
+        # *would* POST, so a dry run that still POSTed would be worse than no
+        # flag at all. An empty webhook list makes `dispatch` a no-op that still
+        # reports success, which is exactly the dry-run contract.
+        self.dry_run = dry_run
         self.dispatcher = WebhookDispatcher(
-            webhooks=self.config.webhooks, verify_tls=self.config.verify_tls
+            webhooks=[] if dry_run else self.config.webhooks,
+            verify_tls=self.config.verify_tls,
         )
         self.on_start: Callable[[DaemonService], None] = on_start or (
             lambda svc: svc.sync_upcoming_tasks()
         )
         self._running = False
         self._last_full_sync: float = 0.0
+
+    def _in_active_window(self) -> bool:
+        """Whether local time is inside one of the configured active windows.
+
+        No windows configured means always active. A malformed window fails
+        *open* — a notifier that keeps polling is a better failure mode than one
+        that silently stops because of a typo in daemon.json.
+        """
+        windows = self.config.active_windows
+        if not windows:
+            return True
+        # Imported at call time: the package's `__init__` imports this module, so
+        # a module-level import would be circular.
+        from . import _is_in_window, _now_local, _parse_window
+
+        now = _now_local().time()
+        try:
+            return any(_is_in_window(now, *_parse_window(w)) for w in windows)
+        except (ValueError, TypeError, IndexError) as exc:
+            log.warning(
+                "Ignoring malformed active_windows %r (%s) — polling continuously",
+                windows,
+                exc,
+            )
+            return True
+
+    def _sleep_until_active_window(self) -> None:
+        """Sleep, in slices, until the next active window opens."""
+        from . import _next_active_window, _time_until
+
+        window_config = {"active_windows": self.config.active_windows}
+        while self._running and not self._in_active_window():
+            wait = _time_until(_next_active_window(window_config))
+            log.info("Outside active hours — sleeping %.0fs until the next window", wait)
+            deadline = time.time() + min(wait, 600)
+            while self._running and time.time() < deadline:
+                time.sleep(min(1.0, deadline - time.time()))
 
     def sync_upcoming_tasks(self) -> int:
         """Fetch all upcoming tasks and populate in-memory deadline state."""
@@ -366,9 +410,23 @@ class DaemonService:
         except Exception as exc:
             log.warning("Daemon on-start callback encountered error: %s", exc)
 
+        if self.config.active_windows:
+            log.info(
+                "Active hours in force: %s (local time) — no polling outside them",
+                ", ".join(f"{w[0]}-{w[1]}" for w in self.config.active_windows),
+            )
+
         full_sync_interval_sec = self.config.full_sync_interval_minutes * 60
 
         while self._running:
+            # Active-hours gate. Outside the window the daemon sleeps instead of
+            # polling, which is what `--active-hours-start/--active-hours-end`
+            # and daemon.json's `active_windows` promise. `--once` never reaches
+            # this loop — one cycle always runs, whatever the clock says.
+            if not self._in_active_window():
+                self._sleep_until_active_window()
+                continue
+
             # Only fallback recrawl if cache became empty or long fallback interval (12h) elapsed
             if not self.state_manager.tasks_cache or (
                 full_sync_interval_sec > 0
