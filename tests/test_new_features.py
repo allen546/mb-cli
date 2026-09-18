@@ -159,11 +159,19 @@ def test_cmd_download(tmp_path):
         ]
     }
 
-    # Mock client session get stream download
+    # Mock client session get stream download.
+    # `cmd_download` calls `session.get(...)` and then enters the *returned*
+    # response, because it has to inspect the status and Location of each hop
+    # before deciding to follow it — so the mock must return the response
+    # directly rather than one whose `__enter__` yields it.
     mock_resp = MagicMock()
     mock_resp.status_code = 200
+    # Real booleans: a MagicMock is truthy, and `cmd_download` reads these to
+    # decide whether a hop is a redirect.
+    mock_resp.is_redirect = False
+    mock_resp.is_permanent_redirect = False
     mock_resp.iter_content.return_value = [b"chunk1", b"chunk2"]
-    client.session.get.return_value.__enter__.return_value = mock_resp
+    client.session.get.return_value = mock_resp
 
     captured: dict = {}
     with patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")), \

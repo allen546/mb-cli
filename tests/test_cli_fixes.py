@@ -303,7 +303,7 @@ def test_notifications_unread_only_filters_the_request():
     with (
         patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
         patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.MNNHubClient", return_value=hub),
+        patch("mb_cli.__main__.hub_client", return_value=hub),
     ):
         rc = cmd_notifications(Args())
 
@@ -335,7 +335,7 @@ def test_notifications_defaults_to_all_filter():
     with (
         patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
         patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.MNNHubClient", return_value=hub),
+        patch("mb_cli.__main__.hub_client", return_value=hub),
     ):
         cmd_notifications(Args())
 

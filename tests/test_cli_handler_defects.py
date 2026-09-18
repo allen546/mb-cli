@@ -230,7 +230,13 @@ def _download_client(attachments, detail=None):
     client.find_task_by_id.return_value = None
     resp = MagicMock()
     resp.iter_content.return_value = [b"bytes-"]
-    client.session.get.return_value.__enter__.return_value = resp
+    # `cmd_download` inspects the response before entering it, so it can read the
+    # status and Location of each redirect hop itself. These must be real
+    # booleans — a MagicMock is truthy and reads as "this is a redirect".
+    resp.is_redirect = False
+    resp.is_permanent_redirect = False
+    resp.status_code = 200
+    client.session.get.return_value = resp
     return client
 
 

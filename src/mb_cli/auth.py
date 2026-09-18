@@ -40,6 +40,13 @@ def hub_client(
     :class:`~mb_cli.client.ManageBacClient` so the hub cannot diverge from
     whatever TLS decision that client is using.
     """
+    # `requests` accepts a bool or a CA-bundle path. Anything else — notably the
+    # `MagicMock` a test's fake client hands back for `session.verify` — reaches
+    # `requests` and is read as a URL scheme, producing "Invalid URL 'ep/...'"
+    # from a call site that looks correct. Coerce a non-path truthy value to the
+    # strict policy rather than passing it through.
+    if not isinstance(verify, (bool, str)):
+        verify = True
     return MNNHubClient(endpoint, token, verify=verify, timeout=timeout)
 
 
