@@ -837,7 +837,11 @@ def cmd_daemon_stop(args) -> int:
         result = stop_daemon(getattr(args, "daemon_config", None))
     payload = ok("daemon.stop", "default", result)
     print_payload(payload, args.output, args.format)
-    return 0
+    # `stop_background` reports "there was nothing to stop" in-band
+    # (`stopped: false, reason: not_running|pid_file_missing|...`). A caller
+    # doing stop-then-start must be able to see that the stop did not happen,
+    # or it silently supervises two daemons at once.
+    return EXIT_OK if result.get("stopped") else EXIT_FAILURE
 
 
 def cmd_daemon_status(args) -> int:
