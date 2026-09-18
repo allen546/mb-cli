@@ -2109,9 +2109,24 @@ def main(argv: list[str] | None = None) -> None:
     # so say so loudly if something outside `mb` loosened them.
     warn_on_weak_permissions()
     try:
+        # The handler's return value is the exit status, and `SystemExit(None)`
+        # would be a silent 0 — so every handler must return an int. All 22 do;
+        # `tests/test_exit_codes.py` covers the dispatch itself.
         raise SystemExit(args.func(args))
     except CommandError as exc:
         payload = error(args.command, exc.code, exc.message)
+        print_payload(payload, args.output, getattr(args, "format", None))
+        raise SystemExit(1)
+    except Exception as exc:
+        # Anything else (RuntimeError from the client, a socket error, a bug)
+        # used to reach the user as a raw traceback, which neither a shell
+        # caller nor a `--format json` consumer can act on. Emit the same
+        # machine-readable envelope CommandError produces and keep exit 1.
+        # SystemExit is a BaseException, so it is not caught here.
+        log.exception("Unexpected failure in command %s", args.command)
+        payload = error(
+            args.command, "internal_error", f"{type(exc).__name__}: {exc}"
+        )
         print_payload(payload, args.output, getattr(args, "format", None))
         raise SystemExit(1)
 
