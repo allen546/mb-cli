@@ -47,10 +47,12 @@ def resolve_format(requested_format: str | None) -> str:
 
 def render_pretty(payload: dict) -> str:
     if not payload.get("ok"):
-        error = payload.get("error", {})
+        # Not `error`: that is this module's payload-building helper, and a
+        # local of the same name would shadow it for the rest of the function.
+        err = payload.get("error", {})
         return (
-            f"ERROR [{error.get('code', 'unknown')}]: "
-            f"{error.get('message', 'Unknown error')}"
+            f"ERROR [{err.get('code', 'unknown')}]: "
+            f"{err.get('message', 'Unknown error')}"
         )
 
     command = payload.get("command", "unknown")
