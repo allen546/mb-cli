@@ -1,4 +1,20 @@
-"""Webhook dispatcher supporting HTTP POST with signatures and exponential retries."""
+"""Webhook dispatcher supporting HTTP POST with signatures and exponential retries.
+
+The signature covers the timestamp and the body together::
+
+    signed_material = f"{X-MB-Timestamp}.".encode("utf-8") + request_body
+    X-MB-Signature  = "sha256=" + hmac_sha256(secret, signed_material).hexdigest()
+
+Signing the timestamp is what makes the freshness window *authenticated*.
+Without it an attacker who captures a single POST can replay it forever by
+rewriting only ``X-MB-Timestamp``, because the original signature still
+validates over the untouched body and the receiver's freshness check passes.
+The ``.`` is a delimiter so ``ts=17`` + ``body="89ab"`` cannot be confused with
+``ts=1789`` + ``body="ab"``.
+
+BREAKING PROTOCOL CHANGE: receivers written against the original body-only
+construction reject every payload until they are updated. See docs/events.md.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +30,26 @@ from .events import MBEvent, WebhookConfig
 
 log = logging.getLogger(__name__)
 
+SIGNATURE_PREFIX = "sha256="
+
 # Hard ceiling on total time spent retrying one event, so a slow or hostile
 # endpoint cannot pin the daemon's thread indefinitely.
 MAX_TOTAL_RETRY_SECONDS = 60.0
 _ALLOWED_SCHEMES = ("https", "http")
+
+
+def signed_material(timestamp: str, payload_bytes: bytes) -> bytes:
+    """Return the exact bytes the HMAC covers: ``"<timestamp>." + body``.
+
+    Shared with receiver implementations so producer and consumer cannot drift
+    apart on the one thing that makes the freshness check meaningful.
+    """
+    return f"{timestamp}.".encode("utf-8") + payload_bytes
+
+
+def _wall_clock_timestamp() -> str:
+    """The ``X-MB-Timestamp`` value: Unix seconds to millisecond precision."""
+    return f"{time.time():.3f}"
 
 
 def _sanitize_for_log(text: str | None, limit: int = 120) -> str:
@@ -69,10 +101,12 @@ class WebhookDispatcher:
         self.max_retries = max_retries
 
     @staticmethod
-    def _compute_signature(secret: str, payload_bytes: bytes) -> str:
-        """Compute HMAC-SHA256 signature for the payload."""
-        return "sha256=" + hmac.new(
-            secret.encode("utf-8"), payload_bytes, hashlib.sha256
+    def _compute_signature(secret: str, timestamp: str, payload_bytes: bytes) -> str:
+        """Compute the HMAC-SHA256 signature over ``"<timestamp>." + body``."""
+        return SIGNATURE_PREFIX + hmac.new(
+            secret.encode("utf-8"),
+            signed_material(timestamp, payload_bytes),
+            hashlib.sha256,
         ).hexdigest()
 
     def dispatch(self, event: MBEvent) -> list[dict[str, Any]]:
@@ -118,15 +152,18 @@ class WebhookDispatcher:
     def _post_with_retry(
         self, webhook: WebhookConfig, payload_bytes: bytes, event_type: str
     ) -> tuple[bool, int | None, str | None]:
+        # Wall-clock timestamp for the envelope; signed together with the body
+        # so the header a receiver checks for freshness cannot be forged.
+        timestamp = _wall_clock_timestamp()
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "tahuti-daemon/1.0",
             "X-MB-Event": event_type,
-            "X-MB-Timestamp": f"{time.time():.3f}",
+            "X-MB-Timestamp": timestamp,
         }
         if webhook.secret:
             headers["X-MB-Signature"] = self._compute_signature(
-                webhook.secret, payload_bytes
+                webhook.secret, timestamp, payload_bytes
             )
 
         last_error: str | None = None
