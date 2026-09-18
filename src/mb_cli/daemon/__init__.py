@@ -8,8 +8,8 @@ import json
 import logging
 import os
 from pathlib import Path
-import signal
 import subprocess
+import tempfile
 from zoneinfo import ZoneInfo
 
 from ..client import ManageBacClient
@@ -31,7 +31,15 @@ from .service import DaemonService
 from .state import DaemonStateManager
 from .stealth import StealthTaskCrawler
 from .stream import ManageBacDaemon
-from .system import DEFAULT_LOG_PATH, DEFAULT_PID_PATH, ServiceManager
+from .system import (
+    DEFAULT_LOG_PATH,
+    DEFAULT_PID_PATH,
+    ONCE_PID_SENTINEL,
+    ServiceManager,
+    read_pid_file,
+    terminate_pid,
+    write_pid_file,
+)
 from .webhook import WebhookDispatcher
 from ..task_status import format_grade_display, is_task_graded
 
@@ -51,6 +59,14 @@ __all__ = [
     "StealthTaskCrawler",
     "WebhookConfig",
     "WebhookDispatcher",
+    "configure_channel_send",
+    "configure_webhook",
+    "make_auth_refresh_fn",
+    "normalize_active_windows",
+    "run_daemon_once",
+    "save_daemon_config",
+    "start_loop",
+    "stop_daemon",
 ]
 
 log = logging.getLogger(__name__)
@@ -89,6 +105,68 @@ def _resolve_secret(cli_secret: str | None) -> str | None:
 # ── Backward Compatibility API ──────────────────────────────────────────
 
 
+def _coerce_window_edge(value: object) -> str | None:
+    """Normalise one edge of an active window to ``"HH:MM"``.
+
+    Hand-written daemon.json files reach us with ints (``[[7, 23]]``), bare
+    hours (``"7"``) and single-digit strings (``"7:00"``). Anything that cannot
+    be read as a wall-clock time returns None so the caller can drop it.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return f"{value:02d}:00" if 0 <= value <= 23 else None
+    if isinstance(value, float) and value.is_integer():
+        return _coerce_window_edge(int(value))
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if ":" not in text:
+        # A bare hour: "7" and "07" both mean 07:00.
+        if not text.isdigit():
+            return None
+        hour = int(text)
+        return f"{hour:02d}:00" if 0 <= hour <= 23 else None
+    head, _, tail = text.partition(":")
+    if not head.strip().isdigit():
+        return None
+    hour = int(head.strip())
+    if not 0 <= hour <= 23:
+        return None
+    minute_text = tail.strip() or "0"
+    if not minute_text.isdigit():
+        return None
+    minute = int(minute_text)
+    if not 0 <= minute <= 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_active_windows(raw: object) -> list[list[str]]:
+    """Return only the well-formed ``[[start, end], ...]`` windows in ``raw``.
+
+    A malformed window is dropped rather than carried forward: the documented
+    contract is that a typo fails *open* (keep polling), and the only way to
+    guarantee that from here is to never hand a malformed window to the code
+    that parses it. If every window is malformed the result is empty, which
+    means "no gating".
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    windows: list[list[str]] = []
+    for window in raw:
+        if not isinstance(window, (list, tuple)) or len(window) != 2:
+            continue
+        start = _coerce_window_edge(window[0])
+        end = _coerce_window_edge(window[1])
+        if start is None or end is None:
+            continue
+        windows.append([start, end])
+    return windows
+
+
 def load_daemon_config(path: str | None = None) -> dict:
     daemon_path = Path(path).expanduser() if path else DEFAULT_DAEMON_PATH
     if not daemon_path.exists():
@@ -113,27 +191,63 @@ def load_daemon_config(path: str | None = None) -> dict:
         start = data.pop("active_hours_start", 7)
         end = data.pop("active_hours_end", 23)
         data["active_windows"] = [[f"{start:02d}:00", f"{end:02d}:00"]]
+    data["active_windows"] = normalize_active_windows(data.get("active_windows"))
     return data
 
 
 def save_daemon_config(data: dict, path: str | None = None) -> Path:
+    """Write daemon.json so the HMAC secret is never world-readable.
+
+    ``write_text`` creates the file with the process umask — 0644 on most
+    systems — *containing the cleartext webhook secret*, and only the ``chmod``
+    that follows tightens it. A crash between the two lines leaves the secret
+    at 0644 permanently. mkstemp + chmod + ``os.replace`` closes that window:
+    the destination is created by renaming an already-0600 file.
+    """
     daemon_path = Path(path).expanduser() if path else DEFAULT_DAEMON_PATH
     _ensure_parent(daemon_path)
-    daemon_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(daemon_path.parent),
+        prefix=".daemon_config_",
+        suffix=".tmp",
     )
+    tmp_path = Path(tmp_name)
     try:
-        os.chmod(daemon_path, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        # chmod before the rename, so the secret is 0600 before it is visible
+        # under its final name.
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, daemon_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return daemon_path
 
 
+def _failed_config_save(exc: Exception) -> dict:
+    """The in-band failure signal for the configure helpers.
+
+    Both used to return the config dict unconditionally, so a write that failed
+    could only surface as an exception — which left the CLI with nothing to turn
+    into an exit code. The ``ok`` flag is what ``return 0 if cfg.get("ok") else 1``
+    keys off.
+    """
+    log.error("Could not persist daemon config: %s", exc)
+    return {"ok": False, "error": str(exc)}
+
+
 def configure_webhook(url: str, path: str | None = None) -> dict:
-    config = load_daemon_config(path)
-    config["delivery"] = {"mode": "webhook", "webhook_url": url}
-    save_daemon_config(config, path)
-    return config
+    try:
+        config = load_daemon_config(path)
+        config["delivery"] = {"mode": "webhook", "webhook_url": url}
+        save_daemon_config(config, path)
+    except Exception as exc:  # noqa: BLE001 - reported in-band, not raised
+        return _failed_config_save(exc)
+    return {"ok": True, **config}
 
 
 def configure_channel_send(
@@ -142,17 +256,20 @@ def configure_channel_send(
     path: str | None = None,
     zeroclaw_bin: str | None = None,
 ) -> dict:
-    config = load_daemon_config(path)
-    delivery: dict[str, str] = {
-        "mode": "channel_send",
-        "channel_id": channel_id,
-        "recipient": recipient,
-    }
-    if zeroclaw_bin:
-        delivery["zeroclaw_bin"] = zeroclaw_bin
-    config["delivery"] = delivery
-    save_daemon_config(config, path)
-    return config
+    try:
+        config = load_daemon_config(path)
+        delivery: dict[str, str] = {
+            "mode": "channel_send",
+            "channel_id": channel_id,
+            "recipient": recipient,
+        }
+        if zeroclaw_bin:
+            delivery["zeroclaw_bin"] = zeroclaw_bin
+        config["delivery"] = delivery
+        save_daemon_config(config, path)
+    except Exception as exc:  # noqa: BLE001 - reported in-band, not raised
+        return _failed_config_save(exc)
+    return {"ok": True, **config}
 
 
 def _task_index(tasks: list[dict]) -> dict[str, dict]:
@@ -386,12 +503,22 @@ def _now_local() -> datetime:
 
 
 def _is_in_window(now: dt_time, start: dt_time, end: dt_time) -> bool:
+    """Whether ``now`` falls inside ``[start, end)``.
+
+    The end is deliberately exclusive: a ``09:00-17:00`` window must stop
+    polling at 17:00, not keep polling through the minute that begins it. With
+    an inclusive end, a window ending exactly at ``now`` reports "inside", the
+    daemon polls one more cycle, and back-to-back windows double-count their
+    shared boundary minute.
+    """
     if start <= end:
-        return start <= now <= end
-    return now >= start or now <= end
+        return start <= now < end
+    # Window wraps past midnight (e.g. 22:00-02:00): either side of midnight.
+    return now >= start or now < end
 
 
 def _next_active_window(daemon_config: dict) -> datetime:
+    """The earliest moment at or after now when polling is allowed again."""
     windows = daemon_config.get("active_windows") or DEFAULT_ACTIVE_WINDOWS
     if not windows:
         # No gating configured: "now" is always inside a window.
@@ -404,15 +531,27 @@ def _next_active_window(daemon_config: dict) -> datetime:
         if _is_in_window(now_t, start, end):
             return now
 
+    # Not inside any window: the next opening is the earliest start still ahead
+    # of us today. Taking the *first match in list order* instead of the minimum
+    # makes the daemon sleep through an earlier window that happens to be listed
+    # later — e.g. [["22:00","23:00"],["12:00","13:00"]] at 10:00 waits until
+    # 22:00 and misses everything due at midday.
+    later_today: list[datetime] = []
+    starts: list[dt_time] = []
     for w in windows:
         start, _ = _parse_window(w)
+        starts.append(start)
         candidate = now.replace(
             hour=start.hour, minute=start.minute, second=0, microsecond=0
         )
         if candidate > now:
-            return candidate
+            later_today.append(candidate)
+    if later_today:
+        return min(later_today)
 
-    first_start, _ = _parse_window(windows[0])
+    # Every window has opened and closed today; the next one is tomorrow's
+    # earliest start.
+    first_start = min(starts)
     tomorrow = now + timedelta(days=1)
     return tomorrow.replace(
         hour=first_start.hour, minute=first_start.minute, second=0, microsecond=0
@@ -458,73 +597,185 @@ def _log(path: Path, message: str) -> None:
         handle.write(line + "\n")
 
 
+def make_auth_refresh_fn(
+    client: ManageBacClient, state: object | None = None
+) -> Callable[[], bool]:
+    """Build the session-refresh callback the daemon needs to survive expiry.
+
+    Without it, :class:`~mb_cli.daemon.provider.MNNHubProvider` re-raises the
+    "session expired" error on every poll and the daemon spins on a dead session
+    forever while ``daemon status`` still reports it running.
+    """
+
+    def refresh_fn() -> bool:
+        from ..auth import _relogin_from_creds
+
+        try:
+            _relogin_from_creds(client, state)
+            return True
+        except Exception as err:  # noqa: BLE001 - any failure means "not refreshed"
+            log.warning("Silent re-login failed: %s", err)
+            return False
+
+    return refresh_fn
+
+
+def _release_pid_file(pid_path: Path, expected: str) -> None:
+    """Unlink ``pid_path`` only while it still records ``expected``.
+
+    Unlinking unconditionally is how a finishing ``daemon stop`` removes the pid
+    file of a ``daemon start`` that landed in the same window, stranding a live
+    daemon that nothing can stop.
+    """
+    try:
+        current = pid_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if current == expected:
+        pid_path.unlink(missing_ok=True)
+
+
+def _alert_from_event(event: MBEvent) -> dict:
+    """Render a dispatched event in the ``alerts`` shape the CLI reports."""
+    data = event.data if isinstance(event.data, dict) else {}
+    title = data.get("title") or data.get("task_title") or ""
+    class_name = data.get("class_name") or ""
+    suffix = f" ({class_name})" if class_name else ""
+    if event.event == "deadline_approaching":
+        threshold = data.get("reminder_threshold") or "soon"
+        message = f"Deadline in {threshold}: {title}{suffix}"
+    else:
+        label = str(event.event).replace("_", " ")
+        message = f"{label}: {title}{suffix}".strip()
+    return {
+        "type": event.event,
+        "severity": "medium",
+        "task": data,
+        "message": message,
+    }
+
+
+def _run_once(service: DaemonService, log_path: Path) -> dict:
+    """Run exactly one check cycle and report what actually happened.
+
+    The previous ``once`` branch diffed a snapshot, logged ``delivered=False``
+    and returned before :class:`DaemonService` — the only owner of the webhook
+    dispatcher — was ever constructed, so ``daemon start --once --webhook-url …``
+    exited 0 having sent nothing.
+    """
+    res = service.run_check_cycle()
+    events = list(res.get("dispatched_events") or [])
+    alerts = [_alert_from_event(event) for event in events]
+    detail_fetches = sum(
+        1
+        for event in events
+        if isinstance(event.data, dict) and event.data.get("enriched_task")
+    )
+    # A dry run computes what it *would* POST and posts nothing, so "delivered"
+    # has to be false for it.
+    delivered = bool(alerts) and not service.dry_run
+    _log(
+        log_path,
+        f"once alert_count={len(alerts)} "
+        f"details_fetched={detail_fetches} "
+        f"delivered={delivered}",
+    )
+    return {
+        "alerts": alerts,
+        "alert_count": len(alerts),
+        "detail_fetches": detail_fetches,
+        "delivered": delivered,
+        "dry_run": bool(service.dry_run),
+        "new_notifications": res.get("new_notifications", 0),
+        "reminders_dispatched": res.get("reminders_dispatched", 0),
+        "total_dispatched": res.get("total_dispatched", len(events)),
+        # A cycle that could not poll is not a cycle that found nothing. Without
+        # this the CLI has to exit 0 on a poll that never happened.
+        "poll_error": res.get("poll_error"),
+        "deadline_error": res.get("deadline_error"),
+        # ``to_dict()`` because the CLI json-dumps this payload and MBEvent is
+        # not serialisable.
+        "dispatched_events": [event.to_dict() for event in events],
+    }
+
+
 def start_loop(
     client: ManageBacClient,
     daemon_config: dict,
     dry_run: bool = False,
     once: bool = False,
     on_start: Callable[[DaemonService], None] | None = None,
+    auth_refresh_fn: Callable[[], bool] | None = None,
 ) -> dict:
+    """Run one check cycle (``once``) or the daemon loop until interrupted.
+
+    ``auth_refresh_fn`` must be supplied by the CLI, which is the only place
+    that has the persisted credential state a silent re-login needs. Omitting it
+    is the defect that turns a session expiry into a permanent silent failure.
+    """
     pid_path = Path(daemon_config["pid_file"]).expanduser()
     log_path = Path(daemon_config["log_file"]).expanduser()
     _ensure_parent(pid_path)
-    pid_path.write_text(
-        str(Path("/dev/null")) if once else str(os.getpid()), encoding="utf-8"
-    )
+
+    if once:
+        # A one-shot run must not publish a pid `daemon stop` would act on: this
+        # process exits momentarily, and the pid in the file is not a daemon.
+        write_pid_file(pid_path, ONCE_PID_SENTINEL)
 
     try:
+        config = DaemonConfig.from_dict(daemon_config)
+        service = DaemonService(
+            client,
+            config=config,
+            on_start=on_start,
+            dry_run=dry_run,
+            auth_refresh_fn=auth_refresh_fn,
+            daemon_config=daemon_config,
+            # The service owns its own pid file: `daemon run` reaches it without
+            # going through here, and both paths have to be stoppable.
+            pid_file=None if once else pid_path,
+        )
         if once:
-            snapshot_path = Path(daemon_config["snapshot_file"]).expanduser()
-            old = load_snapshot(snapshot_path)
-            index = client.crawl_index()
-            alerts, changed_ids = diff_index(old, index)
-            save_snapshot(snapshot_path, index)
-            _log(
-                log_path,
-                f"check alert_count={len(alerts)} "
-                f"details_fetched={len(changed_ids)} "
-                f"delivered=False",
-            )
-            return {
-                "alerts": alerts,
-                "alert_count": len(alerts),
-                "detail_fetches": len(changed_ids),
-                "delivered": False,
-                "snapshot_file": str(snapshot_path),
-            }
+            return _run_once(service, log_path)
         # In multi-loop mode run DaemonService. `dry_run` used to stop at this
         # branch: only the `once` path above ever consulted it, so
         # `daemon start --dry-run` (without --once) POSTed real webhooks. It has
         # to reach the service, which owns the dispatcher.
-        config = DaemonConfig.from_dict(daemon_config)
-        service = DaemonService(client, config=config, on_start=on_start, dry_run=dry_run)
         service.run_forever()
         return {"stopped": True}
     finally:
-        if pid_path.exists():
-            pid_path.unlink()
+        if once:
+            _release_pid_file(pid_path, ONCE_PID_SENTINEL)
+        else:
+            # Defensive: the service already removed its own pid file on the way
+            # out. Only touch it if it still names this process.
+            _release_pid_file(pid_path, str(os.getpid()))
 
 
 def stop_daemon(path: str | None = None) -> dict:
+    """Signal the running daemon and report the *verified* outcome.
+
+    Sending SIGTERM and immediately reporting success is how a daemon wedged in
+    a webhook retry gets declared stopped while it keeps running.
+    """
     config = load_daemon_config(path)
     pid_path = Path(config["pid_file"]).expanduser()
-    if not pid_path.exists():
+
+    pid = read_pid_file(pid_path)
+    if pid is None:
+        if pid_path.exists():
+            # Present but unparseable (or the `--once` sentinel): clear it.
+            pid_path.unlink(missing_ok=True)
+            return {
+                "stopped": False,
+                "reason": "invalid_pid",
+                "pid_file": str(pid_path),
+            }
         return {
             "stopped": False,
             "reason": "pid_file_missing",
             "pid_file": str(pid_path),
         }
-
-    raw = pid_path.read_text(encoding="utf-8").strip()
-    try:
-        pid = int(raw)
-    except ValueError:
-        pid_path.unlink()
-        return {"stopped": False, "reason": "invalid_pid", "pid_file": str(pid_path)}
-
-    if pid <= 0:
-        pid_path.unlink(missing_ok=True)
-        return {"stopped": False, "reason": "invalid_pid", "pid_file": str(pid_path)}
 
     if not _is_tahuti_pid(pid):
         pid_path.unlink(missing_ok=True)
@@ -535,6 +786,25 @@ def stop_daemon(path: str | None = None) -> dict:
             "pid_file": str(pid_path),
         }
 
-    os.kill(pid, signal.SIGTERM)
-    pid_path.unlink(missing_ok=True)
-    return {"stopped": True, "pid": pid, "pid_file": str(pid_path)}
+    outcome = terminate_pid(pid)
+    result: dict = {
+        "pid": pid,
+        "pid_file": str(pid_path),
+        "escalated_to_sigkill": bool(outcome.get("escalated")),
+    }
+    if outcome.get("exited"):
+        result["stopped"] = True
+    else:
+        result["stopped"] = False
+        result["reason"] = (
+            "signal_failed" if outcome.get("error") else "did_not_exit"
+        )
+        if outcome.get("error"):
+            result["error"] = outcome["error"]
+        # Still running: keep the pid file so the next `daemon stop` can find it.
+        return result
+
+    # Gone. Leave a pid file that no longer names the pid we stopped alone: a
+    # `daemon start` may have replaced it while we were waiting.
+    _release_pid_file(pid_path, str(pid))
+    return result

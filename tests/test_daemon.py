@@ -375,13 +375,53 @@ class TestStopDaemon:
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_tahuti_pid", return_value=True):
-            with patch("mb_cli.daemon.os.kill") as mock_kill:
-                result = stop_daemon(str(config_path))
-                assert result["stopped"] is True
-                assert result["pid"] == 12345
-                mock_kill.assert_called_once_with(12345, signal.SIGTERM)
-                assert not pid_path.exists()
+        calls: list[tuple] = []
+
+        def _fake_kill(pid, sig):
+            calls.append((pid, sig))
+            if sig == signal.SIGTERM:
+                # The daemon exits on SIGTERM, as a healthy one does.
+                raise ProcessLookupError
+            raise AssertionError("SIGKILL must not be needed when SIGTERM works")
+
+        with (
+            patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
+            patch("mb_cli.daemon.os.kill", side_effect=_fake_kill),
+        ):
+            result = stop_daemon(str(config_path))
+
+        assert result["stopped"] is True
+        assert result["pid"] == 12345
+        # SIGTERM is what gets sent to the right pid ...
+        assert (12345, signal.SIGTERM) in calls
+        # ... and nothing heavier, because the process was gone by the time the
+        # liveness re-check ran. `stop_daemon` used to report success without
+        # checking at all.
+        assert not any(sig == signal.SIGKILL for _pid, sig in calls)
+        assert not pid_path.exists()
+
+    def test_stop_daemon_waits_for_the_process_to_actually_exit(self, tmp_path: Path):
+        """A wedged daemon must not be reported stopped while it still runs."""
+        pid_path = tmp_path / "daemon.pid"
+        pid_path.write_text("12345")
+        config_path = tmp_path / "daemon.json"
+        config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
+
+        with (
+            patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
+            patch(
+                "mb_cli.daemon.terminate_pid",
+                return_value={"exited": False, "escalated": True},
+            ) as term,
+        ):
+            result = stop_daemon(str(config_path))
+
+        term.assert_called_once_with(12345)
+        assert result["stopped"] is False
+        assert result["reason"] == "did_not_exit"
+        assert result["escalated_to_sigkill"] is True
+        # Still running, so its pid file has to survive for the next attempt.
+        assert pid_path.exists()
 
 
 class TestIsTahutiPid:
