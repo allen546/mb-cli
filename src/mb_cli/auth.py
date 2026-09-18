@@ -7,11 +7,14 @@ import os
 
 from .cache import ResponseCache
 from .client import ManageBacClient
+from . import keychain
 from .config import (
     AppState,
+    clear_creds,
     config_dir,
     load_creds,
     load_state,
+    resolve_creds_path,
     save_creds,
     save_session,
 )
@@ -32,7 +35,49 @@ def _creds_path() -> str:
     ``build_client`` and friends must never touch the developer's real saved
     password when running under pytest.
     """
-    return os.environ.get(_CREDS_PATH_ENV, _CREDS_PATH)
+    return str(resolve_creds_path())
+
+
+def _store_password(email: str, password: str, use_keychain: bool | None = None) -> str:
+    """Persist a password for silent re-login.
+
+    Returns the backend actually used: ``"keychain"``, ``"file"``, or
+    ``"none"``. The OS keychain is opt-in and preferred when available; without
+    it the password lands in the cleartext 0600 ``creds.json`` that
+    :mod:`mb_cli.config` writes. A keychain that fails to store falls back to
+    the file rather than silently losing the credential.
+    """
+    if keychain.enabled(use_keychain):
+        if keychain.store(email, password):
+            # Drop any cleartext copy left by an earlier non-keychain login, so
+            # switching backends does not leave the password on disk twice.
+            clear_creds(_creds_path())
+            return "keychain"
+        log.warning("OS keychain unavailable — falling back to creds.json")
+    save_creds(_creds_path(), email, password)
+    return "file"
+
+
+def _load_creds(email_hint: str | None = None) -> dict | None:
+    """Load saved credentials, consulting the OS keychain as a fallback.
+
+    ``creds.json`` wins when it holds a password so an existing install keeps
+    working unchanged. The keychain is consulted when the file is missing or
+    carries no password — i.e. after ``mb login --keychain`` — using the
+    profile/session email as the account name.
+    """
+    creds = load_creds(_creds_path())
+    if creds and creds.get("password"):
+        return creds
+    account = (creds or {}).get("email") or email_hint
+    if account and keychain.available():
+        secret = keychain.lookup(account)
+        if secret:
+            merged = dict(creds or {})
+            merged["email"] = account
+            merged["password"] = secret
+            return merged
+    return creds
 
 
 def build_client(
@@ -48,11 +93,15 @@ def build_client(
     cache_ttl: int | None = None,
     retry: int = 3,
     remember: bool = True,
+    use_keychain: bool | None = None,
 ) -> tuple[AppState, ManageBacClient, str]:
     """Build and authenticate a :class:`ManageBacClient`.
 
     Returns ``(state, client, email)``.  Raises :class:`CommandError` on
     missing credentials or authentication failure.
+
+    *use_keychain* overrides ``MB_CRAWLER_KEYCHAIN`` for this call only;
+    ``None`` defers to the environment.
     """
     state = load_state(profile)
     school = school or state.profile.school or state.session.school
@@ -64,7 +113,7 @@ def build_client(
     email_val = email or state.profile.email or state.session.email
     if not email_val:
         try:
-            creds = load_creds(_creds_path())
+            creds = _load_creds()
             if creds:
                 email_val = creds.get("email")
         except Exception:
@@ -81,7 +130,12 @@ def build_client(
     resolved_ttl = (
         cache_ttl if cache_ttl is not None else state.profile.default_cache_ttl
     )
-    cache = ResponseCache(cache_dir=cache_dir, enabled=not refresh, ttl=resolved_ttl)
+    # `remember=False` (`mb login --temp`) must leave nothing on disk, and the
+    # response cache holds full grade pages plus the MNN-hub JWT — so the cache
+    # is disabled too, not just the saved password.
+    cache = ResponseCache(
+        cache_dir=cache_dir, enabled=not refresh and remember, ttl=resolved_ttl
+    )
     client = ManageBacClient(
         school, domain=domain, cache=cache, verify=verify, retry=retry
     )
@@ -98,7 +152,7 @@ def build_client(
         # `remember=False` (mb --temp) means "do not persist my password to
         # disk".  Persisting it anyway would silently defeat that flag.
         if remember:
-            save_creds(_creds_path(), email_val, password)
+            _store_password(email_val, password, use_keychain)
     elif state.session.cookie and not reauth:
         # Health check: try saved cookie, re-login if stale
         client.set_cookie(state.session.cookie)
@@ -109,7 +163,7 @@ def build_client(
             _relogin_from_creds(client, state)
     else:
         # No session cookie and no explicit password — try loading from config
-        creds = load_creds(_creds_path())
+        creds = _load_creds(email_val)
         login_email = email_val or (creds.get("email") if creds else None)
         login_pass = password or (creds.get("password") if creds else None)
         if not login_email or not login_pass:
@@ -119,13 +173,15 @@ def build_client(
             )
         if not client.login(login_email, login_pass, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
-        # Persist new session
-        state.session.cookie = client.session.cookies.get("_managebac_session")
-        state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
-        state.session.school = school
-        state.session.domain = domain
-        state.session.email = login_email
-        save_session(state)
+        # Persist new session — unless this is a `--temp` login, which must not
+        # leave a reusable cookie behind any more than it leaves a password.
+        if remember:
+            state.session.cookie = client.session.cookies.get("_managebac_session")
+            state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
+            state.session.school = school
+            state.session.domain = domain
+            state.session.email = login_email
+            save_session(state)
 
     return state, client, email_val or ""
 
@@ -155,7 +211,7 @@ def _is_session_alive(client: ManageBacClient) -> bool:
 
 def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
     """Re-login using saved credentials. Raises CommandError on failure."""
-    creds = load_creds(_creds_path())
+    creds = _load_creds(state.session.email or state.profile.email)
     if not creds or "email" not in creds or "password" not in creds:
         raise CommandError(
             "missing_credentials",
