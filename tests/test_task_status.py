@@ -8,6 +8,8 @@ import pytest
 from mb_cli.task_status import (
     GradeStatus,
     SubmissionStatus,
+    align_timezones,
+    as_naive,
     classify_task_view,
     get_grade_status,
     get_submission_status,
@@ -201,6 +203,94 @@ class TestDisplayFormatting:
         }
         assert get_task_display_grade(t, now_ref=now) == "⚠ Unsubmitted"
         assert get_task_display_status(t) == "Incomplete (Todo)"
+
+
+class TestTimezoneNormalisation:
+    """parse_due_date is aware for ISO+offset input and naive for HTML text.
+
+    Comparing the two raises ``TypeError: can't compare offset-naive and
+    offset-aware datetimes``, so every comparison funnels through
+    ``align_timezones``.
+    """
+
+    def test_align_aware_due_with_naive_now(self):
+        from datetime import timezone
+
+        due = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        aligned_due, aligned_now = align_timezones(due, now)
+        assert aligned_due.tzinfo is None
+        assert aligned_now.tzinfo is None
+        # Inputs are not mutated.
+        assert due.tzinfo is not None
+        assert now.tzinfo is None
+        assert aligned_due > aligned_now
+
+    def test_align_naive_due_with_aware_now(self):
+        from datetime import timezone
+
+        due = datetime(2026, 9, 5, 12, 0, 0)
+        now = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        aligned_due, aligned_now = align_timezones(due, now)
+        assert aligned_due.tzinfo is None
+        assert aligned_now.tzinfo is None
+        assert aligned_due < aligned_now
+
+    def test_align_both_aware(self):
+        from datetime import timedelta as td
+        from datetime import timezone
+
+        due = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone(td(hours=8)))
+        now = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        aligned_due, aligned_now = align_timezones(due, now)
+        assert aligned_due.tzinfo is None
+        assert aligned_now.tzinfo is None
+        assert aligned_due == as_naive(due)
+        assert aligned_now == as_naive(now)
+        assert aligned_due > aligned_now
+
+    def test_align_both_naive_is_identity(self):
+        due = datetime(2026, 9, 15, 12, 0, 0)
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        assert align_timezones(due, now) == (due, now)
+
+    def test_as_naive_is_identity_for_naive(self):
+        naive = datetime(2026, 9, 15, 12, 0, 0)
+        assert as_naive(naive) is naive
+
+    def test_as_naive_strips_tzinfo(self):
+        from datetime import timezone
+
+        aware = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+        assert as_naive(aware).tzinfo is None
+        assert aware.tzinfo is not None
+
+    def test_classify_aware_due_against_naive_now(self):
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        task = {"due_date": "2026-09-20T23:59:00+08:00", "status": "not-submitted"}
+        assert classify_task_view(task, now_ref=now) == "upcoming"
+
+    def test_classify_aware_overdue_due_against_naive_now(self):
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        task = {"due_date": "2026-09-05T23:59:00+08:00", "status": "not-submitted"}
+        assert classify_task_view(task, now_ref=now) == "overdue"
+
+    def test_classify_z_suffix_due_against_naive_now(self):
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        task = {"due_date": "2026-09-20T23:59:00Z", "status": "not-submitted"}
+        assert classify_task_view(task, now_ref=now) == "upcoming"
+
+    def test_classify_naive_due_against_aware_now(self):
+        from datetime import timezone
+
+        now = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+        task = {"due_date": "Sep 19, 11:59 PM", "status": "not-submitted"}
+        assert classify_task_view(task, now_ref=now) == "upcoming"
+
+    def test_display_grade_aware_due_does_not_crash(self):
+        now = datetime(2026, 9, 10, 12, 0, 0)
+        task = {"due_date": "2026-09-05T23:59:00+08:00", "status": "not-submitted"}
+        assert get_task_display_grade(task, now_ref=now) == "⚠ Unsubmitted"
 
 
 class TestMathematicalEquivalenceInvariant:
