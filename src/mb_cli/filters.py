@@ -4,6 +4,78 @@ from __future__ import annotations
 
 import re
 
+from .exceptions import CommandError
+
+
+# ── Timeline views ─────────────────────────────────────────────────────
+# One canonical vocabulary shared by the CLI (`--view`) and the MCP
+# `list_tasks` tool.  Anything that is not an explicit alias is an error:
+# silently falling back to "all" makes a mistyped view look like real data.
+CANONICAL_VIEWS: tuple[str, ...] = ("all", "upcoming", "past", "overdue")
+
+VIEW_ALIASES: dict[str, str] = {
+    "all": "all",
+    "all tasks": "all",
+    "any": "all",
+    "everything": "all",
+    "*": "all",
+    "upcoming": "upcoming",
+    "upcoming task": "upcoming",
+    "upcoming tasks": "upcoming",
+    "future": "upcoming",
+    "next": "upcoming",
+    "past": "past",
+    "past task": "past",
+    "past tasks": "past",
+    "previous": "past",
+    "overdue": "overdue",
+    "overdue task": "overdue",
+    "overdue tasks": "overdue",
+    "late": "overdue",
+    "missed": "overdue",
+}
+
+# Empty/unspecified means "no preference", which resolves to *default*.
+_VIEW_DEFAULT_TOKENS = frozenset({"", "default", "none"})
+
+
+class InvalidViewError(CommandError):
+    """Raised when a requested timeline view is not recognised.
+
+    Subclasses :class:`CommandError` so an uncaught instance still surfaces as
+    a structured CLI error payload (``ERROR [invalid_view]: ...``) instead of a
+    traceback, and so MCP tools can map it straight to a JSON error.
+    """
+
+    def __init__(self, requested_view: object):
+        shown = str(requested_view)[:80]
+        super().__init__(
+            "invalid_view",
+            f"Unknown view: {shown!r}. "
+            f"Use one of {', '.join(CANONICAL_VIEWS)}.",
+        )
+
+
+def normalize_view(requested_view: object, default: str = "all") -> str:
+    """Return the canonical name for *requested_view*.
+
+    Matching is case-insensitive and tolerates surrounding whitespace and the
+    natural singular/plural forms listed in :data:`VIEW_ALIASES`.  A missing or
+    empty value resolves to *default*.
+
+    Raises:
+        InvalidViewError: if the value is not a recognised view or alias.
+    """
+    token = re.sub(r"\s+", " ", str(requested_view or "").strip()).casefold()
+    if token in _VIEW_DEFAULT_TOKENS:
+        return default
+    canonical = VIEW_ALIASES.get(token)
+    if canonical:
+        return canonical
+    # Tolerate a plural/singular swap on any listed alias ("upcomings").
+    if token.endswith("s") and token[:-1] in VIEW_ALIASES:
+        return VIEW_ALIASES[token[:-1]]
+    raise InvalidViewError(requested_view)
 
 
 def matches_subject(task: dict, subject: str) -> bool:
@@ -49,6 +121,15 @@ def matches_submitted(task: dict, submitted: bool) -> bool:
     return is_task_submitted(task) == submitted
 
 
+# A grade code is a letter A-F with an optional +/- modifier.  The trailing
+# lookahead keeps the match anchored to the whole token, so "A+ (95/100)"
+# yields "A+" while an ordinary word ("Absent", "Formative") does not yield
+# "A"/"F".  Note ``\\b`` cannot be used here: there is no word boundary between
+# "+"/"-" and a following space, which made the modifier group backtrack to
+# empty and silently degraded every "A+"/"B-" to "A"/"B".
+_GRADE_CODE_RE = re.compile(r"^([A-F][+-]?)(?![A-Za-z])")
+
+
 def matches_grade_query(task: dict, query: str) -> bool:
     """Return *True* if the task's grade matches the *query*.
 
@@ -58,12 +139,12 @@ def matches_grade_query(task: dict, query: str) -> bool:
     """
     gl = task.get("grade_letter") or ""
     gs = task.get("grade_score") or ""
-    
+
     # Try to find a grade code from letter or score (e.g. "A+", "B-", "A")
-    grade_val = gl.strip().upper()
+    grade_val = str(gl).strip().upper()
     if not grade_val:
-        # Check if score starts with a grade letter (some lists output "A+ (95/100)")
-        match = re.match(r"^([A-F][+-]?)\b", gs.strip().upper())
+        # Some lists carry only a score string like "A+ (95/100)".
+        match = _GRADE_CODE_RE.match(str(gs).strip().upper())
         if match:
             grade_val = match.group(1)
 
@@ -182,17 +263,20 @@ def filter_result_by_status(
 
 
 def result_views(result: dict, requested_view: str) -> dict:
-    """Return only the requested view section from a crawl result."""
-    if requested_view == "upcoming":
-        return {"upcoming": result["upcoming"], "past": [], "overdue": []}
-    if requested_view == "past":
-        return {"upcoming": [], "past": result["past"], "overdue": []}
-    if requested_view == "overdue":
-        return {"upcoming": [], "past": [], "overdue": result["overdue"]}
+    """Return only the requested view section from a crawl result.
+
+    Uses the same validated vocabulary as the MCP ``list_tasks`` tool: an
+    unrecognised *requested_view* raises :class:`InvalidViewError` rather than
+    quietly degrading to "all".
+
+    Raises:
+        InvalidViewError: if *requested_view* is not a recognised view.
+    """
+    view = normalize_view(requested_view)
     return {
-        "upcoming": result["upcoming"],
-        "past": result["past"],
-        "overdue": result["overdue"],
+        "upcoming": result["upcoming"] if view in ("all", "upcoming") else [],
+        "past": result["past"] if view in ("all", "past") else [],
+        "overdue": result["overdue"] if view in ("all", "overdue") else [],
     }
 
 
