@@ -242,12 +242,17 @@ def _redact_daemon_config(config: dict) -> dict:
     return redacted
 
 
-def merge_snapshot(old: dict, new: dict, client=None) -> dict:
+def merge_snapshot(old: dict, new: dict, client=None, partial: bool = False) -> dict:
     """Merge new crawl results into the old snapshot.
 
     1. Tasks present in new crawl overwrite those in the old snapshot.
     2. Tasks present in old snapshot but missing in the new crawl are preserved,
-       and marked with "deleted_from_server": True.
+       and marked with "deleted_from_server": True — but only when the crawl
+       actually covered the whole account. *partial* marks a crawl that was
+       deliberately narrowed (``list --pages N``): tasks missing from it are
+       simply not on the pages we asked for, and inferring a deletion from that
+       would flag most of the account as deleted and persist it, hiding them
+       from every later ``list`` until a full crawl happened to reach them.
     3. If client is provided, invalidate cache for task details if grade or status changes.
     """
     merged_map = {}
@@ -297,10 +302,14 @@ def merge_snapshot(old: dict, new: dict, client=None) -> dict:
                             log.info("Task %s state changed; invalidated cached details.", task_id)
                 merged_map[tid] = t
 
-    # Mark tasks in snapshot that were NOT in the new crawl as deleted from server
-    for tid, t in merged_map.items():
-        if tid not in new_tids:
-            t["deleted_from_server"] = True
+    # Mark tasks in snapshot that were NOT in the new crawl as deleted from
+    # server — but only when this crawl saw the whole account. A `--pages`-
+    # limited crawl is silent about everything past its last page, so treating
+    # absence there as a confirmed deletion deletes the rest of the account.
+    if not partial:
+        for tid, t in merged_map.items():
+            if tid not in new_tids:
+                t["deleted_from_server"] = True
 
     # Reclassify all merged tasks into upcoming, past, overdue based on due_date and status
     reclassified = _reclassify_tasks(merged_map, now_ref=now_ref)
@@ -451,7 +460,16 @@ def cmd_list(args) -> int:
     snapshot_path = _snapshot_path(state)
     old_snapshot = load_snapshot(snapshot_path)
 
-    # Check if we can reuse the snapshot (crawled within last 15 minutes)
+    # Check if we can reuse the snapshot, using the same TTL that governs the
+    # HTTP response cache. This used to be a hardcoded 900, so `--cache-ttl 30`
+    # (and `defaults.cache_ttl`) were accepted and then ignored here: five
+    # minutes after a full crawl `list` still re-rendered the stale snapshot.
+    snapshot_ttl = args.cache_ttl
+    if snapshot_ttl is None:
+        snapshot_ttl = state.profile.default_cache_ttl
+    if snapshot_ttl is None:
+        snapshot_ttl = DEFAULT_SNAPSHOT_TTL
+
     use_cached_snapshot = False
     if old_snapshot and not args.refresh:
         crawled_at_str = old_snapshot.get("crawled_at")
@@ -459,19 +477,27 @@ def cmd_list(args) -> int:
             try:
                 crawled_at = datetime.fromisoformat(crawled_at_str)
                 age = (datetime.now() - crawled_at).total_seconds()
-                if age < 900:  # 15 minutes TTL
+                if age < snapshot_ttl:
                     use_cached_snapshot = True
-                    log.info("Using cached snapshot (age: %d seconds)", int(age))
+                    log.info(
+                        "Using cached snapshot (age: %d seconds, ttl: %d)",
+                        int(age),
+                        snapshot_ttl,
+                    )
             except Exception:
                 pass
 
     if use_cached_snapshot:
         merged_result = old_snapshot
     else:
-        # Fetch fresh results
+        # Fetch fresh results. An explicit --pages narrows the crawl, so the
+        # merge must not read absence from it as a deletion.
+        partial = args.pages is not None
         new_result = client.crawl_all(max_pages=pages, fetch_details=details)
         # Merge with local snapshot and save
-        merged_result = merge_snapshot(old_snapshot, new_result, client=client)
+        merged_result = merge_snapshot(
+            old_snapshot, new_result, client=client, partial=partial
+        )
         save_snapshot(snapshot_path, merged_result)
 
     # Filter out tasks that were deleted from the server (unless --deleted is specified)
@@ -539,7 +565,11 @@ def cmd_list(args) -> int:
                 "tag_filter": args.tag,
                 "todo_filter": args.todo,
                 "completed_filter": args.completed,
-                "details": details,
+                # Truthful: a payload served from the cached snapshot was not
+                # detail-enriched by *this* run, so claiming `details: true`
+                # there told consumers a detail fetch happened when none did.
+                "details": bool(details) and not use_cached_snapshot,
+                "snapshot_source": "cache" if use_cached_snapshot else "crawl",
             },
             "summary": summary,
             "tasks": views,
