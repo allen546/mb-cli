@@ -80,6 +80,25 @@ def _load_creds(email_hint: str | None = None) -> dict | None:
     return creds
 
 
+def session_email(state: AppState, override: str | None = None) -> str:
+    """Return the email that identifies this profile's on-disk state.
+
+    One function because two things are keyed by it and they used to disagree
+    about which email they meant: the response-cache directory is a hash of it,
+    and the OS-keychain item is filed under it. ``build_client`` preferred an
+    explicit ``--email``, then the profile's email, then the session's; the
+    ``logout`` handler took the session's first. With the two set to different
+    values, ``logout`` deleted a *different* profile's hash directory and left
+    the JWT-bearing entries in place while still reporting success — and left
+    the keychain item behind for the account it actually deleted nothing for.
+
+    ``logout`` passes no override (its subparser defines no ``--email``), so the
+    two agree on ``profile.email or session.email``. Returns ``""`` rather than
+    ``None`` when neither is set, so callers can treat the result as a string.
+    """
+    return override or state.profile.email or state.session.email or ""
+
+
 def build_client(
     school: str | None = None,
     domain: str | None = None,
@@ -110,7 +129,7 @@ def build_client(
     if not school:
         raise CommandError("missing_credentials", "Missing school in args or config")
 
-    email_val = email or state.profile.email or state.session.email
+    email_val = session_email(state, email)
     if not email_val:
         try:
             creds = _load_creds()
