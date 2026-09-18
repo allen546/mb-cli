@@ -69,14 +69,80 @@ class TestSafeFilename:
 
 
 class TestStateEvictionOrder:
-    def test_evicts_oldest_not_newest(self):
+    # `mark_reminder_dispatched` only prunes once the dict exceeds 5000 entries.
+    _CAP = 5000
+
+    def test_evicts_oldest_not_newest(self, tmp_path):
+        """Eviction must drop the *oldest* entries, by insertion order.
+
+        Two things made the old version of this test vacuous. It inserted two
+        entries, far under the 5000-entry cap, so the eviction branch never ran
+        and it only asserted Python's guaranteed dict insertion order. And it
+        built the object with `__new__`, bypassing `__init__`, so nothing
+        exercised the real load/eviction path.
+
+        The zero-padded ids below are what make the assertion bite: a
+        lexicographic sort of the keys would order `task_0001` first too, so
+        the fix is pinned by inserting in an order where insertion order and
+        sorted order agree — see `test_eviction_is_not_a_lexicographic_sort`,
+        which uses ids where they disagree.
+        """
         from mb_cli.daemon.state import DaemonStateManager
-        m = DaemonStateManager.__new__(DaemonStateManager)
-        m.dispatched_reminders = {}
-        # Insert 9 then 10 — lexicographic sort would evict "task_10" first.
-        m.mark_reminder_dispatched(9, "24h")
-        m.mark_reminder_dispatched(10, "24h")
-        assert list(m.dispatched_reminders)[0] == "task_9:ddl_24h"
+
+        manager = DaemonStateManager(state_path=tmp_path / "state.json")
+        cap = self._CAP
+        for i in range(1, cap + 1):
+            manager.mark_reminder_dispatched(f"{i:04d}", "24h")
+
+        assert len(manager.dispatched_reminders) == cap, (
+            "nothing evicted at exactly the cap; the test below would be vacuous"
+        )
+
+        # One more entry crosses the cap by one and must evict exactly one key.
+        manager.mark_reminder_dispatched("newest", "24h")
+
+        assert len(manager.dispatched_reminders) == cap
+        assert not manager.is_reminder_dispatched("0001", "24h"), (
+            "the oldest entry survived; eviction dropped a newer one"
+        )
+        assert manager.is_reminder_dispatched("0002", "24h"), (
+            "eviction removed more than the single excess entry"
+        )
+        assert manager.is_reminder_dispatched("newest", "24h"), (
+            "the newest entry was evicted instead of the oldest"
+        )
+
+    def test_eviction_prefers_insertion_order_over_sorted_keys(self, tmp_path):
+        """The regression this guards: evicting `sorted(keys)[:excess]`.
+
+        Zero-padded ids make insertion order and sorted order agree, so they
+        cannot tell the two implementations apart. Here the new key is chosen to
+        sort *before* every existing key: correct eviction drops the oldest
+        inserted entry and keeps it, while a lexicographic eviction reaches for
+        the new key and drops the entry the test just added. Fails if state.py's
+        eviction line is changed to a lexicographic sort.
+        """
+        from mb_cli.daemon.state import DaemonStateManager
+
+        manager = DaemonStateManager(state_path=tmp_path / "state.json")
+        cap = self._CAP
+        for i in range(1, cap + 1):
+            manager.mark_reminder_dispatched(i, "24h")
+
+        oldest = "task_1:ddl_24h"
+        assert oldest in manager.dispatched_reminders
+
+        # "task_0" sorts before "task_1", so a lexicographic eviction picks it.
+        manager.mark_reminder_dispatched(0, "24h")
+
+        assert oldest not in manager.dispatched_reminders, (
+            f"{oldest} was the oldest inserted entry and must be the one evicted"
+        )
+        assert "task_0:ddl_24h" in manager.dispatched_reminders, (
+            "eviction dropped the newest entry because its key sorted first — "
+            "state.py is sorting keys instead of dropping the oldest insertion"
+        )
+        assert len(manager.dispatched_reminders) == cap
 
     def test_legacy_list_format_migrates(self, tmp_path):
         import json

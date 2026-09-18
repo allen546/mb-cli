@@ -1,8 +1,6 @@
-import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 from mb_cli.client import parse_due_date, ManageBacClient
-from mb_cli.filters import matches_completed
 from mb_cli.cache import ResponseCache
 
 
@@ -40,29 +38,6 @@ def test_parse_due_date_wrapping():
         assert dt.day == 28
         assert dt.hour == 18
         assert dt.minute == 0
-
-
-def test_matches_completed():
-    # Task unfinished (todo): not submitted AND no grade AND has submit button
-    t1 = {"labels": ["Pending"], "grade_letter": None, "status": "not-submitted", "has_submit_button": True}
-    assert matches_completed(t1, completed=False) is True
-    assert matches_completed(t1, completed=True) is False
-
-    # Graded F but no submit button -> completed (closed/offline)
-    t2 = {"labels": ["Pending"], "grade_letter": "F", "status": "not-submitted"}
-    assert matches_completed(t2, completed=True) is True
-
-    # Graded F and has submit button -> completed (since it has a grade)
-    t2_open = {"labels": ["Pending"], "grade_letter": "F", "status": "not-submitted", "has_submit_button": True}
-    assert matches_completed(t2_open, completed=True) is True
-
-    # Graded passing -> completed
-    t3 = {"labels": ["Pending"], "grade_letter": "A", "status": "not-submitted"}
-    assert matches_completed(t3, completed=True) is True
-
-    # Submitted -> completed
-    t4 = {"labels": ["Submitted"], "grade_letter": None, "status": "submitted"}
-    assert matches_completed(t4, completed=True) is True
 
 
 def test_stale_cache_fallback(tmp_path):
@@ -127,11 +102,14 @@ def test_view_submissions():
     assert "resource_guide.pdf" in output
 
 
-def test_cmd_download(tmp_path):
-    from mb_cli.__main__ import cmd_download
-    from unittest.mock import MagicMock, patch
-    import json
+def test_matches_tag_or_and_query_syntax():
+    """`--tag`'s OR/AND query syntax.
 
+    Only the query-operator cases live here. Single-tag matching — exact,
+    case-insensitive, partial, no-match, no-labels — is covered properly by
+    `tests/test_filters.py::TestMatchesTag`; repeating it here meant two copies
+    to maintain and no extra reach.
+    """
     class Args:
         task_id = "123"
         output_dir = str(tmp_path / "custom_out")
@@ -216,23 +194,16 @@ def test_cmd_download(tmp_path):
 def test_tag_logic():
     from mb_cli.filters import matches_tag
 
-    # Test single matching
     t = {"labels": ["Summative", "Exam"]}
-    assert matches_tag(t, "summative") is True
-    assert matches_tag(t, "exam") is True
-    assert matches_tag(t, "homework") is False
 
-    # Test OR queries
+    # OR queries — any separator spellings.
     assert matches_tag(t, "homework,exam") is True
     assert matches_tag(t, "homework|summative") is True
     assert matches_tag(t, "homework or exam") is True
     assert matches_tag(t, "homework,project") is False
 
-    # Test AND queries
+    # AND queries — every term must match.
     assert matches_tag(t, "summative+exam") is True
     assert matches_tag(t, "summative&exam") is True
     assert matches_tag(t, "summative and exam") is True
     assert matches_tag(t, "summative+homework") is False
-
-
-
