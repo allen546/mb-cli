@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -491,7 +492,14 @@ class TestKeychainModule:
 
         monkeypatch.setattr(keychain, "_run", fake_run)
         assert keychain.delete("a@b.c") is True
-        assert "delete-generic-password" in seen["argv"]
+        # The verb is per-platform: macOS `security delete-generic-password`,
+        # Linux `secret-tool clear`. Assert the one this platform actually
+        # issues — hardcoding the macOS verb made the suite Darwin-only.
+        expected = {
+            "darwin": "delete-generic-password",
+            "win32": _PS_DELETE_MARKER,
+        }.get(sys.platform, "clear")
+        assert expected in seen["argv"]
 
 
 # ── Windows keychain — WinRT PasswordVault via powershell.exe ────────────
@@ -499,6 +507,10 @@ class TestKeychainModule:
 # Exercised on macOS/CI by faking `sys.platform` and `shutil.which`, so the
 # win32 branches are reachable here. No test below launches a real PowerShell;
 # they assert on the argv / script / stdin the module would hand the child.
+
+#: Distinguishes the Windows delete path in ``delete()``'s argv: unlike macOS
+#: and Linux it is expressed as a rendered PowerShell script, not a verb flag.
+_PS_DELETE_MARKER = "$v.Remove("
 
 #: Stands in for the prefix `keychain._tool()` builds on Windows.
 _WIN_TOOL = [
