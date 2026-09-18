@@ -258,6 +258,73 @@ class TestStaleCacheDoesNotMaskErrors:
 # ── Defect 3: the scraped MNN hub endpoint must be validated ──────────────
 
 
+class TestSubmitFileVerifiesTheUpload:
+    """``ok: True`` must mean the coursework actually landed.
+
+    ManageBac answers rejected uploads with a 200 and a human-readable error,
+    so a status-code check alone reports success for a failed submission.
+    """
+
+    def _dropbox_page(self):
+        return (
+            '<html><head><meta name="csrf-token" content="csrf"></head><body>'
+            '<form id="edit_dropbox_123" action="/x/dropbox"></form></body></html>'
+        )
+
+    def _submit(self, client, tmp_path: Path, body: str, status: int = 200, json_body=None):
+        f = tmp_path / "work.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+        with rm.Mocker() as m:
+            m.get(
+                re.compile(r"/student/classes/.+/core_tasks/.+/dropbox$"),
+                text=self._dropbox_page(),
+            )
+            if json_body is not None:
+                m.post(
+                    f"{BASE}/student/classes/1000023/core_tasks/1000026/dropbox/upload",
+                    json=json_body,
+                    status_code=status,
+                )
+            else:
+                m.post(
+                    f"{BASE}/student/classes/1000023/core_tasks/1000026/dropbox/upload",
+                    text=body,
+                    status_code=status,
+                )
+            return client.submit_file("1000023", "1000026", str(f))
+
+    def test_200_with_a_failure_message_is_not_reported_as_success(
+        self, client, tmp_path: Path
+    ):
+        with pytest.raises(RuntimeError, match="permitted"):
+            self._submit(
+                client,
+                tmp_path,
+                "File type not permitted. Please try again.",
+                status=200,
+            )
+
+    def test_json_error_envelope_is_not_reported_as_success(
+        self, client, tmp_path: Path
+    ):
+        with pytest.raises(RuntimeError):
+            self._submit(
+                client, tmp_path, "", status=200, json_body={"ok": False, "error": "rejected"}
+            )
+
+    def test_http_error_is_still_reported_as_failure(self, client, tmp_path: Path):
+        with pytest.raises(Exception):
+            self._submit(client, tmp_path, "boom", status=422)
+
+    def test_genuine_success_is_still_reported_as_success(self, client, tmp_path: Path):
+        result = self._submit(client, tmp_path, "", status=200, json_body={"ok": True})
+        assert result["ok"] is True
+        assert result["filename"] == "work.pdf"
+
+
+# ── Defect 5: chart data-series must handle [ts, value] pairs ─────────────
+
+
 class TestExpectedGradeHandlesBothSeriesShapes:
     """A malformed point must skip, not take the whole class down.
 
