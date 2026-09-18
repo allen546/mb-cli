@@ -42,7 +42,7 @@ def mock_build_client():
 
 class TestMcpServerSetup:
     def test_mcp_name(self):
-        assert mcp.name == "mb-cli"
+        assert mcp.name == "tahuti"
 
     def test_tools_registered(self):
         tool_names = (

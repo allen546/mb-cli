@@ -59,9 +59,9 @@ def _build_client(args, command: str) -> tuple:
     password = getattr(args, "password", None)
     cookie = args.cookie
     if not password and not cookie:
-        # Environment fallback for non-interactive/CI use. `mb daemon start -b`
+        # Environment fallback for non-interactive/CI use. `tahuti daemon start -b`
         # already hands these to the detached child, so reading them back closes
-        # the loop: `MB_CRAWLER_PASSWORD=... mb daemon run` needs no prompt.
+        # the loop: `MB_CRAWLER_PASSWORD=... tahuti daemon run` needs no prompt.
         # An explicit --password/--cookie still wins over the environment.
         password = os.environ.get("MB_CRAWLER_PASSWORD") or None
         cookie = os.environ.get("MB_CRAWLER_COOKIE") or None
@@ -1518,14 +1518,14 @@ def cmd_feedback(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="mb",
+        prog="tahuti",
         description="Crawl ManageBac tasks, grades & submissions",
     )
     parser.add_argument(
         "--version",
         "-V",
         action="version",
-        version=f"mb {__version__}",
+        version=f"tahuti {__version__}",
         help="Show program version and exit",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)

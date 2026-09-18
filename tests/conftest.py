@@ -1,4 +1,4 @@
-"""Shared fixtures for mb-cli tests."""
+"""Shared fixtures for tahuti tests."""
 
 from __future__ import annotations
 

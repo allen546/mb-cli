@@ -63,7 +63,7 @@ def _load_creds(email_hint: str | None = None) -> dict | None:
 
     ``creds.json`` wins when it holds a password so an existing install keeps
     working unchanged. The keychain is consulted when the file is missing or
-    carries no password — i.e. after ``mb login --keychain`` — using the
+    carries no password — i.e. after ``tahuti login --keychain`` — using the
     profile/session email as the account name.
     """
     creds = load_creds(_creds_path())
@@ -130,7 +130,7 @@ def build_client(
     resolved_ttl = (
         cache_ttl if cache_ttl is not None else state.profile.default_cache_ttl
     )
-    # `remember=False` (`mb login --temp`) must leave nothing on disk, and the
+    # `remember=False` (`tahuti login --temp`) must leave nothing on disk, and the
     # response cache holds full grade pages plus the MNN-hub JWT — so the cache
     # is disabled too, not just the saved password.
     cache = ResponseCache(
@@ -169,7 +169,7 @@ def build_client(
         if not login_email or not login_pass:
             raise CommandError(
                 "missing_credentials",
-                "No session, no password — pass password= or set a password via `mb login`",
+                "No session, no password — pass password= or set a password via `tahuti login`",
             )
         if not client.login(login_email, login_pass, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")

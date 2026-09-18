@@ -181,7 +181,7 @@ def format_grade_display(
 ) -> str:
     """Format single unified grade display string.
 
-    If standalone is True (e.g. mb view), returns only the grade value
+    If standalone is True (e.g. tahuti view), returns only the grade value
     ('A', 'A (100 / 100 pts)', 'N/A', or 'None').
     """
     from .client import parse_due_date
@@ -236,7 +236,7 @@ def format_grade_display(
 
 
 def get_task_display_status(task: dict[str, Any]) -> str:
-    """Format single unified status string (matching mb view status)."""
+    """Format single unified status string (matching tahuti view status)."""
     if is_task_todo(task):
         return "Incomplete (Todo)"
     if is_task_submitted(task):

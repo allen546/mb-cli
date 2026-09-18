@@ -102,7 +102,7 @@ class ResponseCache:
         """Delete every cache entry. Returns the number of files removed.
 
         Cached bodies include full grade pages and the MNN-hub Bearer JWT, so
-        ``mb logout`` calls this to avoid leaving credentials on disk.
+        ``tahuti logout`` calls this to avoid leaving credentials on disk.
         """
         removed = 0
         if not self.cache_dir.exists():

@@ -101,7 +101,7 @@ def clear_creds(path: str | Path) -> bool:
 
     Returns *True* when a file was actually removed, *False* when there was
     nothing to delete or the unlink failed. Callers surface this so
-    ``mb logout`` can report honestly rather than claiming a deletion that
+    ``tahuti logout`` can report honestly rather than claiming a deletion that
     did not happen.
     """
     try:

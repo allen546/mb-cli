@@ -1,4 +1,4 @@
-"""Exception types for mb-cli."""
+"""Exception types for tahuti."""
 
 
 class CommandError(Exception):
