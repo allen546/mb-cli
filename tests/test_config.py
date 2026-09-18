@@ -31,7 +31,7 @@ class TestResolveConfigPath:
         monkeypatch.delenv("MB_CRAWLER_CONFIG", raising=False)
         result = resolve_config_path(None)
         assert result.name == "config.json"
-        assert "mb-crawler" in str(result)
+        assert "tahuti" in str(result)
 
 
 class TestResolveSessionPath:
@@ -46,7 +46,7 @@ class TestResolveSessionPath:
         monkeypatch.delenv("MB_CRAWLER_SESSION", raising=False)
         result = resolve_session_path(None)
         assert result.name == "session.json"
-        assert "mb-crawler" in str(result)
+        assert "tahuti" in str(result)
 
 
 class TestLoadState:

@@ -14,13 +14,6 @@ CONFIG_DIR = Path.home() / ".config" / "tahuti"
 DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.json"
 DEFAULT_SESSION_PATH = CONFIG_DIR / "session.json"
 
-# Pre-rename location. Keep reading from it so an existing install does not
-# lose its saved credentials and session the moment it upgrades; only consulted
-# when the new path does not exist yet.
-LEGACY_CONFIG_DIR = Path.home() / ".config" / "mb-crawler"
-LEGACY_DEFAULT_CONFIG_PATH = LEGACY_CONFIG_DIR / "config.json"
-LEGACY_DEFAULT_SESSION_PATH = LEGACY_CONFIG_DIR / "session.json"
-
 
 @dataclass
 class ProfileConfig:
@@ -62,14 +55,7 @@ def _ensure_parent(path: Path) -> None:
 
 
 def config_dir() -> Path:
-    """Directory holding all persisted state, with legacy fallback.
-
-    Derived state (``snapshot.json``, ``daemon_state.json``) is written next to
-    the config file, so resolving it here keeps everything in one place across
-    the pre-rename → post-rename transition.
-    """
-    if not CONFIG_DIR.exists() and LEGACY_CONFIG_DIR.exists():
-        return LEGACY_CONFIG_DIR
+    """Directory holding all persisted state."""
     return CONFIG_DIR
 
 
@@ -79,8 +65,6 @@ def resolve_config_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(CONFIG_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    if not DEFAULT_CONFIG_PATH.exists() and LEGACY_DEFAULT_CONFIG_PATH.exists():
-        return LEGACY_DEFAULT_CONFIG_PATH
     return DEFAULT_CONFIG_PATH
 
 
@@ -90,8 +74,6 @@ def resolve_session_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(SESSION_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    if not DEFAULT_SESSION_PATH.exists() and LEGACY_DEFAULT_SESSION_PATH.exists():
-        return LEGACY_DEFAULT_SESSION_PATH
     return DEFAULT_SESSION_PATH
 
 
