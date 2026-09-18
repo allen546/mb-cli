@@ -147,6 +147,7 @@ def test_cmd_download(tmp_path):
     state = MagicMock()
     state.config_path = tmp_path / "config" / "config.json"
     client = MagicMock()
+    client.base = "https://myschool.managebac.cn"
 
     # Mock snapshot data
     snapshot_path = tmp_path / "config" / "snapshot.json"
@@ -168,12 +169,12 @@ def test_cmd_download(tmp_path):
         "attachments": [
             {
                 "name": "res.pdf",
-                "url": "http://x/res.pdf",
+                "url": "https://myschool.managebac.cn/res.pdf",
                 "source": "description",
             },
             {
                 "name": "essay.pdf",
-                "url": "http://x/essay.pdf",
+                "url": "https://myschool.managebac.cn/essay.pdf",
                 "source": "submission",
             }
         ]
