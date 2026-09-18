@@ -201,6 +201,69 @@ def _coerce_chart_points(raw: Any) -> list[float]:
     return points
 
 
+# ManageBac answers a rejected upload with HTTP 200 and a human-readable
+# sentence, so a status-code check alone would call a failed submission a
+# success.  These are the phrasings its dropbox actually returns.
+_UPLOAD_FAILURE_MARKERS = (
+    "file type not permitted",
+    "not permitted",
+    "file size exceeds",
+    "exceeds the maximum",
+    "maximum file size",
+    "too large",
+    "no file selected",
+    "no file chosen",
+    "no file was uploaded",
+    "unsupported file",
+    "could not be uploaded",
+    "upload failed",
+    "deadline has passed",
+    "submission is closed",
+    "already submitted",
+)
+
+
+def _detect_upload_failure(response: requests.Response) -> str | None:
+    """Return a reason string when *response* shows the upload did not land.
+
+    ``None`` means "no evidence of failure".  Deliberately conservative: an
+    unrecognised body counts as success, because ManageBac's happy path is a
+    bare 200 or a redirect and a false alarm would block a real submission.
+    """
+    if response.status_code >= 400:
+        snippet = (response.text or "").strip()[:200]
+        return f"HTTP {response.status_code}" + (f": {snippet}" if snippet else "")
+
+    text = (response.text or "").strip()
+    if not text:
+        return None
+
+    # A JSON envelope is unambiguous: honour ok/success/error/errors.
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            for flag in ("ok", "success"):
+                if flag in payload and payload[flag] is False:
+                    detail = payload.get("error") or payload.get("errors")
+                    return f"server reported {flag}=false" + (
+                        f": {detail}" if detail else ""
+                    )
+            for key in ("error", "errors"):
+                value = payload.get(key)
+                if value:
+                    return f"server reported {key}: {value}"
+
+    # Otherwise look for ManageBac's prose failure markers.
+    lowered = text.casefold()
+    for marker in _UPLOAD_FAILURE_MARKERS:
+        if marker in lowered:
+            return f"response contained {marker!r}"
+    return None
+
+
 class ManageBacClient:
     """HTTP client for ManageBac with session-based auth.
 
@@ -892,16 +955,24 @@ class ManageBacClient:
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
             }
-            self._request_with_retry(
+            r = self._request_with_retry(
                 "POST", upload_url, data=data, files=files, headers=headers
             )
 
-        task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
+        # Verify before claiming success — this is the whole point of the check.
+        failure = _detect_upload_failure(r)
         self.invalidate_task_cache(class_id, task_id)
+        if failure:
+            raise RuntimeError(
+                f"Upload of {p.name!r} to task {task_id} did not succeed: {failure}"
+            )
+
+        task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
         return {
             "ok": True,
             "filename": p.name,
             "task_url": task_url,
+            "upload_status": r.status_code,
         }
 
     def get_submissions(
