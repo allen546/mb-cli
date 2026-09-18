@@ -1431,12 +1431,15 @@ def cmd_download(args) -> int:
     # 2. Fetch task details
     log.info("Fetching details for task %s...", task_id)
     detail = client.get_task_detail(link, from_hint=False)
-    if not detail:
+    # A fetch failure comes back as a *truthy* `{"error": ...}` dict, which
+    # `not detail` alone never sees — the run would report `downloaded_count: 0`
+    # under an `ok: true` envelope and exit 0.
+    if not detail or (isinstance(detail, dict) and detail.get("error")):
         payload = error(
             "download", "detail_fetch_failed", f"Failed to fetch details for task {task_id}."
         )
         print_payload(payload, args.output, args.format)
-        return 1
+        return EXIT_FAILURE
 
     # 3. Determine output directory
     if args.output_dir:
