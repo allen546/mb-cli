@@ -14,10 +14,6 @@ SESSION_ENV = "MB_CRAWLER_SESSION"
 CREDS_ENV = "MB_CRAWLER_CREDS_PATH"
 # Escape hatch so scripts and CI can silence the loose-permission warning.
 PERM_WARN_ENV = "MB_CRAWLER_NO_PERM_WARN"
-CONFIG_DIR = Path.home() / ".config" / "tahuti"
-DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.json"
-DEFAULT_SESSION_PATH = CONFIG_DIR / "session.json"
-DEFAULT_CREDS_PATH = CONFIG_DIR / "creds.json"
 
 # Permission floor for anything this package writes that can hold a secret.
 # Any group- or other-readable bit means every local user can read the file.
@@ -64,8 +60,29 @@ def _ensure_parent(path: Path) -> None:
 
 
 def config_dir() -> Path:
-    """Directory holding all persisted state."""
-    return CONFIG_DIR
+    """Directory holding all persisted state.
+
+    Resolved on every call rather than captured at import. ``Path.home()``
+    reads ``$HOME``, so a module-level constant froze whatever the environment
+    was when :mod:`mb_cli.config` was first imported — and could then disagree
+    with :func:`resolve_creds_path` and its siblings, which re-resolve per call.
+    One code path would write to one directory while another read from a
+    different one, which is exactly how a saved password ends up invisible to
+    the code that goes looking for it.
+    """
+    return Path.home() / ".config" / "tahuti"
+
+
+def default_config_path() -> Path:
+    return config_dir() / "config.json"
+
+
+def default_session_path() -> Path:
+    return config_dir() / "session.json"
+
+
+def default_creds_path() -> Path:
+    return config_dir() / "creds.json"
 
 
 def resolve_config_path(explicit: str | None = None) -> Path:
@@ -74,7 +91,7 @@ def resolve_config_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(CONFIG_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    return DEFAULT_CONFIG_PATH
+    return default_config_path()
 
 
 def resolve_session_path(explicit: str | None = None) -> Path:
@@ -83,7 +100,7 @@ def resolve_session_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(SESSION_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    return DEFAULT_SESSION_PATH
+    return default_session_path()
 
 
 def resolve_creds_path(explicit: str | None = None) -> Path:
@@ -93,7 +110,7 @@ def resolve_creds_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(CREDS_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    return DEFAULT_CREDS_PATH
+    return default_creds_path()
 
 
 def clear_creds(path: str | Path) -> bool:
@@ -329,3 +346,22 @@ def warn_on_weak_permissions(stream=None) -> list[str]:
         for message in messages:
             print(f"warning: {message}", file=stream)
     return messages
+
+
+#: The pre-lazy names, kept importable so out-of-tree callers do not break.
+#: Each resolves on attribute access, so unlike the module-level constants they
+#: replaced they cannot go stale when ``$HOME`` changes after import.
+_LEGACY_PATHS = {
+    "CONFIG_DIR": config_dir,
+    "DEFAULT_CONFIG_PATH": default_config_path,
+    "DEFAULT_SESSION_PATH": default_session_path,
+    "DEFAULT_CREDS_PATH": default_creds_path,
+}
+
+
+def __getattr__(name: str):
+    """Resolve ``CONFIG_DIR`` / ``DEFAULT_*_PATH`` on access, not at import."""
+    resolver = _LEGACY_PATHS.get(name)
+    if resolver is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return resolver()
