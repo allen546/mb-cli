@@ -1,4 +1,10 @@
-"""Tests for the webhook dispatcher — signed material, log redaction, delivery ceiling.
+"""Tests for the webhook dispatcher.
+
+Covers the signed-material construction (the timestamp is inside the HMAC, not a
+sibling header), credential redaction before logging, the wall-clock delivery
+ceiling, non-retryable status handling, per-endpoint delivery outcomes, the
+unsigned-payload warning, `test_ping` URL validation, and redirect refusal.
+
 
 The signature covers ``"<X-MB-Timestamp>." + body``. When it covered the body
 alone, ``X-MB-Timestamp`` was an unauthenticated sibling header, so anyone who
@@ -22,8 +28,13 @@ import requests_mock
 from mb_cli.daemon import webhook as webhook_module
 from mb_cli.daemon.events import MBEvent, WebhookConfig
 from mb_cli.daemon.webhook import (
+    OUTCOME_PERMANENT_FAILURE,
+    OUTCOME_SUCCESS,
+    OUTCOME_TRANSIENT_FAILURE,
     WebhookDispatcher,
+    all_delivered,
     redact_webhook_url,
+    retryable_results,
     signed_material,
 )
 
@@ -379,6 +390,7 @@ def test_delivery_time_respects_the_wall_clock_ceiling():
     elapsed = clock.now - 1_000.0
 
     assert elapsed <= budget, f"delivery took {elapsed}s of a {budget}s ceiling"
+    assert results[0]["outcome"] == OUTCOME_TRANSIENT_FAILURE
     assert results[0]["success"] is False
     # No single attempt may run longer than the ceiling either — the final
     # attempt in particular used to get its full timeout regardless.
@@ -425,7 +437,10 @@ def test_permanent_4xx_is_not_retried(status):
         results = dispatcher.dispatch(_event())
 
     assert m.call_count == 1, f"HTTP {status} must not be retried"
+    assert results[0]["outcome"] == OUTCOME_PERMANENT_FAILURE
     assert results[0]["success"] is False
+    assert results[0]["retryable"] is False
+    assert results[0]["attempts"] == 1
     assert results[0]["status_code"] == status
 
 
@@ -439,9 +454,11 @@ def test_transient_statuses_are_retried(status):
 
     with requests_mock.Mocker() as m:
         m.post(wh.url, status_code=status, text="transient")
-        dispatcher.dispatch(_event())
+        results = dispatcher.dispatch(_event())
 
     assert m.call_count == 2, f"HTTP {status} should be retried"
+    assert results[0]["outcome"] == OUTCOME_TRANSIENT_FAILURE
+    assert results[0]["retryable"] is True
 
 
 def test_backoff_is_exponential():
@@ -480,6 +497,8 @@ def test_redirect_is_not_followed_with_the_signed_body():
     assert off_host == [], "the signed body was re-sent off-host"
     assert m.call_count == 1
     assert results[0]["success"] is False
+    assert results[0]["outcome"] == OUTCOME_PERMANENT_FAILURE
+    assert results[0]["retryable"] is False
     assert "redirect_not_followed" in results[0]["error"]
 
 
@@ -497,6 +516,211 @@ def test_redirect_location_is_reported_so_the_config_can_be_fixed():
     assert "redirect_not_followed" in results[0]["error"]
     assert "hooks.example.test" in results[0]["error"]
     assert results[0]["status_code"] == 301
+
+
+# ── Per-endpoint outcomes, not one collapsed boolean ─────────────────────
+
+
+def test_each_endpoint_reports_its_own_outcome():
+    """One down endpoint must be visible even when another succeeds."""
+    good = WebhookConfig(url="http://localhost:8888/ok", secret=FAKE_SECRET)
+    bad = WebhookConfig(url="http://localhost:8888/broken", secret=FAKE_SECRET)
+    typo = WebhookConfig(url="ftp://nope/hook", secret=FAKE_SECRET)
+    dispatcher = WebhookDispatcher(webhooks=[good, bad, typo], max_retries=1)
+
+    with requests_mock.Mocker() as m:
+        m.post(good.url, status_code=200)
+        m.post(bad.url, status_code=404, text="gone")
+        results = dispatcher.dispatch(_event())
+
+    assert [r["url"] for r in results] == [good.url, bad.url, typo.url]
+    assert [r["outcome"] for r in results] == [
+        OUTCOME_SUCCESS,
+        OUTCOME_PERMANENT_FAILURE,
+        OUTCOME_PERMANENT_FAILURE,
+    ]
+    # The point of the defect: `any()` over this list would have reported
+    # success while two of three endpoints never received the event.
+    assert any(r["success"] for r in results)
+    assert not all_delivered(results)
+    assert retryable_results(results) == []
+
+
+def test_transient_endpoint_failure_is_flagged_for_retry():
+    good = WebhookConfig(url="http://localhost:8888/ok", secret=FAKE_SECRET)
+    flaky = WebhookConfig(url="http://localhost:8888/flaky", secret=FAKE_SECRET)
+    dispatcher = WebhookDispatcher(webhooks=[good, flaky], max_retries=1)
+
+    with requests_mock.Mocker() as m:
+        m.post(good.url, status_code=200)
+        m.post(flaky.url, status_code=503, text="unavailable")
+        results = dispatcher.dispatch(_event())
+
+    owed = retryable_results(results)
+    assert [r["url"] for r in owed] == [flaky.url]
+    assert all_delivered(results) is False
+    assert any(r["success"] for r in results) is True
+
+
+def test_retry_failed_reattempts_only_the_endpoint_that_is_owed():
+    """The primitive service.py needs to stop abandoning a failed endpoint."""
+    good = WebhookConfig(url="http://localhost:8888/ok", secret=FAKE_SECRET)
+    flaky = WebhookConfig(url="http://localhost:8888/flaky", secret=FAKE_SECRET)
+    dispatcher = WebhookDispatcher(webhooks=[good, flaky], max_retries=1)
+
+    with requests_mock.Mocker() as m:
+        m.post(good.url, status_code=200)
+        m.post(flaky.url, status_code=503, text="unavailable")
+        first = dispatcher.dispatch(_event())
+    assert len(first) == 2
+
+    # The endpoint comes back; the retry must reach it and only it.
+    with requests_mock.Mocker() as m:
+        m.post(good.url, status_code=200)
+        m.post(flaky.url, status_code=200)
+        retried = dispatcher.retry_failed(_event(), first)
+
+    assert [r["url"] for r in retried] == [flaky.url]
+    assert retried[0]["success"] is True
+    assert good.url not in [r.url for r in m.request_history]
+    assert all_delivered(retried)
+
+
+def test_retry_failed_is_a_noop_when_nothing_is_owed():
+    results = [
+        WebhookDispatcher._result(
+            url="http://localhost:8888/ok",
+            event="task_created",
+            event_id="evt_1",
+            outcome=OUTCOME_SUCCESS,
+        )
+    ]
+    dispatcher = WebhookDispatcher(
+        webhooks=[WebhookConfig(url="http://localhost:8888/ok")]
+    )
+    assert dispatcher.retry_failed(_event(), results) == []
+    assert retryable_results(results) == []
+    assert all_delivered(results) is True
+
+
+def test_permanent_4xx_records_an_explicit_outcome():
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret=FAKE_SECRET)
+    with requests_mock.Mocker() as m:
+        m.post(wh.url, status_code=404, text="gone")
+        results = WebhookDispatcher(webhooks=[wh], max_retries=3).dispatch(_event())
+
+    assert results[0]["outcome"] == OUTCOME_PERMANENT_FAILURE
+    assert results[0]["retryable"] is False
+    assert results[0]["attempts"] == 1
+
+
+def test_transient_failure_is_marked_retryable():
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret=FAKE_SECRET)
+    clock = _FakeClock()
+    with requests_mock.Mocker() as m:
+        m.post(wh.url, status_code=503, text="unavailable")
+        results = WebhookDispatcher(
+            webhooks=[wh], max_retries=2, clock=clock, sleep=clock.sleep
+        ).dispatch(_event())
+
+    assert results[0]["outcome"] == OUTCOME_TRANSIENT_FAILURE
+    assert results[0]["retryable"] is True
+    assert results[0]["attempts"] == 2
+
+
+def test_result_exposes_a_redacted_url_display():
+    wh = WebhookConfig(url=WECOM_URL, secret=FAKE_SECRET)
+    with requests_mock.Mocker() as m:
+        m.post(WECOM_URL, status_code=200)
+        results = WebhookDispatcher(webhooks=[wh]).dispatch(_event())
+
+    assert results[0]["url_display"] == (
+        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***"
+    )
+    assert "693a91f6" not in results[0]["url_display"]
+
+
+# ── An empty secret must not silently mean "unsigned" ────────────────────
+
+
+def test_missing_secret_is_reported_not_silent(caplog):
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret="")
+    dispatcher = WebhookDispatcher(webhooks=[wh])
+
+    with requests_mock.Mocker() as m:
+        m.post(wh.url, status_code=200)
+        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+            results = dispatcher.dispatch(_event())
+
+    assert results[0]["success"] is True
+    assert results[0]["signed"] is False, "the unsigned state must be explicit"
+    assert "X-MB-Signature" not in m.last_request.headers
+    unsigned = [r for r in caplog.records if "UNSIGNED" in r.getMessage()]
+    assert unsigned, "an unsigned webhook must be complained about"
+    assert unsigned[0].levelno >= logging.ERROR, "the complaint must be loud"
+    assert "UNSIGNED" in caplog.text
+
+
+def test_missing_secret_is_warned_about_once_per_endpoint(caplog):
+    """A 30s poll loop must not emit the same error on every event."""
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret=None)
+    dispatcher = WebhookDispatcher(webhooks=[wh])
+
+    with requests_mock.Mocker() as m:
+        m.post(wh.url, status_code=200)
+        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+            for _ in range(3):
+                results = dispatcher.dispatch(_event())
+
+    warnings = [r for r in caplog.records if "UNSIGNED" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert all(r["signed"] is False for r in results)
+
+
+def test_signed_delivery_reports_signed():
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret=FAKE_SECRET)
+    with requests_mock.Mocker() as m:
+        m.post(wh.url, status_code=200)
+        results = WebhookDispatcher(webhooks=[wh]).dispatch(_event())
+
+    assert results[0]["signed"] is True
+    assert results[0]["outcome"] == OUTCOME_SUCCESS
+    assert m.last_request.headers["X-MB-Signature"].startswith("sha256=")
+
+
+# ── test_ping must validate the URL like a real dispatch ─────────────────
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    ["file:///etc/passwd", "ftp://example.test/hook", "not-a-url", "", "http://"],
+)
+def test_test_ping_rejects_invalid_url_without_touching_the_network(bad_url):
+    dispatcher = WebhookDispatcher()
+
+    with requests_mock.Mocker() as m:
+        results = dispatcher.test_ping(bad_url, secret=FAKE_SECRET)
+        assert m.call_count == 0, f"{bad_url!r} reached the network"
+
+    assert results["success"] is False
+    assert results["outcome"] == OUTCOME_PERMANENT_FAILURE
+    assert results["retryable"] is False
+    assert results["attempts"] == 0
+    assert results["error"].startswith("invalid_webhook_url:")
+    assert results["status_code"] is None
+    assert results["signed"] is True
+
+
+def test_test_ping_accepts_a_valid_url():
+    url = "http://localhost:8888/test-hook"
+    with requests_mock.Mocker() as m:
+        m.post(url, status_code=200)
+        res = WebhookDispatcher().test_ping(url)
+
+    assert res["success"] is True
+    assert res["status_code"] == 200
+    assert res["event"] == "test_ping"
+    assert res["signed"] is False, "no secret was supplied"
 
 
 # ── Pre-existing contract ────────────────────────────────────────────────
