@@ -175,6 +175,32 @@ def parse_task_url(target: str) -> tuple[str | None, str | None]:
     return None, clean if clean else None
 
 
+def _coerce_chart_points(raw: Any) -> list[float]:
+    """Flatten one Highcharts series' ``data`` into a list of floats.
+
+    ManageBac emits two shapes for the same chart:
+
+    * flat values — ``[4]``, ``[4, 5]``
+    * ``[timestamp, value]`` pairs — ``[[1700000000000, 4]]``
+
+    Unparseable points are skipped rather than raised: one odd series must not
+    take down the whole class, because ``crawl_all`` only logs a warning per
+    class and the class then silently disappears from the output.
+    """
+    points: list[float] = []
+    if not isinstance(raw, (list, tuple)):
+        return points
+    for point in raw:
+        # A pair carries the timestamp first and the score second.
+        value = point[-1] if isinstance(point, (list, tuple)) else point
+        try:
+            points.append(float(value))
+        except (TypeError, ValueError):
+            log.debug("skipping unparseable chart data point %r", point)
+            continue
+    return points
+
+
 class ManageBacClient:
     """HTTP client for ManageBac with session-based auth.
 
@@ -1722,10 +1748,13 @@ class ManageBacClient:
         # from the task list — but the chart only has names.
         # Compute a simple unweighted average from the chart data.
         scores: list[float] = []
-        for item in series:
-            data_points = item.get("data", [])
-            if data_points:
-                scores.append(float(data_points[0]))
+        if isinstance(series, list):
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                points = _coerce_chart_points(item.get("data") or [])
+                if points:
+                    scores.append(points[0])
 
         if not scores:
             return None

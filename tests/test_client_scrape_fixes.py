@@ -258,6 +258,77 @@ class TestStaleCacheDoesNotMaskErrors:
 # ── Defect 3: the scraped MNN hub endpoint must be validated ──────────────
 
 
+class TestExpectedGradeHandlesBothSeriesShapes:
+    """A malformed point must skip, not take the whole class down.
+
+    ManageBac emits Highcharts series in two shapes; the ``[[ts, value], ...]``
+    form raised ``TypeError`` out of ``get_class_grades``, which the per-class
+    ``except`` in ``crawl_all`` swallowed as a warning — the class vanished from
+    the output and grade frequencies undercounted silently.
+    """
+
+    def _grades_page(self, data_series: str) -> str:
+        return (
+            "<html><body>"
+            '<div class="assignments-progress-chart"'
+            ' data-grade-labels=\'{"0":"F","1":"E","2":"D","3":"C","4":"B","5":"A"}\''
+            f' data-series=\'{data_series}\'>'
+            "</div>"
+            '<div class="fusion-card-item"><h4 class="title">'
+            '<a href="/student/classes/1/core_tasks/9">T</a></h4>'
+            '<span class="grade">A</span></div>'
+            "</body></html>"
+        )
+
+    def test_timestamp_value_pairs(self, client):
+        series = '[{"name":"Term","data":[[1700000000000,4]]}]'
+        with rm.Mocker() as m:
+            m.get(f"{BASE}/student/classes/1/core_tasks", text=self._grades_page(series))
+            result = client.get_class_grades("1")
+
+        expected = result["expected_grade"]
+        assert expected is not None, "timestamp/value series produced no expected grade"
+        assert expected["num_graded"] == 1
+        assert expected["average_score"] == 4.0
+        assert expected["letter_grade"] == "B"
+
+    def test_flat_values_still_work(self, client):
+        series = '[{"name":"Homework 1","data":[4]},{"name":"Essay","data":[5]}]'
+        with rm.Mocker() as m:
+            m.get(f"{BASE}/student/classes/1/core_tasks", text=self._grades_page(series))
+            result = client.get_class_grades("1")
+
+        expected = result["expected_grade"]
+        assert expected is not None
+        assert expected["num_graded"] == 2
+        assert expected["average_score"] == 4.5
+
+    def test_unparseable_points_are_skipped_not_raised(self, client):
+        series = '[{"name":"Junk","data":[["x","y"]]},{"name":"Good","data":[[1,5]]}]'
+        with rm.Mocker() as m:
+            m.get(f"{BASE}/student/classes/1/core_tasks", text=self._grades_page(series))
+            result = client.get_class_grades("1")
+
+        assert result["expected_grade"] is not None
+        assert result["expected_grade"]["num_graded"] == 1
+        assert len(result["tasks"]) == 1, "the class lost its tasks to a chart parse error"
+
+    def test_class_survives_a_malformed_series_in_crawl_all(self, client):
+        series = '[{"name":"Term","data":[[1700000000000,4]]}]'
+        with rm.Mocker() as m:
+            m.get(f"{BASE}/student/dashboard", text='<a href="/student/classes/1">Math</a>')
+            m.get(f"{BASE}/student/classes/1/core_tasks", text=self._grades_page(series))
+            m.get(f"{BASE}/student/notifications", text="<html>none</html>")
+            result = client.crawl_all(max_pages=1)
+
+        assert result["summary"]["upcoming_count"] + result["summary"]["past_count"] + result[
+            "summary"
+        ]["overdue_count"] == 1
+
+
+# ── Defect 6: pagination detection ────────────────────────────────────────
+
+
 class TestLoginPageDetectedByBody:
     """A 200 rendering the login form means the session is dead.
 
