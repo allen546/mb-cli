@@ -396,6 +396,78 @@ class TestExpectedGradeHandlesBothSeriesShapes:
 # ── Defect 6: pagination detection ────────────────────────────────────────
 
 
+class TestPaginationDetection:
+    """``page=2`` is not ``page=20``, and a "next lesson" is not a next page.
+
+    Both false positives fetched out-of-range pages.  A 404 there aborted the
+    whole crawl, and a server echoing page 1 duplicated every task.
+    """
+
+    def _soup(self, html: str):
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(html, "html.parser")
+
+    def test_page_20_does_not_satisfy_a_search_for_page_2(self, client):
+        html = '<html><body><a href="?view=upcoming&page=20">20</a>'
+        html += '<a href="?view=upcoming&page=24">24</a></body></html>'
+        assert client._has_next_page(self._soup(html), 1, "upcoming") is False
+
+    def test_exact_page_number_is_still_detected(self, client):
+        html = '<html><body><a href="?view=upcoming&page=2">2</a></body></html>'
+        assert client._has_next_page(self._soup(html), 1, "upcoming") is True
+
+    def test_next_lesson_link_is_not_pagination(self, client):
+        html = '<html><body><a aria-label="Next lesson" href="/x">Next lesson</a></body></html>'
+        assert client._has_next_page(self._soup(html), 1, "upcoming") is False
+
+    def test_next_page_control_is_still_detected(self, client):
+        html = '<html><body><button class="next" aria-label="Next page">></button></body></html>'
+        assert client._has_next_page(self._soup(html), 1, "upcoming") is True
+
+    def test_rel_next_is_still_detected(self, client):
+        html = '<html><body><a rel="next" href="?page=2">Next</a></body></html>'
+        assert client._has_next_page(self._soup(html), 1, "upcoming") is True
+
+    def test_out_of_range_page_does_not_duplicate_tasks(self, client):
+        """A server that echoes page 1 for out-of-range pages must not double tasks."""
+        page1 = (
+            '<html><body><a href="/student/profile">Test Student — ManageBac</a>'
+            '<a href="?view=upcoming&page=20">20</a>'
+            '<div class="f-task-tile"><a class="f-tile__title-link" '
+            'href="/student/classes/1/core_tasks/10">Homework 1</a></div></body></html>'
+        )
+        with rm.Mocker() as m:
+            m.get(re.compile(r"page=1"), text=page1)
+            m.get(re.compile(r"page=2"), text=page1)  # echo of page 1
+            tasks = client.get_tasks_by_view("upcoming", max_pages=5)
+
+        assert [t["id"] for t in tasks] == ["10"], tasks
+
+    def test_duplicate_tiles_on_distinct_pages_are_deduped(self, client):
+        page1 = (
+            '<html><body><a href="?view=upcoming&page=2">2</a>'
+            '<div class="f-task-tile"><a class="f-tile__title-link" '
+            'href="/student/classes/1/core_tasks/10">Homework 1</a></div></body></html>'
+        )
+        page2 = (
+            '<html><body><div class="f-task-tile">'
+            '<a class="f-tile__title-link" href="/student/classes/1/core_tasks/10">'
+            "Homework 1</a></div>"
+            '<div class="f-task-tile"><a class="f-tile__title-link" '
+            'href="/student/classes/1/core_tasks/11">Homework 2</a></div></body></html>'
+        )
+        with rm.Mocker() as m:
+            m.get(re.compile(r"page=1"), text=page1)
+            m.get(re.compile(r"page=2"), text=page2)
+            tasks = client.get_tasks_by_view("upcoming", max_pages=5)
+
+        assert [t["id"] for t in tasks] == ["10", "11"]
+
+
+# ── Defect 7: the login page must be detected by its body ─────────────────
+
+
 class TestLoginPageDetectedByBody:
     """A 200 rendering the login form means the session is dead.
 
