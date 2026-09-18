@@ -12,17 +12,17 @@ from mb_cli import __version__
 from mb_cli.__main__ import build_parser, main
 
 
-# ── `mb --version` ───────────────────────────────────────────────────────
+# ── `tahuti --version` ───────────────────────────────────────────────────
 
 
 def test_version_flag_exits_zero_with_package_version(capsys):
-    """`mb --version` used to die with argparse's exit 2 (required subparsers)."""
+    """`tahuti --version` used to die with argparse's exit 2 (required subparsers)."""
     with pytest.raises(SystemExit) as exc_info:
         main(["--version"])
     assert exc_info.value.code == 0
     out = capsys.readouterr().out
     assert __version__ in out
-    assert out.startswith("mb ")
+    assert out.startswith("tahuti ")
 
 
 def test_version_short_flag(capsys):
@@ -41,7 +41,7 @@ def test_version_is_sourced_from_mb_cli_version():
     assert __version__ in action.version
 
 
-# ── `mb submissions --check-feedback <filter>` ───────────────────────────
+# ── `tahuti submissions --check-feedback <filter>` ───────────────────────
 
 
 class _SubmissionsArgs:
@@ -159,7 +159,7 @@ def test_check_feedback_no_match_returns_empty_list_not_original(capsys):
     assert payload["data"]["feedback_count"] == 0
 
 
-# ── `mb submit --id` ─────────────────────────────────────────────────────
+# ── `tahuti submit --id` ─────────────────────────────────────────────────
 
 
 def test_submit_accepts_id_instead_of_positional(capsys):
@@ -191,7 +191,7 @@ def test_submit_accepts_id_instead_of_positional(capsys):
     client.submit_file.assert_called_once_with("456", "1000026", "hw.pdf")
 
 
-# ── `mb view --subject` ──────────────────────────────────────────────────
+# ── `tahuti view --subject` ──────────────────────────────────────────────
 
 
 class _ViewArgs:
@@ -276,7 +276,7 @@ def test_view_without_subject_ignores_the_check(capsys):
     assert rc == 0
 
 
-# ── `mb notifications --unread-only` ─────────────────────────────────────
+# ── `tahuti notifications --unread-only` ─────────────────────────────────
 
 
 def test_notifications_unread_only_filters_the_request():
