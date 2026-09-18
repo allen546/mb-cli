@@ -19,6 +19,8 @@ import pytest
 
 from mb_cli.__main__ import build_parser, cmd_daemon_run, cmd_daemon_start
 from mb_cli.__main__ import _apply_daemon_overrides
+from mb_cli.daemon import DEFAULT_WEBHOOK_URL
+from mb_cli.exceptions import CommandError
 
 
 class _DaemonArgs:
@@ -91,16 +93,39 @@ def test_secret_is_folded_into_the_webhook_entry():
 
 
 def test_channel_delivery_requires_both_ids():
+    """Channel delivery writes no config key at all any more.
+
+    REPLACED: this test used to assert that ``_apply_daemon_overrides`` wrote
+    ``delivery = {"mode": "channel_send", ...}``. That key is read by nothing —
+    ``DaemonConfig`` has no ``delivery`` field and ``from_dict`` never looks at
+    it — so the assertion pinned a config write whose only effect was to make
+    the daemon fall through to the localhost webhook default.
+    """
     config = _apply_daemon_overrides({}, _DaemonArgs(channel_id="qq"))
     assert "delivery" not in config
 
+    # Both ids is not a "complete" request, it is an unimplemented transport.
+    with pytest.raises(CommandError) as exc_info:
+        _apply_daemon_overrides({}, _DaemonArgs(channel_id="qq", recipient="42"))
+    assert exc_info.value.code == "channel_delivery_not_implemented"
+    assert "delivery" not in config
+
+
+def test_channel_delivery_message_names_the_fallback_url():
+    """The refusal has to say what would have happened instead."""
+    with pytest.raises(CommandError) as exc_info:
+        _apply_daemon_overrides({}, _DaemonArgs(channel_id="qq", recipient="42"))
+    assert DEFAULT_WEBHOOK_URL in exc_info.value.message
+
+
+def test_webhook_delivery_still_translates():
+    """Control: the transport that does exist is untouched by the guard."""
     config = _apply_daemon_overrides(
-        {}, _DaemonArgs(channel_id="qq", recipient="42")
+        {}, _DaemonArgs(webhook_url="https://h.example/x")
     )
     assert config["delivery"] == {
-        "mode": "channel_send",
-        "channel_id": "qq",
-        "recipient": "42",
+        "mode": "webhook",
+        "webhook_url": "https://h.example/x",
     }
 
 
@@ -157,8 +182,6 @@ def test_background_forwards_previously_dropped_flags():
             _background_args(
                 dry_run=True,
                 once=True,
-                channel_id="qq",
-                recipient="42",
                 active_hours_start=7,
                 active_hours_end=23,
                 interval=45,
@@ -170,16 +193,35 @@ def test_background_forwards_previously_dropped_flags():
     # `-b --dry-run` used to POST real webhooks; `-b --once` used to loop forever.
     assert "--dry-run" in extra
     assert "--once" in extra
-    assert "--channel-id" in extra
-    assert "qq" in extra
-    assert "--recipient" in extra
-    assert "42" in extra
     assert "--active-hours-start" in extra
     assert "7" in extra
     assert "--active-hours-end" in extra
     assert "23" in extra
     assert "--poll-interval" in extra
     assert "45" in extra
+
+
+def test_background_channel_delivery_is_refused_before_spawning():
+    """`-b --channel-id` used to spawn a child that could not deliver.
+
+    REPLACED: this assertion used to sit inside
+    ``test_background_forwards_previously_dropped_flags``, which required
+    ``cmd_daemon_start`` to accept ``--channel-id``/``--recipient`` and forward
+    them. Forwarding them was the defect: the child's only transport is the
+    HTTP webhook, so it would have started, computed alerts, and POSTed them to
+    the localhost default while reporting success.
+    """
+    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+        MockMgr.return_value.start_background.return_value = {
+            "started": True,
+            "pid": 1,
+        }
+        with pytest.raises(CommandError) as exc_info:
+            cmd_daemon_start(
+                _background_args(channel_id="qq", recipient="42")
+            )
+    assert exc_info.value.code == "channel_delivery_not_implemented"
+    MockMgr.return_value.start_background.assert_not_called()
 
 
 def test_background_secret_goes_to_environment_not_argv():
