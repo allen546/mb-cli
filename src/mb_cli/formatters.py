@@ -104,7 +104,7 @@ def render_pretty(payload: dict) -> str:
 
         from mb_cli.client import parse_due_date
         from datetime import datetime
-        def task_sort_key(t):
+        def task_sort_key(t) -> datetime:
             dt = parse_due_date(t.get("due_date"))
             return dt or datetime.max
 

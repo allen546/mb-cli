@@ -174,7 +174,7 @@ class DaemonStateManager:
         """Hard-cap tasks_cache size, dropping oldest-cached entries first."""
         if len(self.tasks_cache) <= max_entries:
             return 0
-        def _sort_key(item):
+        def _sort_key(item) -> str:
             tid, task = item
             return str(task.get("_cached_at") or "")
         ordered = sorted(self.tasks_cache.items(), key=_sort_key)
