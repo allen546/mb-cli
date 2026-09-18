@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 # ── Client helpers ──────────────────────────────────────────────────────
 
 
-def _build_client(args, command: str):
+def _build_client(args, command: str) -> tuple:
     """CLI wrapper: maps argparse namespace to :func:`auth.build_client`."""
     password = getattr(args, "password", None)
     if not password and not args.cookie:
@@ -1363,7 +1363,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    def add_common_auth_flags(subparser, include_password: bool = True):
+    def add_common_auth_flags(subparser, include_password: bool = True) -> None:
         subparser.add_argument(
             "--profile",
             default=None,

@@ -127,7 +127,7 @@ def list_tasks(
                 time.sleep(random.uniform(0.5, 2.0))
 
     if subject:
-        def _match(task, s):
+        def _match(task, s) -> bool:
             cn = task.get("class_name", "")
             return s.lower() in cn.lower() if cn else False
 

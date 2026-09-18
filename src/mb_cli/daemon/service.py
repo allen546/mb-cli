@@ -346,7 +346,7 @@ class DaemonService:
         """Start the background daemon loop."""
         self._running = True
 
-        def _handle_signal(sig, frame):
+        def _handle_signal(sig, frame) -> None:
             log.info("Signal %s received — initiating graceful shutdown...", sig)
             self._running = False
 
