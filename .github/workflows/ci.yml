@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with requires-python in pyproject.toml (">=3.10").
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        run: .venv/bin/python -m pytest -q
+
+  build:
+    name: Build & validate distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          cache: true
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: twine check
+        run: uvx twine check dist/*
+
+      - name: Assert sdist ships only intended files
+        # Regression guard for the packaging bug where the sdist shipped a
+        # nested copy of the repo from .claude/worktrees/ (76 of 153 entries).
+        run: |
+          set -euo pipefail
+          sdist=$(ls dist/*.tar.gz)
+          entries=$(tar tzf "$sdist")
+
+          forbidden=('\.claude' '\.pyc' '__pycache__' 'docs/superpowers' 'SPEC\.md' 'use_case\.md' '/\.git/')
+          fail=0
+          for pat in "${forbidden[@]}"; do
+            n=$(printf '%s\n' "$entries" | grep -c "$pat" || true)
+            if [ "$n" -ne 0 ]; then
+              echo "::error::sdist contains $n forbidden entries matching '$pat'"
+              printf '%s\n' "$entries" | grep "$pat" | head -20
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+          for required in 'mb_cli-.*/src/mb_cli/__init__.py' 'mb_cli-.*/README.md' 'mb_cli-.*/LICENSE' 'mb_cli-.*/pyproject.toml'; do
+            if ! printf '%s\n' "$entries" | grep -qE "$required"; then
+              echo "::error::sdist is missing a required file matching '$required'"
+              exit 1
+            fi
+          done
+          echo "sdist OK: $(printf '%s\n' "$entries" | wc -l) entries"
+
+      - name: Assert wheel contains the package and metadata
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/*.whl)
+          names=$(unzip -Z1 "$wheel")
+
+          printf '%s\n' "$names" | grep -q '^mb_cli/__init__.py$' \
+            || { echo "::error::wheel is missing mb_cli/__init__.py"; exit 1; }
+          printf '%s\n' "$names" | grep -qE '^mb_cli-0\.3\.0\.dist-info/METADATA$' \
+            || { echo "::error::wheel is missing dist-info METADATA"; exit 1; }
+
+          junk=$(printf '%s\n' "$names" | grep -cE '\.pyc$|__pycache__/|^tests/|^docs/|^extras/' || true)
+          if [ "$junk" -ne 0 ]; then
+            echo "::error::wheel contains $junk unexpected entries"
+            exit 1
+          fi
+          echo "wheel OK: $(printf '%s\n' "$names" | grep -c . ) files"

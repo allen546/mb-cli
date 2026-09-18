@@ -45,9 +45,27 @@ Faria/ManageBac's legal documents restrict automated access:
 pip install .
 ```
 
+The `mb-mcp` MCP server needs one extra dependency. `mcp` is *not* a runtime
+dependency of the `mb` CLI, so a plain `pip install .` leaves `mb-mcp` failing
+with `ModuleNotFoundError: No module named 'mcp'`:
+
+```bash
+pip install "mb-cli[mcp]"
+```
+
 Or install in editable mode for local development:
 ```bash
 pip install -e .
+pip install -e ".[mcp]"
+```
+
+This is also a [`uv`](https://docs.astral.sh/uv/) project, with the test
+dependencies kept out of the published runtime environment in a `dev`
+dependency group:
+
+```bash
+uv sync --group dev     # pytest + requests-mock + the mcp extra
+uv run pytest
 ```
 
 ---
@@ -152,9 +170,11 @@ if __name__ == "__main__":
 export MB_WEBHOOK_SECRET="your-hmac-secret"
 mb daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "$MB_WEBHOOK_SECRET"
 
-# Or configure webhook URL persistently and run daemon
+# Or configure webhook URL persistently and run daemon.
+# `start` only detaches when you pass -b/--background; without it the loop runs
+# in the foreground and dies with your terminal.
 mb daemon configure-webhook http://127.0.0.1:8000/webhook
-mb daemon start --interval 1800 --active-hours-start 7 --active-hours-end 23
+mb daemon start -b --interval 1800 --active-hours-start 7 --active-hours-end 23
 
 # Test the webhook connection with a mock ping
 mb daemon test-webhook http://127.0.0.1:8000/webhook
@@ -196,6 +216,15 @@ mb view "https://your-school.managebac.com/student/classes/1000024/core_tasks/10
 # File Submission
 mb submit 1000026 homework.pdf         # upload file to assignment dropbox
 
+# Submission Lifecycle
+mb submissions 1000026 --list          # list current submissions for a task
+mb submissions 1000026 --add hw.pdf    # upload to the task dropbox
+mb submissions 1000026 --delete hw.pdf # delete a submission by asset ID or filename
+mb submissions 1000026 --check-feedback # check teacher feedback (optionally filter by asset ID/name)
+mb download 1000026                    # download all attachments + submissions for a task
+mb download 1000026 --no-attachments --output-dir ./math  # student submissions only
+mb feedback 1000026                    # fetch teacher feedback for a submitted task
+
 # Grades & Analytics
 mb grades                               # list all enrolled classes
 mb grades --class-id 1000023           # detailed task grades for one class
@@ -214,11 +243,36 @@ mb calendar --ical -o calendar.ics      # export raw iCal feed
 mb timetable                            # view weekly class timetable
 
 # Background Daemon
-mb daemon run --webhook-url http://127.0.0.1:8000/webhook
-mb daemon start                         # run background loop
-mb daemon stop                          # stop background loop
-mb daemon status                        # show daemon process status
+mb daemon run --webhook-url http://127.0.0.1:8000/webhook  # foreground loop, Ctrl+C to stop
+mb daemon start -b                     # detached background loop (-b / --background)
+mb daemon start                        # foreground loop; dies with your terminal
+mb daemon start --once                 # run one check cycle and exit
+mb daemon stop                         # stop background loop
+mb daemon status                       # show daemon process status
+mb daemon install                      # register an auto-start service (launchd/systemd)
+mb daemon uninstall                    # remove the auto-start service
+mb daemon configure-channel qq 123456789  # deliver via a zeroclaw channel instead of HTTP
 ```
+
+> **`mb daemon start` does not background by default.** Without `-b` /
+> `--background` the polling loop runs in the *foreground* and terminates when
+> your terminal closes. `start -b` re-executes itself as `mb daemon run` in a
+> new session, writes the child's PID to `~/.config/mb-crawler/daemon.pid`, and
+> appends output to `~/.config/mb-crawler/daemon.log` (both `0600`). Override
+> either location with `--pid-file` / `--log-file`: `start` and `status` accept
+> both, `stop` accepts only `--pid-file`, and `install` accepts only
+> `--log-file`.
+>
+> **`--interval` vs `--poll-interval`.** `mb daemon start` takes `--interval`;
+> `mb daemon run` takes `--poll-interval`. Same setting, two names — the flag
+> names differ for historical reasons and are kept as-is so existing commands do
+> not break. `start -b` translates `--interval` into `--poll-interval` when it
+> spawns the detached process, so passing both to one command is an error.
+>
+> **`--daemon-config` is not `--config`.** The daemon subcommands above read
+> their webhook URL, interval, and active-hours window from a separate JSON file
+> selected with `--daemon-config` — it is not the ManageBac `config.json` that
+> `--config` selects, and the two are not interchangeable.
 
 ### Output Formatting
 - **Interactive TTY**: Formatted tables with color highlights.
@@ -248,9 +302,30 @@ directory with `0700`.
 > rm ~/.config/mb-crawler/creds.json
 > ```
 
-Override default paths with `--config <file>`, `--session-file <file>`, or
-environment variables `MB_CRAWLER_CONFIG`, `MB_CRAWLER_SESSION`, and
-`MB_CRAWLER_CREDS_PATH`.
+`--config <file>` and `--session-file <file>` override the default config and
+session paths, as do the environment variables `MB_CRAWLER_CONFIG`,
+`MB_CRAWLER_SESSION`, and `MB_CRAWLER_CREDS_PATH`. These come from the shared
+auth-flag helper, so they exist on the task, grades, calendar, and submission
+commands — but **not universally**. The daemon subcommands act on the daemon
+process and its own JSON settings rather than on your ManageBac login, so none of
+them accept `--config` or `--session-file`. Where they need a path they take
+`--daemon-config` (on `run`, `stop`, `test-webhook`, `configure-webhook`, and
+`configure-channel`) and/or `--pid-file` / `--log-file` (`stop` takes
+`--pid-file`, `status` takes both, `install` takes `--log-file`); `uninstall`
+takes no path flag at all.
+
+Secrets may also be supplied through the environment, which keeps them out of
+your shell history and out of `ps` output:
+- `MB_WEBHOOK_SECRET` — HMAC secret for signing webhook payloads. Preferred over
+  `--secret` when both are set.
+- `MB_CRAWLER_PASSWORD` — ManageBac password.
+- `MB_CRAWLER_COOKIE` — `_managebac_session` cookie value.
+
+> `MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are **write-only** in the current
+> CLI: `mb daemon start -b` copies them into the detached child's environment so
+> the secret never travels in `argv`, but nothing in `mb-cli` reads them back as
+> input. Supply a password with `--password` / `-p` or the interactive prompt
+> rather than relying on these two.
 
 ---
 
@@ -290,6 +365,12 @@ The MCP server exposes 14 tools: `list_tasks`, `view_task`, `submit_file`, `dele
 ## Stability Note
 
 This tool interfaces with ManageBac via automated HTTP requests and HTML parsing. If ManageBac updates its frontend layout, CSS selectors, or internal API structures, scrapers may require updates.
+
+---
+
+## Changelog & Security
+
+Release history follows [Keep a Changelog](https://keepachangelog.com/) in [CHANGELOG.md](CHANGELOG.md). For reporting a vulnerability privately, see [SECURITY.md](SECURITY.md) — it also documents exactly which credentials are stored on disk and in what form.
 
 ---
 
