@@ -424,7 +424,7 @@ def _time_until(target: datetime) -> float:
     return max(delta, 1.0)
 
 
-def _is_mb_cli_pid(pid: int) -> bool:
+def _is_tahuti_pid(pid: int) -> bool:
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -436,7 +436,8 @@ def _is_mb_cli_pid(pid: int) -> bool:
             return False
         cmdline = result.stdout.strip()
         # No bare "mb" here: it matches unrelated processes (systemd, etc.)
-        # and a stale pid file would then signal the wrong process.
+        # and a stale pid file would then signal the wrong process. `mb_cli`
+        # stays because that is the module the daemon child is spawned as.
         return any(
             k in cmdline for k in ("tahuti", "mb_cli", "mb_crawler", "mb.cli")
         )
@@ -525,7 +526,7 @@ def stop_daemon(path: str | None = None) -> dict:
         pid_path.unlink(missing_ok=True)
         return {"stopped": False, "reason": "invalid_pid", "pid_file": str(pid_path)}
 
-    if not _is_mb_cli_pid(pid):
+    if not _is_tahuti_pid(pid):
         pid_path.unlink(missing_ok=True)
         return {
             "stopped": False,

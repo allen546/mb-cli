@@ -33,7 +33,7 @@ dependencies = [
 
 # Upper bound is required: mcp 2.x renamed FastMCP to MCPServer and removed
 # mcp.server.fastmcp, which mcp_server.py imports. Without <2 a fresh resolve
-# installs mcp 2.x and every `mb-mcp` invocation dies on import.
+# installs mcp 2.x and every `tahuti-mcp` invocation dies on import.
 [project.optional-dependencies]
 mcp = ["mcp>=1.20,<2"]
 
@@ -51,8 +51,10 @@ dev = [
 ]
 
 [project.scripts]
-mb = "mb_cli.__main__:main"
-mb-mcp = "mb_cli.mcp_server:main"
+tahuti = "mb_cli.__main__:main"
+tahuti-mcp = "mb_cli.mcp_server:main"
+mb = "mb_cli.__main__:main"        # alias (pre-rename command, still supported)
+mb-mcp = "mb_cli.mcp_server:main"  # alias
 
 [project.urls]
 Homepage = "https://github.com/allen546/tahuti"

@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from mb_cli.daemon import (
     DEFAULT_WEBHOOK_URL,
     _diff_snapshots_full,
+    _is_tahuti_pid,
     configure_webhook,
     load_daemon_config,
     run_daemon_once,
@@ -356,13 +358,13 @@ class TestStopDaemon:
         assert result["stopped"] is False
         assert result["reason"] == "invalid_pid"
 
-    def test_non_mb_cli_process(self, tmp_path: Path):
+    def test_non_tahuti_process(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
         pid_path.write_text("99999")
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=False):
+        with patch("mb_cli.daemon._is_tahuti_pid", return_value=False):
             result = stop_daemon(str(config_path))
             assert result["stopped"] is False
             assert result["reason"] == "not_mb_cli_process"
@@ -373,10 +375,37 @@ class TestStopDaemon:
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=True):
+        with patch("mb_cli.daemon._is_tahuti_pid", return_value=True):
             with patch("mb_cli.daemon.os.kill") as mock_kill:
                 result = stop_daemon(str(config_path))
                 assert result["stopped"] is True
                 assert result["pid"] == 12345
                 mock_kill.assert_called_once_with(12345, signal.SIGTERM)
                 assert not pid_path.exists()
+
+
+class TestIsTahutiPid:
+    """The package-level guard mirrors the one in daemon/system.py."""
+
+    @staticmethod
+    def _ps(cmdline: str, returncode: int = 0):
+        return SimpleNamespace(returncode=returncode, stdout=cmdline + "\n")
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            f"{sys.executable} -m mb_cli daemon run",
+            "/opt/homebrew/bin/tahuti daemon run",
+            "/usr/bin/python -m mb_crawler daemon run",
+        ],
+    )
+    def test_accepts_a_tahuti_daemon(self, cmdline: str):
+        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+            assert _is_tahuti_pid(4242) is True, cmdline
+
+    @pytest.mark.parametrize(
+        "cmdline", ["/lib/systemd/systemd --user", "/usr/sbin/cfprefsd daemon"]
+    )
+    def test_rejects_unrelated_processes(self, cmdline: str):
+        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+            assert _is_tahuti_pid(4242) is False, cmdline

@@ -200,7 +200,7 @@ def test_cmd_download(tmp_path):
         assert (out_dir / "essay.pdf").exists()
         assert (out_dir / "essay.pdf").read_bytes() == b"chunk1chunk2"
 
-        # `mb download` used to write files and say nothing on stdout, so
+        # `tahuti download` used to write files and say nothing on stdout, so
         # `--format json` and `--output` had nothing to act on.
         assert captured["payload"]["ok"] is True
         assert captured["payload"]["command"] == "download"

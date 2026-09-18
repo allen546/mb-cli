@@ -5,9 +5,9 @@ already ships with the OS — macOS ``security`` and Linux ``secret-tool`` — s
 ``tahuti`` gains no runtime dependency, no import cost, and no new failure mode
 when the feature is unused.
 
-Opt in per login with ``mb login --keychain``, or globally with
+Opt in per login with ``tahuti login --keychain``, or globally with
 ``MB_CRAWLER_KEYCHAIN=1``. When enabled the password goes to the keychain
-*instead of* the cleartext ``creds.json``, and ``mb logout`` deletes it.
+*instead of* the cleartext ``creds.json``, and ``tahuti logout`` deletes it.
 
 Limits worth knowing (see SECURITY.md):
 

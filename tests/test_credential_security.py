@@ -2,8 +2,8 @@
 
 Covers four behaviours that were previously either wrong or undocumented:
 
-1. ``mb logout`` now deletes the stored password (``creds.json``) by default.
-2. ``mb login --temp`` writes nothing to disk — no password, no session, and
+1. ``tahuti logout`` now deletes the stored password (``creds.json``) by default.
+2. ``tahuti login --temp`` writes nothing to disk — no password, no session, and
    (new) no response cache.
 3. Loose file permissions on credential-bearing state files are reported.
 4. ``MB_CRAWLER_PASSWORD`` / ``MB_CRAWLER_COOKIE`` are readable, not just
@@ -194,7 +194,7 @@ class TestClearCreds:
 
 
 class TestTempModeWritesNothing:
-    """`mb login --temp` must leave no reusable credential behind.
+    """`tahuti login --temp` must leave no reusable credential behind.
 
     `remember=False` already skipped saving the password; the response cache
     and the session file were still written, which quietly defeated the flag.
