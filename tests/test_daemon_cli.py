@@ -68,6 +68,13 @@ def test_cli_daemon_test_webhook():
 def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+    # `DaemonStateManager`'s default path is `config_dir()` resolved at *import*
+    # time, so no MB_CRAWLER_* variable reaches it: without this the real
+    # `DaemonService` this test constructs writes daemon_state.json into the
+    # operator's ~/.config/tahuti and reads back whatever it finds there.
+    monkeypatch.setattr(
+        "mb_cli.daemon.state.DEFAULT_STATE_PATH", tmp_path / "daemon_state.json"
+    )
 
     mock_client = MagicMock()
     mock_client.get_tasks_by_view.return_value = []
@@ -85,6 +92,7 @@ def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["daemon", "run", "--once", "--format", "json"])
                     assert exc_info.value.code == 0
+    assert (tmp_path / "daemon_state.json").exists()
 
 
 def test_cli_daemon_start_background_arg_forwarding():
