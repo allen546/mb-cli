@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mb_cli import __main__ as m
+from mb_cli import auth
 from mb_cli import keychain
 from mb_cli.auth import _load_creds, _store_password, build_client
 from mb_cli.config import (
@@ -387,6 +388,86 @@ class TestWeakPermissionWarning:
 # ── Task 2.4 — optional, dependency-free OS keychain ─────────────────────
 
 
+def _op(argv: list) -> str:
+    """Classify a credential-helper invocation as ``store``/``lookup``/``delete``.
+
+    The verb sits at ``argv[1]`` for ``secret-tool`` and ``security``, which
+    keeps an account name containing the word "store" from being mistaken for
+    the operation. The longer verbs are matched first so
+    ``find-generic-password`` is not read as the ``store`` verb just because
+    both contain ``password``; Windows has no verb at all and is told apart by
+    the script it renders.
+    """
+    if len(argv) > 1 and argv[1] in ("lookup", "store", "clear"):
+        return {"lookup": "lookup", "store": "store", "clear": "delete"}[argv[1]]
+    if "find-generic-password" in argv:
+        return "lookup"
+    if "add-generic-password" in argv:
+        return "store"
+    if "delete-generic-password" in argv:
+        return "delete"
+    script = argv[-1] if argv else ""
+    if ".Add(" in script:  # PowerShell _PS_STORE
+        return "store"
+    if "RetrievePassword" in script:  # PowerShell _PS_LOOKUP
+        return "lookup"
+    return "delete"
+
+
+class _FakeKeychain:
+    """In-memory stand-in for the OS credential helper.
+
+    Models the contract the three real helpers share, because getting that
+    contract wrong is exactly how the credential-stranding bug survived:
+
+    - the secret is persisted, and the read-back is *not* an afterthought —
+      ``store`` must be able to recover it;
+    - ``secret-tool`` and ``security`` terminate their output with one newline
+      the secret does not contain, while the Windows ``PasswordVault`` read is
+      byte-exact and base64-wrapped;
+    - ``drop=True`` models the dangerous case: the helper exits 0 and persists
+      nothing. That is what a locked Secret Service collection looks like from
+      the caller's side, and it must not be mistaken for success.
+    """
+
+    def __init__(self, monkeypatch, *, drop: bool = False, store_rc: int = 0):
+        self.calls: list[dict] = []
+        self.stored: bytes | None = None
+        self.drop = drop
+        self.store_rc = store_rc
+        monkeypatch.setattr(keychain, "_run", self)
+
+    def __call__(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append({"argv": argv, "kwargs": kwargs})
+        operation = _op(argv)
+        if operation == "store":
+            if self.store_rc:
+                return subprocess.CompletedProcess(
+                    argv, self.store_rc, b"", b"collection is locked"
+                )
+            if self.drop:
+                # Exit 0, write nothing: the false-positive success.
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            # macOS is the one backend that cannot take the secret on stdin.
+            secret = kwargs.get("stdin")
+            if secret is None:
+                secret = argv[-1].encode("utf-8")
+            self.stored = secret
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if operation == "lookup":
+            if self.drop or self.stored is None:
+                # Exit 0 with nothing to show — the false-positive success.
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            if "RetrievePassword" in " ".join(argv):
+                return subprocess.CompletedProcess(
+                    argv, 0, base64.b64encode(self.stored), b""
+                )
+            return subprocess.CompletedProcess(argv, 0, self.stored + b"\n", b"")
+        self.stored = None  # delete
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+
 class TestKeychainModule:
     def test_no_helper_means_unavailable(self, monkeypatch):
         monkeypatch.setattr(keychain, "_tool", lambda: None)
@@ -423,33 +504,23 @@ class TestKeychainModule:
         """secret-tool takes the secret on stdin, never argv."""
         monkeypatch.setattr(keychain.sys, "platform", "linux")
         monkeypatch.setattr(keychain, "_tool", lambda: ["/usr/bin/secret-tool"])
-        seen = {}
-
-        def fake_run(argv, **kwargs):
-            seen["argv"] = argv
-            seen["stdin"] = kwargs.get("stdin")
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-        monkeypatch.setattr(keychain, "_run", fake_run)
+        seen = _FakeKeychain(monkeypatch)
         assert keychain.store("a@b.c", "pw") is True
-        assert seen["argv"][0].endswith("secret-tool")
-        assert "store" in seen["argv"]
-        assert "pw" not in seen["argv"], "secret leaked into argv"
-        assert seen["stdin"] == b"pw"
+        argv = seen.calls[0]["argv"]
+        assert argv[0].endswith("secret-tool")
+        assert "store" in argv
+        assert "pw" not in argv, "secret leaked into argv"
+        assert seen.calls[0]["kwargs"].get("stdin") == b"pw"
+
     def test_argv_shape_on_macos(self, monkeypatch):
         monkeypatch.setattr(keychain.sys, "platform", "darwin")
         monkeypatch.setattr(keychain, "_tool", lambda: ["/usr/bin/security"])
-        seen = {}
-
-        def fake_run(argv, **kwargs):
-            seen["argv"] = argv
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
-
-        monkeypatch.setattr(keychain, "_run", fake_run)
+        seen = _FakeKeychain(monkeypatch)
         assert keychain.store("a@b.c", "pw") is True
-        assert seen["argv"][0].endswith("security")
-        assert "add-generic-password" in seen["argv"]
-        assert "-U" in seen["argv"], "re-login must update in place, not fail"
+        argv = seen.calls[0]["argv"]
+        assert argv[0].endswith("security")
+        assert "add-generic-password" in argv
+        assert "-U" in argv, "re-login must update in place, not fail"
 
     def test_store_failure_returns_false(self, monkeypatch):
         def fake_run(argv, **kwargs):
@@ -500,6 +571,113 @@ class TestKeychainModule:
             "win32": _PS_DELETE_MARKER,
         }.get(sys.platform, "clear")
         assert expected in seen["argv"]
+
+
+# ── store() must prove the write landed, on every platform ────────────────
+#
+# `auth._store_password` unlinks creds.json whenever `store()` returns True, so
+# a "success" that persisted nothing destroys the only copy of the password.
+# That read-back verification used to be gated on `sys.platform == "win32"`,
+# which left Linux exposed — and a locked Secret Service collection that lets
+# `secret-tool` exit 0 is an ordinary condition on a headless box.
+
+#: Passwords whose bytes must survive the round trip untouched. Each has broken
+#: something before: the trailing newlines defeated the old ``strip("\n")``
+#: normalisation (so such a password could never be verified as stored), and
+#: the rest are shell / PowerShell / JSON metacharacters that a naive
+#: implementation would mangle on the way through a child process.
+HOSTILE_SECRETS = [
+    "pw\n",  # a trailing newline — the normalisation trap
+    "pw\n\n",  # more than one
+    "\n",  # nothing but a newline
+    "quote'd\"double",  # both quote styles
+    "$(whoami) `id` ${HOME}",  # shell and PowerShell expansion
+    "back\\slash",  # a backslash, and an escape-looking pair
+    "pä§§wörd — 日本語 🔐",  # non-ASCII
+    "tab\there",
+]
+
+
+class TestStoreVerifiesTheWrite:
+    """A ``True`` from ``store`` must mean the password can be read back."""
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_store_reports_false_when_the_helper_persists_nothing(
+        self, monkeypatch, platform
+    ):
+        """Exiting 0 without storing is a failure, not a success.
+
+        Reproduces the defect: a ``secret-tool`` that exits 0 against a locked
+        Secret Service collection used to be believed on Linux and macOS.
+        """
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+        helper = _FakeKeychain(monkeypatch, drop=True)
+        assert keychain.store("a@b.c", "s3cret") is False
+        assert helper.stored is None, "the double must really have dropped it"
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    @pytest.mark.parametrize("secret", HOSTILE_SECRETS)
+    def test_store_round_trips_hostile_passwords(
+        self, monkeypatch, platform, secret
+    ):
+        """store() then lookup() must return the password byte for byte."""
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+        _FakeKeychain(monkeypatch)
+        assert keychain.store("a@b.c", secret) is True, f"{platform} lost {secret!r}"
+        assert keychain.lookup("a@b.c") == secret
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin"])
+    def test_lookup_preserves_a_password_ending_in_a_newline(
+        self, monkeypatch, platform
+    ):
+        """A newline the user typed is data, not the helper's terminator.
+
+        The old ``strip("\\n")`` turned ``"pw\\n"`` into ``"pw"``, so the stored
+        value could never match and ``store`` failed on every attempt —
+        permanently forcing the cleartext fallback for such passwords.
+        """
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+        _FakeKeychain(monkeypatch)
+        assert keychain.store("a@b.c", "s3cret\n") is True
+        assert keychain.lookup("a@b.c") == "s3cret\n"
+
+    def test_lookup_strips_only_the_helpers_own_newline(self, monkeypatch):
+        """One trailing newline is the terminator; the rest belong to the user."""
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, b"pw\n\n", b"")
+
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") == "pw\n"
+
+    def test_lookup_still_tolerates_a_helper_that_adds_no_newline(
+        self, monkeypatch
+    ):
+        """A backend that writes the secret bare must not be off by one."""
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, b"pw", b"")
+
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") == "pw"
+
+    def test_store_rejects_a_corrupted_read_back(self, monkeypatch):
+        """A vault that returns the wrong bytes must not be reported as stored."""
+        monkeypatch.setattr(keychain.sys, "platform", "linux")
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+
+        def fake_run(argv, **kwargs):
+            if argv[-1] == "store":
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return subprocess.CompletedProcess(argv, 0, b"something-else\n", b"")
+
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.store("a@b.c", "s3cret") is False
 
 
 # ── Windows keychain — WinRT PasswordVault via powershell.exe ────────────
@@ -810,6 +988,46 @@ class TestWindowsKeychainBackend:
 
 
 class TestKeychainWiring:
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_a_lying_store_costs_a_fallback_not_the_password(
+        self, isolated_env, monkeypatch, platform
+    ):
+        """End to end: creds.json must survive a store that never landed.
+
+        ``_store_password`` deletes the cleartext copy on a ``True`` from
+        ``keychain.store``. Before the read-back ran outside Windows, a
+        ``secret-tool`` that exited 0 against a locked Secret Service
+        collection unlinked the file and left nothing in the vault — the next
+        invocation then failed with ``missing_credentials`` and the password
+        was unrecoverable.
+        """
+        monkeypatch.setenv("MB_CRAWLER_KEYCHAIN", "1")
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        _write_creds(creds, password="s3cret")  # an earlier non-keychain login
+        helper = _FakeKeychain(monkeypatch, drop=True)
+
+        assert _store_password("student@example.com", "s3cret") == "file"
+        assert helper.stored is None
+        assert creds.exists(), "creds.json was deleted for a store that never landed"
+        assert json.loads(creds.read_text())["password"] == "s3cret"
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_a_real_store_still_drops_the_cleartext_copy(
+        self, isolated_env, monkeypatch, platform
+    ):
+        """The verification must not become so strict that it always falls back."""
+        monkeypatch.setenv("MB_CRAWLER_KEYCHAIN", "1")
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
+        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        _write_creds(creds, password="s3cret")
+        _FakeKeychain(monkeypatch)
+
+        assert _store_password("student@example.com", "s3cret") == "keychain"
+        assert not creds.exists(), "password left in cleartext creds.json too"
+
     def test_store_prefers_keychain_and_drops_cleartext(self, isolated_env):
         creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
         _write_creds(creds)  # leftover from a previous non-keychain login
@@ -1057,3 +1275,104 @@ class TestResolveCredsPath:
     def test_default_is_mode_guarded(self, isolated_env):
         """Sanity: the path we resolve is the one we write 0600."""
         assert resolve_creds_path().name == "creds.json"
+
+
+# ── the creds path is resolved once, per call, everywhere ─────────────────
+#
+# `auth` used to capture the path in a module-level constant at import *and*
+# re-resolve it in `_creds_path()`. Two code paths could therefore name two
+# different files: one writes the password to `~/.config/tahuti/creds.json`
+# while the other goes looking in `~/.config/mb-crawler/creds.json` and reports
+# `missing_credentials`. There is a live instance of that on the destination
+# host — an older `mb` install still using the pre-rename directory.
+
+
+class TestCredsPathResolvesOnce:
+    def test_no_import_time_constant_can_go_stale(self):
+        """The contract: nothing in `auth` may freeze the path at import."""
+        assert not hasattr(auth, "_CREDS_PATH")
+        assert not hasattr(auth, "_CREDS_PATH_ENV")
+
+    def test_auth_reads_no_credential_env_var_at_module_scope(self):
+        """Guards against reintroducing the constant in a new spelling.
+
+        `auth` used to capture ``MB_CRAWLER_CREDS_PATH`` at import *and*
+        re-resolve it per call, leaving two answers to one question. The
+        captured one was never read, so the split stayed latent — but a frozen
+        path is exactly the kind of thing a later change starts relying on, and
+        under pytest the snapshot would have pinned the *first* test's
+        ``tmp_path`` for the whole session.
+        """
+        source = Path(auth.__file__).read_text(encoding="utf-8")
+        module_scope = source.split("def _creds_path")[0]
+        assert "environ" not in module_scope, (
+            "auth must not read the environment at import time"
+        )
+
+    def test_every_path_follows_an_env_var_set_after_import(self, isolated_env, monkeypatch):
+        """Storing, reading, deleting and reporting must agree on one file."""
+        first = isolated_env / "first.json"
+        second = isolated_env / "second.json"
+
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        assert auth._creds_path() == str(first)
+
+        # Changed *after* import — the old constant would still have said `first`.
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(second))
+        assert auth._creds_path() == str(second)
+
+        with patch.object(keychain, "enabled", return_value=False):
+            assert auth._store_password("student@example.com", "s3cret") == "file"
+        assert second.exists(), "the password was written to the stale path"
+        assert not first.exists()
+        assert json.loads(second.read_text())["password"] == "s3cret"
+
+        assert auth._load_creds()["password"] == "s3cret"
+
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        assert auth._load_creds() is None, "read and write resolved different files"
+
+    def test_delete_follows_the_same_resolution(self, isolated_env, monkeypatch):
+        """`_store_password` must clear the file it just replaced, not a stale one."""
+        target = isolated_env / "creds.json"
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(target))
+        _write_creds(target, password="old")
+
+        with (
+            patch.object(keychain, "enabled", return_value=True),
+            patch.object(keychain, "store", return_value=True),
+        ):
+            assert auth._store_password("student@example.com", "new") == "keychain"
+        assert not target.exists(), "the cleartext copy was left behind"
+        assert not (isolated_env / "creds.json.other").exists()
+
+    def test_state_paths_follow_home_set_after_import(self, isolated_env, monkeypatch):
+        """`config_dir()` reads $HOME per call; a constant would freeze it."""
+        import mb_cli.config as config
+
+        # Drop the fixture's redirects so the defaults (not the env vars) apply.
+        for var in ("MB_CRAWLER_CREDS_PATH", "MB_CRAWLER_CONFIG", "MB_CRAWLER_SESSION"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HOME", "/tmp/some-other-home")
+        other = Path("/tmp/some-other-home/.config/tahuti")
+        assert config.config_dir() == other
+        assert config.resolve_creds_path() == other / "creds.json"
+        assert config.resolve_config_path() == other / "config.json"
+        assert config.resolve_session_path() == other / "session.json"
+        # The legacy importable names must not be stale snapshots either.
+        assert config.CONFIG_DIR == other
+        assert config.DEFAULT_CREDS_PATH == other / "creds.json"
+
+    def test_legacy_path_names_stay_importable(self):
+        """Removing the constants must not break an out-of-tree importer."""
+        from mb_cli.config import CONFIG_DIR, DEFAULT_CONFIG_PATH, DEFAULT_CREDS_PATH
+
+        assert CONFIG_DIR == Path.home() / ".config" / "tahuti"
+        assert DEFAULT_CONFIG_PATH == CONFIG_DIR / "config.json"
+        assert DEFAULT_CREDS_PATH == CONFIG_DIR / "creds.json"
+
+    def test_unknown_attribute_still_raises(self):
+        import mb_cli.config as config
+
+        with pytest.raises(AttributeError):
+            config.THIS_NAME_DOES_NOT_EXIST

@@ -59,21 +59,45 @@ class ResponseCache:
             return None
         return data["body"], data["status"]
 
-    def put(self, url: str, body: str, status: int) -> None:
-        """Write a response to the cache."""
-        if not self.enabled:
-            return
+    def _harden_tree(self) -> None:
+        """Close the cache tree to other local users, and stop there.
+
+        ``mkdir(parents=True)`` leaves the directories it creates at the umask
+        default, and the cache holds full grade pages plus the MNN-hub Bearer
+        JWT, so the credential-bearing tree is tightened to 0700.
+
+        Only directories *inside this package's own state directory* are
+        touched, up to and including that directory. The previous version walked
+        ``self.cache_dir.parents`` all the way to ``/``: unprivileged, the
+        chmods above ``$HOME`` failed and the OSError was swallowed, but under
+        root or in a container they succeeded — locking ``/home`` and ``/`` to
+        0700 and breaking every other account's home traversal. A single
+        ``put()`` also reset the user's own ``$HOME`` from 0755 to 0700.
+
+        A cache directory a caller placed outside our own tree keeps only its
+        own directory hardened; that is not ours to widen.
+        """
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
-        # Harden the parents too — mkdir(parents=True) would otherwise leave
-        # ~/.config/tahuti and its cache/ at the umask default (0755),
-        # making the credential-bearing tree traversable by other local users.
-        for parent in (self.cache_dir, *self.cache_dir.parents):
+        boundary = config_dir()
+        if boundary not in self.cache_dir.parents:
+            return
+        # `parents` is ordered nearest-first, so this slice runs from just below
+        # the cache dir up to the boundary; walking it outermost-in keeps the
+        # traversal path valid as each level is tightened.
+        ours = self.cache_dir.parents[: self.cache_dir.parents.index(boundary) + 1]
+        for parent in reversed(ours):
             try:
                 if parent.is_dir():
                     os.chmod(parent, 0o700)
             except OSError:
                 pass
+
+    def put(self, url: str, body: str, status: int) -> None:
+        """Write a response to the cache."""
+        if not self.enabled:
+            return
+        self._harden_tree()
         data = {
             "url": url,
             "body": body,
@@ -103,16 +127,24 @@ class ResponseCache:
 
         Cached bodies include full grade pages and the MNN-hub Bearer JWT, so
         ``tahuti logout`` calls this to avoid leaving credentials on disk.
+
+        The in-flight ``.cache_*.tmp`` files are swept too. Globbing only
+        ``*.json`` left any temp file a concurrent ``put`` had created, and the
+        ``os.replace`` that was about to land it could complete *after* the
+        logout finished — so a "cleared" cache still gained a JWT-bearing entry
+        behind the user's back. The temp file is deleted; the racing ``put``
+        then fails its ``os.replace`` and cleans up after itself.
         """
         removed = 0
         if not self.cache_dir.exists():
             return 0
-        for f in self.cache_dir.glob("*.json"):
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
+        for pattern in ("*.json", ".cache_*.tmp"):
+            for f in self.cache_dir.glob(pattern):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
         return removed
 
     def invalidate(self, url: str | None = None) -> None:
