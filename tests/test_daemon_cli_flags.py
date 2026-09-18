@@ -293,27 +293,118 @@ def test_daemon_run_forwards_active_hours_to_config():
 def test_dry_run_suppresses_the_webhook_dispatcher():
     """`--dry-run` used to stop at `start_loop`: only the `once` branch — which
     never delivers anyway — consulted it, so `daemon start --dry-run` still
-    POSTed real webhooks."""
+    POSTed real webhooks.
+
+    The webhook must actually be *configured* for this to mean anything. The old
+    version used a bare `DaemonConfig()`, whose `webhooks` defaults to empty, so
+    `[] if dry_run else self.config.webhooks` evaluated to `[]` either way: the
+    assertion held even with `dry_run` ignored completely. The `.invalid` TLD
+    (RFC 2606) cannot resolve, and `requests.post` is patched, so no real POST
+    can leave the process either way.
+    """
     from mb_cli.daemon import DaemonConfig, DaemonService
-    from mb_cli.daemon.events import MBEvent
+    from mb_cli.daemon.events import MBEvent, WebhookConfig
 
     config = DaemonConfig()
+    config.webhooks = [WebhookConfig(url="https://webhook.example.invalid/hook")]
+
+    # Precondition: the config really does carry a delivery target, so the
+    # assertion below is testing `dry_run` and not an empty webhook list.
+    plain = DaemonService(MagicMock(), config=config, dry_run=False)
+    assert len(plain.dispatcher.webhooks) == 1
+
     service = DaemonService(MagicMock(), config=config, dry_run=True)
     assert service.dry_run is True
     assert service.dispatcher.webhooks == []
 
+    with patch("mb_cli.daemon.webhook.requests.post") as post:
+        results = service.dispatcher.dispatch(MBEvent(event="task_created", data={}))
+        post.assert_not_called()
+
     # An empty webhook list makes dispatch a no-op that still reports success,
     # which is exactly "compute alerts, deliver nothing".
-    results = service.dispatcher.dispatch(MBEvent(event="task_created", data={}))
     assert results == []
 
 
 def test_dry_run_off_keeps_the_configured_webhooks():
     from mb_cli.daemon import DaemonConfig, DaemonService
+    from mb_cli.daemon.events import WebhookConfig
 
     config = DaemonConfig()
-    config.webhooks = [{"url": "https://h/x"}]
+    config.webhooks = [WebhookConfig(url="https://webhook.example.invalid/hook")]
     service = DaemonService(MagicMock(), config=config, dry_run=False)
+    assert len(service.dispatcher.webhooks) == 1
+
+
+# ── `start_loop` forwarding dry_run to the service ───────────────────────
+
+
+def _webhook_daemon_config(tmp_path: Path) -> dict:
+    """A daemon.json-style dict carrying one real delivery target."""
+    return {
+        "pid_file": str(tmp_path / "daemon.pid"),
+        "log_file": str(tmp_path / "daemon.log"),
+        "snapshot_file": str(tmp_path / "snapshot.json"),
+        "webhooks": [{"url": "https://webhook.example.invalid/hook"}],
+    }
+
+
+def _run_loop_once(tmp_path: Path, dry_run: bool):
+    """Run `start_loop`'s non-`once` branch far enough to build the service.
+
+    `run_forever` would poll forever, so the `on_start` hook — which runs after
+    the service is fully constructed — clears `_running` to end the loop and
+    captures the service for inspection.
+    """
+    from mb_cli.daemon import start_loop
+
+    captured: dict = {}
+    client = MagicMock()
+    # `MNNHubProvider.start` unpacks this pair; a bare MagicMock iterates empty
+    # and the loop dies before the dispatcher is ever built.
+    client.get_notification_token.return_value = (
+        "https://hub.example.invalid",
+        "token",
+    )
+
+    def _capture_and_stop(service):
+        captured["service"] = service
+        service._running = False
+
+    with patch("mb_cli.daemon.webhook.requests.post") as post:
+        start_loop(
+            client,
+            _webhook_daemon_config(tmp_path),
+            dry_run=dry_run,
+            once=False,
+            on_start=_capture_and_stop,
+        )
+        post.assert_not_called()
+
+    return captured["service"]
+
+
+def test_start_loop_strips_webhooks_when_dry_run(tmp_path):
+    """The regression in its original location: the `start_loop` loop branch.
+
+    `dry_run` was read only by the `once` branch, so a foreground
+    `daemon start --dry-run` built a fully-configured dispatcher and POSTed for
+    real. Asserted on the service `start_loop` itself constructs, because the
+    loop would otherwise never get far enough to POST.
+    """
+    service = _run_loop_once(tmp_path, dry_run=True)
+    assert service.dry_run is True
+    assert service.dispatcher.webhooks == []
+
+
+def test_start_loop_keeps_webhooks_without_dry_run(tmp_path):
+    """Control for the test above: same path, flag off, target retained.
+
+    Without this, the dry-run assertion would still hold if `start_loop` dropped
+    webhooks unconditionally.
+    """
+    service = _run_loop_once(tmp_path, dry_run=False)
+    assert service.dry_run is False
     assert len(service.dispatcher.webhooks) == 1
 
 
