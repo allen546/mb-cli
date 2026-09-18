@@ -17,6 +17,27 @@ from .events import MBEvent
 log = logging.getLogger(__name__)
 
 
+def _coerce_notification_id(raw: Any) -> int | None:
+    """Return ``raw`` as an int notification id, or ``None`` if it is not one.
+
+    ``DaemonService.run_check_cycle`` calls ``int()`` on ``data["notification_id"]``
+    at three places — the processed-set lookup (service.py:217), the suppression
+    marker (:308) and the post-dispatch marker (:356) — guarded only by
+    ``if notif_id``, inside a single ``try`` that wraps the whole event loop. So a
+    hub id that is truthy but not an int (``"abc-123"``, ``12.5``, a dict) raises
+    ValueError there and aborts the cycle, silently dropping every notification
+    queued behind it. Normalizing here means the loop only ever sees an int or
+    ``None``, and ``None`` is already the case it guards for.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return None
+
+
 class AbstractNotificationProvider(abc.ABC):
     """Abstract base class for notification source providers."""
 
@@ -56,30 +77,39 @@ class MNNHubProvider(AbstractNotificationProvider):
         self.token: str | None = None
 
     def _ensure_hub(self, force_refresh: bool = False) -> MNNHubClient:
-        if self.hub is None or force_refresh:
-            try:
-                try:
-                    endpoint, token = self.client.get_notification_token(bypass_cache=True)
-                except Exception as exc:
-                    if ("Session expired" in str(exc) or "login" in str(exc).lower()) and self.auth_refresh_fn:
-                        log.info("Session expired while acquiring notification token — attempting auto-relogin...")
-                        if self.auth_refresh_fn():
-                            endpoint, token = self.client.get_notification_token(bypass_cache=True)
-                        else:
-                            raise
-                    else:
-                        raise
-                if not endpoint:
-                    endpoint = hub_for_domain(self.client.domain)
-                self.hub_endpoint = endpoint
-                self.token = token
-                self.hub = MNNHubClient(
-                    endpoint, token, verify=self.client.session.verify
-                )
-            except Exception as exc:
-                log.error("Failed to get notification token: %s", exc)
-                raise
+        if self.hub is not None and not force_refresh:
+            return self.hub
+        try:
+            endpoint, token = self._acquire_token()
+            if not endpoint:
+                endpoint = hub_for_domain(self.client.domain)
+            self.hub_endpoint = endpoint
+            self.token = token
+            self.hub = MNNHubClient(
+                endpoint, token, verify=self.client.session.verify
+            )
+        except Exception as exc:
+            # The only observable effect of this handler is the log line; the
+            # bare re-raise is what every path did before.
+            log.error("Failed to get notification token: %s", exc)
+            raise
         return self.hub
+
+    def _acquire_token(self) -> tuple[str, str]:
+        """Fetch a hub (endpoint, JWT), relogging in once if the session expired."""
+        try:
+            return self.client.get_notification_token(bypass_cache=True)
+        except Exception as exc:
+            expired = "Session expired" in str(exc) or "login" in str(exc).lower()
+            if not (expired and self.auth_refresh_fn):
+                raise
+            log.info(
+                "Session expired while acquiring notification token"
+                " — attempting auto-relogin..."
+            )
+            if not self.auth_refresh_fn():
+                raise
+            return self.client.get_notification_token(bypass_cache=True)
 
     def start(self) -> None:
         self._ensure_hub()
@@ -138,7 +168,7 @@ class MNNHubProvider(AbstractNotificationProvider):
     def normalize_notification(self, item: dict[str, Any]) -> MBEvent:
         """Convert a raw MNN Hub notification item into a standardized MBEvent."""
         raw_event = item.get("event_name") or "notification"
-        notif_id = item.get("id")
+        notif_id = _coerce_notification_id(item.get("id"))
         created_at = item.get("created_at")
         title = item.get("title") or "ManageBac Notification"
         body_html = item.get("body") or ""
@@ -240,11 +270,18 @@ class MNNHubProvider(AbstractNotificationProvider):
         if when_str:
             event_data["due_date"] = when_str
 
+        # A missing or unusable id gets MBEvent's uuid default rather than the
+        # literal string "notif_None", which every id-less notification would
+        # share and which would be shipped to webhooks as an event_id.
+        event_kwargs: dict[str, Any] = {}
+        if notif_id is not None:
+            event_kwargs["event_id"] = f"notif_{notif_id}"
+
         return MBEvent(
             event=event_type,
-            event_id=f"notif_{notif_id}",
             timestamp=created_at or "",
             data=event_data,
+            **event_kwargs,
         )
 
     @staticmethod
