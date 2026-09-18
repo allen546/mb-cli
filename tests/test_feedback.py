@@ -338,9 +338,12 @@ def test_parse_feedback_page_with_modal_preview():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = fake_modal_js
-    client.session.get.return_value = mock_resp
+    mock_resp.url = "https://testschool.managebac.cn/document_previews/modal/token123"
+    # The modal fetch goes through the validated request wrapper, not the raw
+    # session, so stub at that seam; this test is about parsing the modal.
+    with patch.object(client, "_request_with_retry", return_value=mock_resp):
+        result = client._parse_feedback_page("https://s3.amazonaws.com/file/essay.pdf", preview_modal_url="/document_previews/modal/token123")
 
-    result = client._parse_feedback_page("https://s3.amazonaws.com/file/essay.pdf", preview_modal_url="/document_previews/modal/token123")
     assert result["annotated_download_url"] == "https://pspdfkit.example.com/annotated.pdf"
     assert len(result["attachments"]) >= 1
     assert any("annotated" in a["name"] for a in result["attachments"])

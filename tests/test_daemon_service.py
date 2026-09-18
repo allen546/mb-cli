@@ -74,7 +74,10 @@ def test_daemon_service_live_submission_check(tmp_path: Path):
         "task_id": "777",
         "class_id": "1000014",
         "title": "Calculus Worksheet",
-        "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        # isoformat() keeps the offset: parse_due_date returns aware datetimes,
+        # and a strftime'd string carrying no offset would be read as the host's
+        # local time rather than this test's UTC frame.
+        "due_date": due_dt.isoformat(),
         "status": "not-submitted",
         "has_submit_button": True,
     }

@@ -8,7 +8,8 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import urljoin, unquote, urlparse
 
 import requests
@@ -23,12 +24,53 @@ log = logging.getLogger(__name__)
 # Retryable HTTP status codes (server errors that may resolve on retry)
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
+# Statuses whose ``Location`` header names the next hop.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+# A chain longer than this is a loop, not a redirect.
+_MAX_REDIRECT_HOPS = 10
+
 # Only these domains are acceptable targets; anything else risks sending the
 # session cookie (and the login password) to an unintended host.
 ALLOWED_DOMAINS = frozenset({"managebac.com", "managebac.cn"})
 
 # A school subdomain must be a plain DNS label.
 _SCHOOL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$")
+
+
+class SessionExpiredError(RuntimeError):
+    """The server answered with the sign-in page — the session cookie is dead.
+
+    Subclasses :class:`RuntimeError` so existing ``except RuntimeError`` callers
+    keep working, but is its own type so :meth:`ManageBacClient._get` can tell
+    "the session is gone" (which must propagate) from a transport blip (where
+    serving stale cached content is acceptable).
+    """
+
+
+# Failures that a stale cache hit must never paper over.  Both describe the
+# *current* session — the credentials are dead, or a security policy refused the
+# request — so answering with last cycle's cached grades would convert a hard
+# stop into a silently wrong result.
+_NEVER_MASK_ERRORS = (CommandError, SessionExpiredError)
+
+
+def _school_display_tz() -> Any:
+    """The timezone ManageBac's human-readable dates are written in.
+
+    ManageBac renders school-local wall-clock times ("September 15, 2026 at
+    23:59") with no offset.  There is no per-school timezone setting, so the
+    assumption is made explicit here: **the school's clock is assumed to be this
+    machine's clock.**  That assumption is what makes the daemon's reminders
+    drift by the host/school offset; if a per-school offset is ever configured,
+    change this function and nothing else needs to move.
+
+    Returns an aware ``tzinfo`` rather than ``None`` so :func:`parse_due_date`
+    can hand back one unambiguous type — mixing naive and aware datetimes makes
+    ``sorted`` raise ``TypeError``.
+    """
+    offset_seconds = time.altzone if time.daylight else time.timezone
+    return timezone(timedelta(seconds=-offset_seconds))
 
 
 def _validate_school_domain(school: str, domain: str) -> tuple[str, str]:
@@ -68,7 +110,14 @@ HEADERS = {
 
 
 def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
-    """Parse due date string with multi-format and year wrapping correction."""
+    """Parse a ManageBac due date into a **timezone-aware** datetime.
+
+    Every return value carries a ``tzinfo``, so two parsed dates are always
+    comparable.  See :func:`_school_display_tz` for the timezone assumption
+    applied to inputs that carry no offset of their own.
+
+    Returns ``None`` when *due_date_str* is empty or unparseable.
+    """
     if not due_date_str:
         return None
     try:
@@ -80,32 +129,47 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
         if "-" in cleaned and ("T" in cleaned or ":" in cleaned):
             try:
                 import datetime as _std_dt
-                return _std_dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+                parsed_iso = _std_dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+                # An ISO string with an offset keeps it; one without gets the
+                # school-display timezone rather than staying naive.
+                if parsed_iso.tzinfo is None:
+                    parsed_iso = parsed_iso.replace(tzinfo=_school_display_tz())
+                return parsed_iso
             except (ValueError, TypeError):
                 pass
 
-        # 2. Try formats with explicit year
+        # 2. Try formats with explicit year.
+        # ManageBac renders the same date both ways — "September 15, 2026 at
+        # 11:59 PM" and "September 15, 2026 at 23:59" — so both the 12-hour and
+        # the 24-hour spelling need to parse.  Without the %H:%M variants the
+        # 24-hour form returned None, which callers read as "no due date".
         for fmt in (
             "%B %d, %Y %I:%M %p",
             "%b %d, %Y %I:%M %p",
+            "%B %d, %Y %H:%M",
+            "%b %d, %Y %H:%M",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d %H:%M",
             "%Y-%m-%d",
         ):
             try:
-                return datetime.strptime(cleaned_no_at, fmt)
+                return datetime.strptime(cleaned_no_at, fmt).replace(
+                    tzinfo=_school_display_tz()
+                )
             except ValueError:
                 continue
 
         # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=_school_display_tz())
         current_year = ref.year
 
         dt = None
         for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
                 parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
-                dt = parsed
+                dt = parsed.replace(tzinfo=_school_display_tz())
                 break
             except ValueError:
                 continue
@@ -131,6 +195,95 @@ def parse_task_url(target: str) -> tuple[str | None, str | None]:
         return m.group(1), m.group(2)
     clean = target.rstrip("/").split("/")[-1]
     return None, clean if clean else None
+
+
+def _coerce_chart_points(raw: Any) -> list[float]:
+    """Flatten one Highcharts series' ``data`` into a list of floats.
+
+    ManageBac emits two shapes for the same chart:
+
+    * flat values — ``[4]``, ``[4, 5]``
+    * ``[timestamp, value]`` pairs — ``[[1700000000000, 4]]``
+
+    Unparseable points are skipped rather than raised: one odd series must not
+    take down the whole class, because ``crawl_all`` only logs a warning per
+    class and the class then silently disappears from the output.
+    """
+    points: list[float] = []
+    if not isinstance(raw, (list, tuple)):
+        return points
+    for point in raw:
+        # A pair carries the timestamp first and the score second.
+        value = point[-1] if isinstance(point, (list, tuple)) else point
+        try:
+            points.append(float(value))
+        except (TypeError, ValueError):
+            log.debug("skipping unparseable chart data point %r", point)
+            continue
+    return points
+
+
+# ManageBac answers a rejected upload with HTTP 200 and a human-readable
+# sentence, so a status-code check alone would call a failed submission a
+# success.  These are the phrasings its dropbox actually returns.
+_UPLOAD_FAILURE_MARKERS = (
+    "file type not permitted",
+    "not permitted",
+    "file size exceeds",
+    "exceeds the maximum",
+    "maximum file size",
+    "too large",
+    "no file selected",
+    "no file chosen",
+    "no file was uploaded",
+    "unsupported file",
+    "could not be uploaded",
+    "upload failed",
+    "deadline has passed",
+    "submission is closed",
+    "already submitted",
+)
+
+
+def _detect_upload_failure(response: requests.Response) -> str | None:
+    """Return a reason string when *response* shows the upload did not land.
+
+    ``None`` means "no evidence of failure".  Deliberately conservative: an
+    unrecognised body counts as success, because ManageBac's happy path is a
+    bare 200 or a redirect and a false alarm would block a real submission.
+    """
+    if response.status_code >= 400:
+        snippet = (response.text or "").strip()[:200]
+        return f"HTTP {response.status_code}" + (f": {snippet}" if snippet else "")
+
+    text = (response.text or "").strip()
+    if not text:
+        return None
+
+    # A JSON envelope is unambiguous: honour ok/success/error/errors.
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            for flag in ("ok", "success"):
+                if flag in payload and payload[flag] is False:
+                    detail = payload.get("error") or payload.get("errors")
+                    return f"server reported {flag}=false" + (
+                        f": {detail}" if detail else ""
+                    )
+            for key in ("error", "errors"):
+                value = payload.get(key)
+                if value:
+                    return f"server reported {key}: {value}"
+
+    # Otherwise look for ManageBac's prose failure markers.
+    lowered = text.casefold()
+    for marker in _UPLOAD_FAILURE_MARKERS:
+        if marker in lowered:
+            return f"response contained {marker!r}"
+    return None
 
 
 class ManageBacClient:
@@ -256,13 +409,14 @@ class ManageBacClient:
         return False
 
     def _assert_same_host(self, url: str) -> None:
-        """Refuse to send an authenticated request to a host outside ManageBac.
+        """Refuse to **send** an authenticated request to a host outside ManageBac.
 
-        requests follows redirects by merging the whole cookie jar into the
-        new target and, on 307/308, replays the request body.  Since the login
-        POST body contains the plaintext password and the jar holds
+        Call this *before* issuing the request, never on a response you already
+        have.  requests follows redirects by merging the whole cookie jar into
+        the new target and, on 307/308, replays the request body.  Since the
+        login POST body contains the plaintext password and the jar holds
         ``_managebac_session``, a redirect off the ManageBac estate would
-        exfiltrate both.
+        exfiltrate both before any post-hoc check could run.
 
         Hosts within an allowed domain (e.g. the school subdomain and the
         shared calendar host ``managebac.com``) are permitted, since ManageBac
@@ -282,8 +436,27 @@ class ManageBacClient:
             f"(expected {expected!r})",
         )
 
-    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
-        # Enforce rate limit / delay between requests
+    def _assert_allowed_transport(self, url: str) -> None:
+        """Refuse a redirect that drops TLS, even one that stays on our own name.
+
+        ``Location: http://myschool.managebac.cn/...`` keeps the host but ships
+        ``_managebac_session`` in cleartext to anything on the path.
+        """
+        scheme = urlparse(url).scheme.lower()
+        if scheme and scheme != "https":
+            raise CommandError(
+                "insecure_redirect_blocked",
+                f"Refusing to follow redirect to non-HTTPS URL {url!r}",
+            )
+
+    @staticmethod
+    def _strip_body(kwargs: dict) -> dict:
+        """Drop the request body for a hop that turns a POST into a GET."""
+        for key in ("data", "files", "json"):
+            kwargs.pop(key, None)
+        return kwargs
+
+    def _respect_rate_limit(self) -> None:
         now = time.time()
         elapsed = now - getattr(self, "_last_request_time", 0.0)
         min_delay = getattr(self, "request_delay", 1.0)
@@ -292,6 +465,81 @@ class ManageBacClient:
             time.sleep(max(0.0, sleep_time))
         self._last_request_time = time.time()
 
+    def _follow_redirects_safely(
+        self,
+        method: str,
+        url: str,
+        response: requests.Response,
+        kwargs: dict,
+        headers: dict,
+    ) -> requests.Response:
+        """Follow redirects by hand, checking every hop **before** it is sent.
+
+        Automatic redirect-following is disabled precisely so this runs first:
+        see :meth:`_assert_same_host` for what a foreign ``Location`` would
+        otherwise leak.  Same-host redirects are followed normally, including
+        the 307/308 body replay that ManageBac relies on for form resubmission.
+        """
+        for _hop in range(_MAX_REDIRECT_HOPS):
+            if response.status_code not in _REDIRECT_STATUSES:
+                return response
+            location = (response.headers.get("Location") or "").strip()
+            if not location:
+                # A 3xx with no Location is malformed; hand it back and let
+                # raise_for_status() decide what it is.
+                return response
+            next_url = urljoin(response.url, location)
+            # Both gates run while the request still does not exist.
+            self._assert_allowed_transport(next_url)
+            self._assert_same_host(next_url)
+
+            next_method = method
+            next_kwargs = dict(kwargs)
+            next_kwargs["allow_redirects"] = False
+            if response.status_code == 303:
+                # 303 See Other always becomes a bodyless GET.
+                next_method = "GET"
+                self._strip_body(next_kwargs)
+            elif response.status_code in (301, 302) and method not in ("GET", "HEAD"):
+                # Historical clients downgrade a 301/302 after a POST to GET.
+                next_method = "GET"
+                self._strip_body(next_kwargs)
+            # 307/308 deliberately keep method *and* body — that is the whole
+            # point of "temporary/permanent redirect" versus "see other" — and
+            # it is safe here precisely because the host was just re-validated.
+
+            hop_headers = dict(headers)
+            hop_headers["Referer"] = response.url
+            status = response.status_code
+            previous_url = response.url
+            response.close()
+            self._respect_rate_limit()
+            log.debug("following %d %s -> %s", status, previous_url, next_url)
+            response = self.session.request(
+                next_method, next_url, headers=hop_headers, **next_kwargs
+            )
+
+        raise CommandError(
+            "redirect_loop",
+            f"Too many redirects (> {_MAX_REDIRECT_HOPS}) from {url!r}",
+        )
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        # Redirects are followed by _follow_redirects_safely so every hop is
+        # host-checked before the request exists.  Disabling requests' own
+        # following here is the fix, not an optimisation: with it enabled the
+        # cookie jar and (on 307/308) the body have already gone by the time any
+        # check of ours can run.
+        if kwargs.pop("allow_redirects", False):
+            log.debug(
+                "%s %s: allow_redirects ignored — redirects are validated hop by hop",
+                method,
+                url,
+            )
+        kwargs["allow_redirects"] = False
+
+        self._respect_rate_limit()
+
         headers = kwargs.pop("headers", {}) or {}
         if self._last_url and "Referer" not in headers:
             headers["Referer"] = self._last_url
@@ -299,9 +547,11 @@ class ManageBacClient:
         for attempt in range(self.retry + 1):
             try:
                 r = self.session.request(method, url, headers=headers, **kwargs)
-                # Verify the final destination stayed on our host.  This
-                # catches redirects without disabling redirect-following
-                # (login needs it to reach the dashboard).
+                r = self._follow_redirects_safely(method, url, r, kwargs, headers)
+                # Belt and braces: every hop was validated on the way out.
+                # Re-checking the final URL means a future edit here cannot
+                # silently downgrade the guard to post-hoc detection again.
+                self._assert_allowed_transport(r.url)
                 self._assert_same_host(r.url)
                 r.raise_for_status()
                 self._last_url = url
@@ -350,42 +600,97 @@ class ManageBacClient:
         if not bypass_cache:
             cached = self.cache.get(url)
             if cached is not None:
-                body, status = cached
-                soup = BeautifulSoup(body, "html.parser")
-                if "/login" in url:
-                    raise RuntimeError("Session expired or invalid — redirected to login")
-                self._capture_student_name(soup)
-                return soup
+                return self._soup_from_cached(url, cached[0])
 
         lock = self._get_url_lock(url)
         with lock:
             if not bypass_cache:
                 cached = self.cache.get(url)
                 if cached is not None:
-                    body, status = cached
-                    soup = BeautifulSoup(body, "html.parser")
-                    if "/login" in url:
-                        raise RuntimeError("Session expired or invalid — redirected to login")
-                    self._capture_student_name(soup)
-                    return soup
+                    return self._soup_from_cached(url, cached[0])
 
             try:
                 r = self._request_with_retry("GET", url)
-                if "/login" in r.url:
-                    raise RuntimeError("Session expired or invalid — redirected to login")
-                self.cache.put(url, r.text, r.status_code)
                 soup = BeautifulSoup(r.text, "html.parser")
+                # Reject before caching, so a login page is never written under
+                # a real /student/... URL to be served for a whole TTL.
+                self._reject_login_page(r.url, soup)
+                self.cache.put(url, r.text, r.status_code)
                 self._capture_student_name(soup)
                 return soup
             except Exception as e:
+                # A stale entry may paper over a *transient* transport failure.
+                # It must never paper over a dead session or a refused security
+                # policy: both are facts about the current credentials, so
+                # answering with last cycle's grades (or with cached content
+                # behind a blocked redirect) turns a hard stop into a silently
+                # wrong result.
+                if isinstance(e, _NEVER_MASK_ERRORS):
+                    raise
                 cached = self.cache.get(url, allow_stale=True)
                 if cached is not None:
                     body, status = cached
-                    log.warning("Request to %s failed (%s) — loading stale cached content", url, e)
+                    log.warning(
+                        "Request to %s failed (%s) — SERVING STALE CACHED CONTENT "
+                        "for %s (cached status %s); this data may be out of date",
+                        url,
+                        e,
+                        path,
+                        status,
+                    )
                     soup = BeautifulSoup(body, "html.parser")
                     self._capture_student_name(soup)
                     return soup
                 raise
+
+    def _soup_from_cached(self, url: str, body: str) -> BeautifulSoup:
+        """Turn a cache hit into soup, rejecting anything that is a login page."""
+        soup = BeautifulSoup(body, "html.parser")
+        self._reject_login_page(url, soup)
+        self._capture_student_name(soup)
+        return soup
+
+    # A genuine ManageBac sign-in form posts to /sessions.
+    _LOGIN_FORM_ACTION_RE = re.compile(r"/sessions?(?:[?#/]|$)")
+    _LOGIN_ID_FIELD_RE = re.compile(r"^(login|email|user_?name|user)$", re.IGNORECASE)
+
+    def _looks_like_login_page(self, soup: BeautifulSoup) -> bool:
+        """True when *soup* is ManageBac's sign-in page rather than real content.
+
+        The decision has to come from the body.  The previous check looked for
+        ``/login`` in the *requested* URL, which no real student path contains —
+        dead logic — so a login page served at 200 was parsed as an empty task
+        list and reported as a successful, empty crawl.
+        """
+        if soup.find("form", action=self._LOGIN_FORM_ACTION_RE):
+            return True
+        password = soup.find("input", attrs={"type": "password"})
+        if password is None:
+            return False
+        # A password field alone is not proof: /student/profile carries a
+        # change-password form.  Require the login/email identifier that only a
+        # sign-in form pairs with it.
+        if soup.find("input", attrs={"name": self._LOGIN_ID_FIELD_RE}):
+            return True
+        form = password.find_parent("form")
+        if form is not None and re.search(
+            r"sign[_ -]?in|log[_ -]?in",
+            " ".join(form.get("class", [])) + " " + str(form.get("id", "")),
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    def _reject_login_page(self, url: str, soup: BeautifulSoup) -> None:
+        """Raise :class:`SessionExpiredError` if *soup* is a login page."""
+        if "/login" in url:
+            raise SessionExpiredError(
+                "Session expired or invalid — redirected to login"
+            )
+        if self._looks_like_login_page(soup):
+            raise SessionExpiredError(
+                f"Session expired or invalid — {url} returned the sign-in page"
+            )
 
     def _capture_student_name(self, soup: BeautifulSoup) -> None:
         if self.student_name:
@@ -499,23 +804,62 @@ class ManageBacClient:
         tiles = soup.find_all("div", class_=re.compile(r"f-task-tile"))
         return [t for tile in tiles if (t := self._parse_tile(tile))]
 
+    # Pagination controls are recognised structurally, not by a bare "next"
+    # substring: a lesson's "Next lesson" link is not a page control.
+    _PAGE_LINK_RE_CACHE: dict[int, re.Pattern] = {}
+    _PAGINATION_WORD_RE = re.compile(
+        r"\b(pagination|pager|page-item|f-pagination|prev|previous|next|older)\b",
+        re.IGNORECASE,
+    )
+
+    def _links_to_page(self, soup: BeautifulSoup, page: int) -> bool:
+        """True when some anchor's query string carries ``page=<page>`` exactly.
+
+        The match must be anchored on the value: an unanchored ``page=2`` also
+        matches ``page=20``, so on page 1 a widget linking pages 20-24 looked
+        like a next page.  The crawl then requested an out-of-range page and,
+        if that 404'd, ``_get`` had no stale entry and the whole crawl aborted.
+        """
+        pattern = self._PAGE_LINK_RE_CACHE.get(page)
+        if pattern is None:
+            pattern = re.compile(rf"(?:[?&]|^)page={page}(?![0-9])")
+            self._PAGE_LINK_RE_CACHE[page] = pattern
+        for a in soup.find_all("a", href=pattern):
+            return True
+        return False
+
+    @classmethod
+    def _is_next_control(cls, el) -> bool:
+        """True when *el* is a genuine next-page control.
+
+        Requires both a "next"-ish token and evidence that the control is about
+        *pages* — either a pagination-flavoured class, or an accessible name /
+        label that mentions a page.  ``aria-label="Next lesson"`` fails the
+        second test, so it no longer drives an extra fetch.
+        """
+        classes = " ".join(el.get("class", []) or [])
+        aria = el.get("aria-label", "") or ""
+        if not re.search(r"\b(next|older)\b", f"{classes} {aria}", re.IGNORECASE):
+            return False
+        if el.get("disabled") is not None or "disabled" in classes.lower():
+            return False
+        label = el.get_text(" ", strip=True)
+        if re.search(r"\bpage", f"{aria} {label}", re.IGNORECASE):
+            return True
+        return bool(cls._PAGINATION_WORD_RE.search(classes))
+
     def _has_next_page(self, soup: BeautifulSoup, page: int, view: str) -> bool:
         next_page = page + 1
-        # 1. Look for any link with page={next} (most robust — don't require view param)
-        for a in soup.find_all("a", href=re.compile(rf"page={next_page}")):
+        # 1. A link whose query string names the next page number exactly.
+        if self._links_to_page(soup, next_page):
             return True
-        # 2. Look for rel="next" link
-        if soup.find("a", rel="next"):
+        # 2. An explicit rel="next" — the canonical pagination hint.
+        if soup.find("a", rel="next") or soup.find("button", rel="next"):
             return True
-        # 3. Look for a "next" button (class or aria-label containing "next")
-        for el in soup.find_all(["a", "button"], attrs={"rel": "next"}):
-            return True
+        # 3. A next-page control that is not disabled.
         for el in soup.find_all(["a", "button"]):
-            classes = " ".join(el.get("class", []))
-            aria = el.get("aria-label", "")
-            if "next" in classes.lower() or "next" in aria.lower():
-                if not el.get("disabled") and "disabled" not in classes.lower():
-                    return True
+            if self._is_next_control(el):
+                return True
         return False
 
     def _text_from_block(self, node, limit: int | None = None) -> str | None:
@@ -525,6 +869,28 @@ class ManageBacClient:
         if not text:
             return None
         return text[:limit] if limit else text
+
+    def _is_downloadable_attachment_url(self, resolved_url: str, raw_href: str) -> bool:
+        """True when an attachment URL is safe to hand to the download path.
+
+        ``_extract_attachments`` passes any absolute href straight through, so a
+        task page carrying ``https://cdn.evil.test/payload.pdf`` (or a plaintext
+        ``http://myschool.managebac.com/...``) put that URL in the download list,
+        where ``cmd_download`` fetches it with the authenticated session and
+        writes the body into the output directory.  Filtering here keeps the
+        decision in the client, next to the other host checks.
+
+        Same rules as every other request: HTTPS only, and a host inside the
+        ManageBac estate.
+        """
+        parsed = urlparse(resolved_url)
+        if parsed.scheme.lower() != "https":
+            return False
+        try:
+            self._assert_same_host(resolved_url)
+        except CommandError:
+            return False
+        return True
 
     def _extract_attachments(self, soup: BeautifulSoup) -> list[dict]:
         attachments: list[dict] = []
@@ -567,6 +933,15 @@ class ManageBacClient:
                 continue
 
             url = urljoin(f"{self.base}/", href)
+            if not self._is_downloadable_attachment_url(url, href):
+                log.warning(
+                    "Skipping attachment link %r (shown as %r): not an HTTPS URL on "
+                    "the ManageBac estate — downloading it would send the session "
+                    "cookie to a third party",
+                    href,
+                    link.get_text(" ", strip=True),
+                )
+                continue
             source = "description"
             if link.find_parent(class_=re.compile(r"discussion", re.IGNORECASE)):
                 source = "discussion"
@@ -598,8 +973,11 @@ class ManageBacClient:
             }:
                 continue
 
-            base_url = url.split("?")[0]
-            key = (name, base_url)
+            # The query string is part of the file's identity: ManageBac serves
+            # revisioned attachments as essay.pdf?v=1 / essay.pdf?v=2.  Dropping
+            # it collapsed distinct files into one — the only dedup key in the
+            # codebase that omitted the query.
+            key = (name, url)
             if key in seen:
                 continue
             seen.add(key)
@@ -624,7 +1002,9 @@ class ManageBacClient:
     def get_notification_token(self, bypass_cache: bool = False) -> tuple[str, str]:
         """Extract MNN hub endpoint and JWT from the notifications page.
 
-        Returns ``(hub_endpoint, jwt_token)``.
+        Returns ``(hub_endpoint, jwt_token)``.  ``hub_endpoint`` is whatever the
+        page said — pass it through :meth:`_validated_hub_endpoint` before use,
+        since it is attacker-influenced scraped HTML.
         """
         soup = self._get("/student/notifications", bypass_cache=bypass_cache)
         trigger = soup.find("a", class_="js-messages-and-notifications-trigger")
@@ -635,12 +1015,97 @@ class ManageBacClient:
             trigger.get("data-token", ""),
         )
 
+    def _validated_hub_endpoint(self, scraped: str) -> str:
+        """Return the only hub origin the JWT may be sent to.
+
+        ``data-mnn-hub-endpoint`` comes verbatim out of scraped ManageBac HTML,
+        so a compromised page, a poisoned edge, or a TLS-stripping MITM chooses
+        it.  Handing it to ``MNNHubClient`` unexamined put the ``Authorization:
+        Bearer <jwt>`` header on whatever host was named — and an ``http://``
+        endpoint shipped the token in cleartext.
+
+        The scraped value is used only when it is https **and** its host is one
+        of the Faria-operated hubs in ``notifications.HUB_ENDPOINTS`` (which
+        contains the expected host for this domain).  Anything else — a foreign
+        host, a cleartext scheme, a ``wss://`` scheme, or a userinfo spoof like
+        ``https://mnn-hub.prod.faria.cn@evil.test`` — falls back to
+        ``hub_for_domain(self.domain)``.
+        """
+        from .notifications import HUB_ENDPOINTS, hub_for_domain
+
+        fallback = hub_for_domain(self.domain)
+        candidate = (scraped or "").strip()
+        if not candidate:
+            return fallback
+
+        parsed = urlparse(candidate)
+        host = parsed.netloc.lower()
+        if parsed.scheme.lower() != "https" or not host:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r (not https); using %s",
+                candidate,
+                fallback,
+            )
+            return fallback
+        # Reject "user@host" and "host:port" spellings outright: urlparse folds
+        # both into netloc, so a naive startswith check would be fooled.
+        if "@" in host or ":" in host:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r (unexpected host form %r); using %s",
+                candidate,
+                host,
+                fallback,
+            )
+            return fallback
+
+        known_hosts = {urlparse(e).netloc.lower() for e in HUB_ENDPOINTS.values()}
+        if host not in known_hosts:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r — host %r is not a known "
+                "Faria hub; using %s",
+                candidate,
+                host,
+                fallback,
+            )
+            return fallback
+
+        return f"https://{host}"
+
+    def _fetch_notifications(self) -> dict:
+        """Pull unread count + items from the MNN hub.
+
+        Both the light ``crawl_index`` and the full ``crawl_all`` need this, and
+        the two copies had drifted into the same unvalidated-endpoint shape, so
+        the logic lives here once.
+        """
+        hub_endpoint, token = self.get_notification_token()
+        if not hub_endpoint:
+            return {"unread_count": 0, "items": []}
+
+        from .notifications import MNNHubClient
+
+        hub = MNNHubClient(self._validated_hub_endpoint(hub_endpoint), token)
+        stats = hub.stats()
+        result = hub.list(page=1, per_page=10, filter_="unread")
+        return {
+            "unread_count": stats.get("unread_count", 0),
+            "items": result.get("items", []),
+        }
+
     # ── File submission ─────────────────────────────────────────────────
 
     def submit_file(self, class_id: str, task_id: str, file_path: str) -> dict:
         """Upload a file to a task's dropbox.
 
         Returns ``{"ok": True, "filename": ..., "task_url": ...}``.
+
+        Raises
+        ------
+        RuntimeError
+            If the upload did not actually land.  ManageBac signals rejection
+            with a 200 and an explanatory sentence, so the response is inspected
+            rather than assumed — reporting ``ok: True`` for a rejected upload
+            tells the user coursework was submitted when it was not.
         """
         from pathlib import Path
 
@@ -672,16 +1137,24 @@ class ManageBacClient:
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
             }
-            self._request_with_retry(
+            r = self._request_with_retry(
                 "POST", upload_url, data=data, files=files, headers=headers
             )
 
-        task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
+        # Verify before claiming success — this is the whole point of the check.
+        failure = _detect_upload_failure(r)
         self.invalidate_task_cache(class_id, task_id)
+        if failure:
+            raise RuntimeError(
+                f"Upload of {p.name!r} to task {task_id} did not succeed: {failure}"
+            )
+
+        task_url = f"{self.base}/student/classes/{class_id}/core_tasks/{task_id}"
         return {
             "ok": True,
             "filename": p.name,
             "task_url": task_url,
+            "upload_status": r.status_code,
         }
 
     def get_submissions(
@@ -944,7 +1417,11 @@ class ManageBacClient:
             "Referer": f"{self.base}{task_path}",
         }
 
-        r = self.session.request("DELETE", full_delete_url, headers=headers)
+        # Route through the shared wrapper, not session.request directly: the
+        # URL comes from scraped HTML and the CSRF token rides in a header, so
+        # it needs the same pre-send host check, rate limit and retry as every
+        # other authenticated request.
+        r = self._request_with_retry("DELETE", full_delete_url, headers=headers)
         if r.status_code >= 400:
             raise RuntimeError(
                 f"Delete request failed with HTTP {r.status_code}: {r.text[:200]}"
@@ -988,11 +1465,12 @@ class ManageBacClient:
                 else f"{self.base}{preview_modal_url}"
             )
             try:
-                r = self.session.get(
+                # Through the validated wrapper: preview_modal_url is scraped
+                # HTML, and this request carries the session cookie.
+                r = self._request_with_retry(
+                    "GET",
                     modal_req_url,
                     headers={"X-Requested-With": "XMLHttpRequest"},
-                    timeout=30,
-                    verify=self.session.verify,
                 )
                 if r.status_code == 200:
                     ann_m = re.search(
@@ -1165,8 +1643,8 @@ class ManageBacClient:
                         f"{self.base}/student/events.json",
                         params={"start": start, "end": end},
                     )
-                    if "/login" in r.url:
-                        raise RuntimeError("Session expired or invalid — redirected to login")
+                    # Same dead-logic trap as _get: check the body, not the URL.
+                    self._reject_login_page(r.url, BeautifulSoup(r.text, "html.parser"))
                     self.cache.put(url, r.text, r.status_code)
                     events = r.json()
         return [
@@ -1528,10 +2006,13 @@ class ManageBacClient:
         # from the task list — but the chart only has names.
         # Compute a simple unweighted average from the chart data.
         scores: list[float] = []
-        for item in series:
-            data_points = item.get("data", [])
-            if data_points:
-                scores.append(float(data_points[0]))
+        if isinstance(series, list):
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                points = _coerce_chart_points(item.get("data") or [])
+                if points:
+                    scores.append(points[0])
 
         if not scores:
             return None
@@ -1598,17 +2079,30 @@ class ManageBacClient:
     # ── Public crawl methods ────────────────────────────────────────────
 
     def get_tasks_by_view(self, view: str, max_pages: int = 10) -> list[dict]:
-        """Crawl one view (``upcoming`` / ``past`` / ``overdue``)."""
+        """Crawl one view (``upcoming`` / ``past`` / ``overdue``).
+
+        Tasks are de-duplicated by id across pages: a server that echoes page 1
+        for an out-of-range page would otherwise return every task twice, and
+        nothing downstream removes the duplicates.
+        """
         all_tasks: list[dict] = []
+        seen_ids: set[str] = set()
         for page in range(1, max_pages + 1):
             soup = self._get(f"/student/tasks_and_deadlines?view={view}&page={page}")
             tasks = self._parse_tasks_page(soup)
             if not tasks:
                 break
+            new_count = 0
             for t in tasks:
+                task_id = t.get("id") or t.get("task_id")
+                if task_id:
+                    if task_id in seen_ids:
+                        continue
+                    seen_ids.add(task_id)
                 t["view"] = view
-            all_tasks.extend(tasks)
-            log.info("%s page %d: %d items", view, page, len(tasks))
+                all_tasks.append(t)
+                new_count += 1
+            log.info("%s page %d: %d items (%d new)", view, page, len(tasks), new_count)
             if not self._has_next_page(soup, page, view):
                 break
         return all_tasks
@@ -1633,8 +2127,14 @@ class ManageBacClient:
 
         try:
             soup = self._get(task_path, bypass_cache=bypass_cache)
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:
+            # A single unreadable task must not abort a whole crawl, but the
+            # failure must not masquerade as a successful fetch either: return
+            # None so every caller's `if not detail` guard fires.  A truthy
+            # {"error": ...} dict slipped past those guards and was then merged
+            # into task metadata as if it were a parsed detail page.
+            log.warning("task detail fetch failed for %s: %s", task_path, exc)
+            return None
 
         detail: dict = {}
         main_content = soup.find("main") or soup
@@ -1811,19 +2311,7 @@ class ManageBacClient:
 
         notifications: dict = {"unread_count": 0, "items": []}
         try:
-            hub_endpoint, token = self.get_notification_token()
-            if hub_endpoint:
-                from .notifications import MNNHubClient, hub_for_domain
-
-                if not hub_endpoint:
-                    hub_endpoint = hub_for_domain(self.domain)
-                hub = MNNHubClient(hub_endpoint, token)
-                stats = hub.stats()
-                result = hub.list(page=1, per_page=10, filter_="unread")
-                notifications = {
-                    "unread_count": stats.get("unread_count", 0),
-                    "items": result.get("items", []),
-                }
+            notifications = self._fetch_notifications()
         except Exception as exc:
             log.warning("notifications fetch failed: %s", exc)
 
@@ -1922,19 +2410,7 @@ class ManageBacClient:
         # Retrieve notifications
         notifications: dict = {"unread_count": 0, "items": []}
         try:
-            hub_endpoint, token = self.get_notification_token()
-            if hub_endpoint:
-                from .notifications import MNNHubClient, hub_for_domain
-
-                if not hub_endpoint:
-                    hub_endpoint = hub_for_domain(self.domain)
-                hub = MNNHubClient(hub_endpoint, token)
-                stats = hub.stats()
-                result = hub.list(page=1, per_page=10, filter_="unread")
-                notifications = {
-                    "unread_count": stats.get("unread_count", 0),
-                    "items": result.get("items", []),
-                }
+            notifications = self._fetch_notifications()
         except Exception as exc:
             log.warning("notifications fetch failed: %s", exc)
 
