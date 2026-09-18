@@ -782,23 +782,62 @@ class ManageBacClient:
         tiles = soup.find_all("div", class_=re.compile(r"f-task-tile"))
         return [t for tile in tiles if (t := self._parse_tile(tile))]
 
+    # Pagination controls are recognised structurally, not by a bare "next"
+    # substring: a lesson's "Next lesson" link is not a page control.
+    _PAGE_LINK_RE_CACHE: dict[int, re.Pattern] = {}
+    _PAGINATION_WORD_RE = re.compile(
+        r"\b(pagination|pager|page-item|f-pagination|prev|previous|next|older)\b",
+        re.IGNORECASE,
+    )
+
+    def _links_to_page(self, soup: BeautifulSoup, page: int) -> bool:
+        """True when some anchor's query string carries ``page=<page>`` exactly.
+
+        The match must be anchored on the value: an unanchored ``page=2`` also
+        matches ``page=20``, so on page 1 a widget linking pages 20-24 looked
+        like a next page.  The crawl then requested an out-of-range page and,
+        if that 404'd, ``_get`` had no stale entry and the whole crawl aborted.
+        """
+        pattern = self._PAGE_LINK_RE_CACHE.get(page)
+        if pattern is None:
+            pattern = re.compile(rf"(?:[?&]|^)page={page}(?![0-9])")
+            self._PAGE_LINK_RE_CACHE[page] = pattern
+        for a in soup.find_all("a", href=pattern):
+            return True
+        return False
+
+    @classmethod
+    def _is_next_control(cls, el) -> bool:
+        """True when *el* is a genuine next-page control.
+
+        Requires both a "next"-ish token and evidence that the control is about
+        *pages* — either a pagination-flavoured class, or an accessible name /
+        label that mentions a page.  ``aria-label="Next lesson"`` fails the
+        second test, so it no longer drives an extra fetch.
+        """
+        classes = " ".join(el.get("class", []) or [])
+        aria = el.get("aria-label", "") or ""
+        if not re.search(r"\b(next|older)\b", f"{classes} {aria}", re.IGNORECASE):
+            return False
+        if el.get("disabled") is not None or "disabled" in classes.lower():
+            return False
+        label = el.get_text(" ", strip=True)
+        if re.search(r"\bpage", f"{aria} {label}", re.IGNORECASE):
+            return True
+        return bool(cls._PAGINATION_WORD_RE.search(classes))
+
     def _has_next_page(self, soup: BeautifulSoup, page: int, view: str) -> bool:
         next_page = page + 1
-        # 1. Look for any link with page={next} (most robust — don't require view param)
-        for a in soup.find_all("a", href=re.compile(rf"page={next_page}")):
+        # 1. A link whose query string names the next page number exactly.
+        if self._links_to_page(soup, next_page):
             return True
-        # 2. Look for rel="next" link
-        if soup.find("a", rel="next"):
+        # 2. An explicit rel="next" — the canonical pagination hint.
+        if soup.find("a", rel="next") or soup.find("button", rel="next"):
             return True
-        # 3. Look for a "next" button (class or aria-label containing "next")
-        for el in soup.find_all(["a", "button"], attrs={"rel": "next"}):
-            return True
+        # 3. A next-page control that is not disabled.
         for el in soup.find_all(["a", "button"]):
-            classes = " ".join(el.get("class", []))
-            aria = el.get("aria-label", "")
-            if "next" in classes.lower() or "next" in aria.lower():
-                if not el.get("disabled") and "disabled" not in classes.lower():
-                    return True
+            if self._is_next_control(el):
+                return True
         return False
 
     def _text_from_block(self, node, limit: int | None = None) -> str | None:
@@ -1892,17 +1931,30 @@ class ManageBacClient:
     # ── Public crawl methods ────────────────────────────────────────────
 
     def get_tasks_by_view(self, view: str, max_pages: int = 10) -> list[dict]:
-        """Crawl one view (``upcoming`` / ``past`` / ``overdue``)."""
+        """Crawl one view (``upcoming`` / ``past`` / ``overdue``).
+
+        Tasks are de-duplicated by id across pages: a server that echoes page 1
+        for an out-of-range page would otherwise return every task twice, and
+        nothing downstream removes the duplicates.
+        """
         all_tasks: list[dict] = []
+        seen_ids: set[str] = set()
         for page in range(1, max_pages + 1):
             soup = self._get(f"/student/tasks_and_deadlines?view={view}&page={page}")
             tasks = self._parse_tasks_page(soup)
             if not tasks:
                 break
+            new_count = 0
             for t in tasks:
+                task_id = t.get("id") or t.get("task_id")
+                if task_id:
+                    if task_id in seen_ids:
+                        continue
+                    seen_ids.add(task_id)
                 t["view"] = view
-            all_tasks.extend(tasks)
-            log.info("%s page %d: %d items", view, page, len(tasks))
+                all_tasks.append(t)
+                new_count += 1
+            log.info("%s page %d: %d items (%d new)", view, page, len(tasks), new_count)
             if not self._has_next_page(soup, page, view):
                 break
         return all_tasks
