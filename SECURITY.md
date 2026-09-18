@@ -21,36 +21,33 @@ or drop interfaces without notice.
 **Please do not report security vulnerabilities through public GitHub issues,
 discussions, or pull requests.**
 
-### Preferred channel: GitHub Private Vulnerability Reporting
+### How to report
 
 Open a private report here:
 
 > **<https://github.com/allen546/tahuti/security/advisories/new>**
 
-This is the preferred channel: the report is visible only to the maintainers,
-you get a private fork to collaborate on a fix, and we can publish a coordinated
-advisory and CVE with credit to you.
+This is the only channel for security reports. It is private to the
+maintainers, gives you a private fork to collaborate on a fix, and lets us
+publish a coordinated advisory and CVE with credit to you.
 
-> **Prerequisite — GitHub private vulnerability reporting must be enabled for
-> this link to work.** Until then the URL returns "not found", which reads as
+There is deliberately **no email address published**. A security report is a
+record that has to stay searchable, exportable, and auditable — an inbox is
+none of those. GitHub advisories are also the only option that does not put a
+personal address in a public repository where it will be scraped and indexed.
+
+> **Prerequisite — private vulnerability reporting must be enabled for this
+> link to work.** Until then the URL returns "not found", which reads as
 > "no such repo" rather than "report here". To enable it: repository
 > **Settings → Code security and analysis → Private vulnerability reporting →
-> Enable**. No paid plan is required. Until that is switched on, use the email
-> fallback below.
+> Enable**. No paid plan is required.
 
-### Fallback: private email
-
-If you do not have (or do not want to use) a GitHub account:
-
-> **allen.haha@hotmail.com**
-
-Please do not use this address for anything other than a security report, and
-please do not include credentials or session cookies in your message.
+### What to include
 
 Include as much of the following as you can:
 
 - A description of the vulnerability and its impact.
-- The affected version (`mb --version`) and how you installed it (pip, uv, sdist).
+- The affected version (`tahuti --version`) and how you installed it (pip, uv, sdist).
 - Steps to reproduce, or a minimal proof of concept.
 - Any relevant logs, with credentials and session cookies redacted.
 
