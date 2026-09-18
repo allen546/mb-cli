@@ -1,0 +1,322 @@
+"""The exit-code contract, asserted.
+
+Every ``cmd_*`` handler's return value *is* the process exit status, so a
+handler that returns 0 on a failure is invisible to any shell caller:
+``mb notifications --read 42 || echo failed`` never fires. These tests drive
+each repaired failure path through ``main`` and assert the status, because that
+is the only thing a script can branch on. Where the failure is also reported in
+the payload, the envelope is asserted to be ``ok: false`` — an ``ok: true``
+envelope beside a non-zero status would be its own bug.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+worktree_src = str(Path(__file__).resolve().parent.parent / "src")
+if sys.path[0] != worktree_src:
+    sys.path.insert(0, worktree_src)
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from mb_cli.__main__ import (
+    EXIT_FAILURE,
+    EXIT_NOT_RUNNING,
+    EXIT_OK,
+    cmd_download,
+    cmd_view,
+    main,
+)
+
+
+@pytest.fixture()
+def isolated_config(tmp_path: Path, monkeypatch):
+    """Point config/session state at tmp_path so nothing real is touched."""
+    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+    return tmp_path
+
+
+def _state():
+    state = MagicMock()
+    state.active_profile = "default"
+    return state
+
+
+def _client():
+    client = MagicMock()
+    client.get_notification_token.return_value = ("https://hub.example", "tok")
+    return client
+
+
+def _run_main(argv):
+    """Run ``main`` and return ``(exit_code, [payload, ...])``.
+
+    ``print_payload`` is intercepted rather than stdout being scraped: the
+    payloads under test are dicts before formatting, and `--format json` is not
+    what makes them machine-readable.
+    """
+    payloads: list[dict] = []
+
+    def _capture(payload, output=None, requested_format=None):
+        payloads.append(payload)
+
+    with (
+        patch("mb_cli.__main__.print_payload", side_effect=_capture),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main(argv)
+    return exc_info.value.code, payloads
+
+
+# ── `mb notifications --read/--unread/--read-all` ─────────────────────────
+
+
+class TestNotificationsMutationExitCode:
+    """`hub.mark_read()` returns a bare bool; a False used to exit 0."""
+
+    def _run(self, argv, mark_result):
+        hub = MagicMock()
+        for mark in ("mark_read", "mark_unread", "mark_all_read"):
+            getattr(hub, mark).return_value = mark_result
+        with (
+            patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
+            patch("mb_cli.__main__.save_profile"),
+            patch("mb_cli.__main__.save_session"),
+            patch("mb_cli.__main__.MNNHubClient", return_value=hub),
+        ):
+            return _run_main(argv)
+
+    @pytest.mark.parametrize(
+        "argv,action",
+        [
+            (["notifications", "--read", "42", "--format", "json"], "read"),
+            (["notifications", "--unread", "42", "--format", "json"], "unread"),
+            (["notifications", "--read-all", "--format", "json"], "read_all"),
+        ],
+    )
+    def test_rejected_mutation_exits_nonzero_with_error_envelope(
+        self, argv, action, isolated_config
+    ):
+        code, payloads = self._run(argv, False)
+
+        assert code == EXIT_FAILURE
+        assert payloads, "a failing operation must emit a machine-readable payload"
+        payload = payloads[-1]
+        # The envelope must agree with the outcome rather than claim success
+        # over a `false` result, which is what made this undetectable.
+        assert payload["ok"] is False
+        assert payload["command"] == "notifications.mutate"
+        assert payload["error"]["code"] == f"{action}_failed"
+
+    @pytest.mark.parametrize(
+        "argv,action",
+        [
+            (["notifications", "--read", "42", "--format", "json"], "read"),
+            (["notifications", "--unread", "42", "--format", "json"], "unread"),
+            (["notifications", "--read-all", "--format", "json"], "read_all"),
+        ],
+    )
+    def test_accepted_mutation_exits_zero(self, argv, action, isolated_config):
+        code, payloads = self._run(argv, True)
+
+        assert code == EXIT_OK
+        payload = payloads[-1]
+        assert payload["ok"] is True
+        assert payload["data"]["action"] == action
+        assert payload["data"]["ok"] is True
+
+
+# ── `mb view` / `mb download` truthy error dicts ──────────────────────────
+
+
+class _ViewArgs:
+    """The argparse namespace `cmd_view` receives."""
+
+    def __init__(self, **overrides):
+        self.id = "123"
+        self.target = None
+        self.url = None
+        self.pages = None
+        self.refresh = False
+        self.subject = None
+        self.output = None
+        self.format = "json"
+        for key, value in overrides.items():
+            setattr(self, key, value)
+
+
+def test_view_detail_fetch_error_dict_exits_nonzero(capsys):
+    """`get_task_detail` returns a *truthy* `{"error": ...}` on failure.
+
+    An `if not detail:` guard cannot see that, so the error used to be nested
+    inside an `ok: true` envelope and the process exited 0.
+    """
+    client = MagicMock()
+    client.get_task_detail.return_value = {"error": "Session expired or invalid"}
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch(
+            "mb_cli.__main__.find_task_by_id",
+            return_value={"id": "123", "title": "Essay", "link": "http://x/123"},
+        ),
+    ):
+        rc = cmd_view(_ViewArgs())
+
+    assert rc == EXIT_FAILURE
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["command"] == "view"
+    assert payload["error"]["code"] == "detail_fetch_failed"
+
+
+def test_view_detail_fetch_error_dict_from_url_target_exits_nonzero(capsys):
+    """The URL branch of `view` fetches details too, and has the same hole."""
+    client = MagicMock()
+    client.get_task_detail.return_value = {"error": "boom"}
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("mb_cli.__main__.find_task_by_id", return_value=None),
+    ):
+        rc = cmd_view(
+            _ViewArgs(
+                id=None,
+                target="https://school.managebac.cn/student/classes/1/core_tasks/123",
+            )
+        )
+
+    assert rc == EXIT_FAILURE
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "detail_fetch_failed"
+
+
+def test_view_success_still_exits_zero(capsys):
+    client = MagicMock()
+    client.get_task_detail.return_value = {"attachments": [], "status": "graded"}
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch(
+            "mb_cli.__main__.find_task_by_id",
+            return_value={"id": "123", "title": "Essay", "link": "http://x/123"},
+        ),
+    ):
+        rc = cmd_view(_ViewArgs())
+
+    assert rc == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+class _DownloadArgs:
+    def __init__(self, tmp_path, **overrides):
+        self.task_id = "123"
+        self.output_dir = str(tmp_path / "out")
+        self.no_submissions = False
+        self.no_attachments = False
+        self.pages = 10
+        self.output = None
+        self.format = "json"
+        for key, value in overrides.items():
+            setattr(self, key, value)
+
+
+def _run_download(tmp_path, detail_return):
+    """Invoke `cmd_download` against a snapshot-resolved task."""
+    client = MagicMock()
+    client.get_task_detail.return_value = detail_return
+    state = MagicMock()
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "upcoming": [{"id": "123", "title": "Task", "link": "http://x/123"}],
+                "past": [],
+                "overdue": [],
+            }
+        )
+    )
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("mb_cli.__main__._authenticate_client"),
+        patch("mb_cli.__main__.load_snapshot", return_value=json.loads(snapshot_path.read_text())),
+    ):
+        return cmd_download(_DownloadArgs(tmp_path))
+
+
+def test_download_detail_fetch_error_dict_exits_nonzero(capsys, tmp_path):
+    rc = _run_download(tmp_path, {"error": "Session expired or invalid"})
+
+    assert rc == EXIT_FAILURE
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["command"] == "download"
+    assert payload["error"]["code"] == "detail_fetch_failed"
+
+
+def test_download_detail_fetch_none_still_exits_nonzero(capsys, tmp_path):
+    """The pre-existing falsy guard must keep working after extending it."""
+    rc = _run_download(tmp_path, None)
+
+    assert rc == EXIT_FAILURE
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "detail_fetch_failed"
+
+
+# ── `main`'s handling of failures it does not model ───────────────────────
+
+
+def test_unexpected_exception_emits_payload_not_traceback(isolated_config):
+    """An unmodelled exception used to escape as a raw traceback."""
+    client = MagicMock()
+    client.get_notification_token.side_effect = RuntimeError("socket exploded")
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__.save_profile"),
+        patch("mb_cli.__main__.save_session"),
+    ):
+        code, payloads = _run_main(["notifications", "--format", "json"])
+
+    assert code == EXIT_FAILURE
+    assert payloads, "the caller needs a machine-readable payload, not a traceback"
+    payload = payloads[-1]
+    assert payload["ok"] is False
+    assert payload["command"] == "notifications"
+    assert payload["error"]["code"] == "internal_error"
+    assert "socket exploded" in payload["error"]["message"]
+
+
+def test_usage_error_is_argparse_owned(isolated_config):
+    """Exit 2 belongs to argparse; handlers never return it themselves."""
+    with pytest.raises(SystemExit) as exc_info:
+        main(["not-a-command"])
+    assert exc_info.value.code == 2
+
+
+def test_command_error_maps_to_failure(isolated_config):
+    """`CommandError` keeps its machine-readable code and a non-zero status."""
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
+        patch("mb_cli.__main__.save_profile"),
+        patch("mb_cli.__main__.save_session"),
+        patch("mb_cli.__main__.MNNHubClient") as MockHub,
+    ):
+        MockHub.return_value.list.side_effect = RuntimeError("hub down")
+        code, _payloads = _run_main(["notifications", "--format", "json"])
+
+    assert code == EXIT_FAILURE
+
+
+def test_exit_code_constants_are_the_documented_contract():
+    """Pin the numbers the docstring promises, so a rename cannot drift."""
+    assert (EXIT_OK, EXIT_FAILURE, EXIT_NOT_RUNNING) == (0, 1, 3)
