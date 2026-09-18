@@ -10,9 +10,82 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.auth import build_client
-from mb_cli.config import load_creds
+from mb_cli.auth import build_client, session_email
+from mb_cli.config import AppState, ProfileConfig, SessionConfig, load_creds
 from mb_cli.exceptions import CommandError
+
+
+# ── which email identifies this profile's on-disk state ───────────────────
+#
+# The response-cache directory is a hash of the email and the keychain item is
+# filed under it, so `build_client` and `logout` must pick the same one. They
+# used to disagree: build_client took `--email`, then the profile's, then the
+# session's; logout took the session's first. With profile and session emails
+# differing, logout deleted another profile's hash directory and left the
+# JWT-bearing entries in place while reporting success.
+
+
+def _state(profile_email=None, session_email_=None):
+    return AppState(
+        config_path=Path("config.json"),
+        session_path=Path("session.json"),
+        active_profile="default",
+        profile=ProfileConfig(name="default", email=profile_email),
+        session=SessionConfig(name="default", email=session_email_),
+    )
+
+
+class TestSessionEmail:
+    def test_explicit_override_wins(self):
+        state = _state(profile_email="profile@example.com", session_email_="session@example.com")
+        assert session_email(state, "flag@example.com") == "flag@example.com"
+
+    def test_profile_email_beats_session_email(self):
+        """The precedence logout got backwards."""
+        state = _state(profile_email="profile@example.com", session_email_="session@example.com")
+        assert session_email(state) == "profile@example.com"
+
+    def test_session_email_is_the_fallback(self):
+        state = _state(session_email_="session@example.com")
+        assert session_email(state) == "session@example.com"
+
+    def test_neither_set_is_empty(self):
+        assert session_email(_state()) == ""
+
+    @pytest.mark.parametrize("blank", ["", None])
+    def test_a_blank_value_does_not_shadow_a_real_one(self, blank):
+        """`or` semantics: an empty string must fall through, not win."""
+        state = _state(profile_email=blank, session_email_="session@example.com")
+        assert session_email(state) == "session@example.com"
+        assert session_email(state, blank) == "session@example.com"
+
+    def test_build_client_keys_its_cache_dir_by_the_same_email(self):
+        """Proves the helper is what build_client actually uses.
+
+        `logout` has no `--email` of its own, so once it calls this helper the
+        cache directory it clears is the one build_client populated.
+        """
+        profile_email = "profile@example.com"
+        state = _state(profile_email=profile_email, session_email_="session@example.com")
+        with (
+            patch("mb_cli.auth.load_state", return_value=state),
+            patch("mb_cli.auth.ManageBacClient") as client_cls,
+            patch("mb_cli.auth._is_session_alive", return_value=True),
+        ):
+            client_cls.return_value.session.cookies.get.return_value = "cookie"
+            _, client, email = build_client(school="bj80")
+
+        assert email == profile_email
+        import hashlib
+
+        expected = (
+            Path.home()
+            / ".config"
+            / "tahuti"
+            / "cache"
+            / hashlib.sha256(profile_email.encode()).hexdigest()[:16]
+        )
+        assert client_cls.call_args.kwargs["cache"].cache_dir == expected
 
 
 def test_load_creds_reads_email_and_password():
