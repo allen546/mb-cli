@@ -10,7 +10,33 @@ version string in `pyproject.toml`); there are no git tags in this repository.
 
 ## [Unreleased]
 
+### Added
+- **Per-endpoint delivery outcomes.** `WebhookDispatcher.dispatch()` returns a
+  machine-readable `outcome` per endpoint — `success`, `permanent_failure` or
+  `transient_failure` — alongside the existing `success` boolean, plus
+  `retryable`, `signed`, `attempts` and `url_display` fields. Previously the
+  only signal was a bare boolean, which collapsed "delivered", "will never
+  work" and "try again later" into one value.
+- `WebhookDispatcher.retry_failed(event, results)` re-attempts only the
+  endpoints that still owe the event, skipping the ones that already delivered
+  and the ones that failed permanently. Module-level `retryable_results()`
+  (what is still owed) and `all_delivered()` (is anything owed) give a caller
+  everything needed to implement per-endpoint at-least-once.
+- `daemon test-webhook` output now carries `url_display`, `outcome`,
+  `retryable`, `signed` and `attempts`.
+
 ### Fixed
+- **A webhook with no secret no longer ships unsigned payloads silently.**
+  `if webhook.secret:` treated `""` as "no signing", so an empty secret sent
+  unsigned payloads with no warning anywhere. The dispatcher now logs an ERROR
+  once per endpoint explaining that every payload is UNSIGNED and that a
+  verifying receiver will reject it, and every result carries `signed: false`.
+- **`daemon test-webhook` now validates the URL.** `test_ping` bypassed
+  `_validate_webhook_url`, so the scheme/host guard applied on every real
+  dispatch was skipped on the one command where a user is most likely to paste
+  a wrong URL — `file://` and friends reached `requests` and surfaced as a
+  confusing network error. An invalid URL is now rejected before any network
+  call with `invalid_webhook_url:<reason>`.
 - **Webhook URLs are no longer logged verbatim.** `log.info`/`log.warning`/
   `log.error` on every delivery and retry printed the full configured URL, so
   providers that carry the credential in the path or query (Slack
