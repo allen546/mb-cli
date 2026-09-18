@@ -14,7 +14,10 @@ def test_scheduler_triggers_approaching_ddl(tmp_path: Path):
     now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     # Task due in 45 minutes
     due_dt = now + timedelta(minutes=45)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # isoformat() keeps the offset: parse_due_date returns aware datetimes,
+    # and a strftime'd string carrying no offset would be read as the host's
+    # local time rather than this test's UTC frame.
+    due_str = due_dt.isoformat()
 
     mgr.update_task(
         {
@@ -50,7 +53,7 @@ def test_scheduler_silences_submitted_tasks(tmp_path: Path):
 
     now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=30)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    due_str = due_dt.isoformat()
 
     mgr.update_task(
         {
@@ -72,7 +75,7 @@ def test_scheduler_silences_tasks_with_submitted_labels_or_grades(tmp_path: Path
 
     now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=30)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    due_str = due_dt.isoformat()
 
     # Task has NO 'status' field, but has 'Submitted' in labels and grade_score
     mgr.update_task(
@@ -96,7 +99,7 @@ def test_scheduler_extracts_class_id_from_link_for_live_check(tmp_path: Path):
 
     now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=30)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    due_str = due_dt.isoformat()
 
     # Task has NO class_id field, but has class_id in link
     mgr.update_task(
@@ -131,7 +134,7 @@ def test_scheduler_emits_standardized_deadline_approaching_payload(tmp_path: Pat
 
     now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=45)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    due_str = due_dt.isoformat()
 
     mgr.update_task(
         {

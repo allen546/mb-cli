@@ -156,7 +156,13 @@ def test_delete_submission_success():
 
     # First call returns initial_soup; second call returns empty_soup (verification passes)
     with patch.object(client, "_get", side_effect=[initial_soup, initial_soup, empty_soup, empty_soup]):
-        client.session.request.return_value = MagicMock(status_code=200, text="Turbolinks.visit(...)")
+        # _request_with_retry validates the response URL, so the stub carries a
+        # real one. It is still the same DELETE on the same session.
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            text="Turbolinks.visit(...)",
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189817",
+        )
         res = client.delete_submission("101", "202", "82189817")
 
     assert res["ok"] is True
@@ -177,7 +183,10 @@ def test_delete_submission_by_filename():
     empty_soup = _soup(HTML_EMPTY_TASK)
 
     with patch.object(client, "_get", side_effect=[initial_soup, initial_soup, empty_soup, empty_soup]):
-        client.session.request.return_value = MagicMock(status_code=200)
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189817",
+        )
         res = client.delete_submission("101", "202", "Chapter-4-Homework.pdf")
 
     assert res["ok"] is True
@@ -197,7 +206,10 @@ def test_delete_submission_server_rollback_rejection():
 
     # Server returns 200, but file remains on page during verification
     with patch.object(client, "_get", return_value=past_soup):
-        client.session.request.return_value = MagicMock(status_code=200)
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189773",
+        )
         with pytest.raises(RuntimeError, match="task deadline has passed or ManageBac server locked the submission"):
             client.delete_submission("101", "202", "82189773")
 
