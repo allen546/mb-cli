@@ -1,5 +1,12 @@
 """Webhook dispatcher supporting HTTP POST with signatures and exponential retries.
 
+Delivery is bounded by a wall-clock ceiling that covers request time as well
+as backoff sleeps, so one slow endpoint cannot pin the daemon's poll loop. Only
+genuinely transient failures are retried: 5xx, 408 and 429. Every other 4xx is
+a configuration or credential problem that no backoff can fix. Redirects are
+reported, never followed — following one would re-send the signed body and the
+signature headers to a different host.
+
 The signature covers the timestamp and the body together::
 
     signed_material = f"{X-MB-Timestamp}.".encode("utf-8") + request_body
@@ -21,9 +28,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import requests
 
 from .events import MBEvent, WebhookConfig
@@ -32,10 +40,33 @@ log = logging.getLogger(__name__)
 
 SIGNATURE_PREFIX = "sha256="
 
-# Hard ceiling on total time spent retrying one event, so a slow or hostile
-# endpoint cannot pin the daemon's thread indefinitely.
+# Hard ceiling on the WALL-CLOCK time one event may cost across every attempt,
+# including request time. It bounds the whole delivery, not just the sleeps
+# between attempts: a single attempt may not run longer than what is left of
+# the budget either, so a slow endpoint cannot pin the poll loop.
 MAX_TOTAL_RETRY_SECONDS = 60.0
+
+# Exponential backoff base between attempts (1s, 2s, 4s, ...).
+BACKOFF_BASE_SECONDS = 1.0
+
 _ALLOWED_SCHEMES = ("https", "http")
+
+# Statuses that are worth another attempt. 408 (timeout) and 429 (throttled)
+# are the only 4xx that can succeed on a retry; every other 4xx is a
+# configuration, credential or routing problem that no backoff can fix.
+_RETRYABLE_STATUSES = frozenset({408, 425, 429})
+_RETRYABLE_STATUS_RANGES = ((500, 600),)
+
+_MASK = "***"
+
+
+def _is_retryable_status(status_code: object) -> bool:
+    """Whether an HTTP status deserves another attempt."""
+    if not isinstance(status_code, int):
+        return False
+    if status_code in _RETRYABLE_STATUSES:
+        return True
+    return any(lo <= status_code < hi for lo, hi in _RETRYABLE_STATUS_RANGES)
 
 
 def signed_material(timestamp: str, payload_bytes: bytes) -> bytes:
@@ -75,7 +106,7 @@ def _validate_webhook_url(url: str) -> str | None:
     if not url:
         return "empty_url"
     try:
-        parsed = urlparse(url)
+        parsed = urlsplit(url)
     except ValueError as exc:
         return f"malformed_url: {exc}"
     if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
@@ -85,8 +116,130 @@ def _validate_webhook_url(url: str) -> str | None:
     return None
 
 
+# ── Credential redaction for logs ───────────────────────────────────────
+# Push providers routinely put the credential itself in the path or the query
+# (Slack `…/services/T…/B…/<token>`, Bark `api.day.app/<key>/…`, WeCom
+# `…/send?key=…`). Logging the URL verbatim therefore writes a live token into
+# daemon.log, which `daemon install` leaves at default umask permissions.
+
+# Query parameters whose *name* marks the value as a credential.
+_SECRETISH_QUERY_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "api-key",
+        "apikey",
+        "auth",
+        "authorization",
+        "device_key",
+        "devicekey",
+        "key",
+        "keys",
+        "passwd",
+        "password",
+        "pwd",
+        "secret",
+        "sig",
+        "sign",
+        "signature",
+        "token",
+        "webhook_key",
+    }
+)
+
+_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _looks_like_token(segment: str) -> bool:
+    """Whether a URL segment is a credential rather than a human-readable word.
+
+    Deliberately narrow so ordinary path words (``services``, ``webhook``,
+    ``core_tasks``, ``Homework3``) survive redaction and the log line stays
+    debuggable. A segment must look like a random credential:
+
+    - 20+ characters of base64/hex/uuid-ish material, OR
+    - 8+ characters of UPPERCASE-and-digit material (Slack's ``T0AAAA…`` /
+      ``B0BBBB…`` team and bot ids).
+    """
+    if len(segment) < 8 or not _TOKEN_SHAPE.match(segment):
+        return False
+    if len(segment) >= 20:
+        return True
+    has_upper = any(c.isupper() for c in segment)
+    has_digit = any(c.isdigit() for c in segment)
+    return has_upper and has_digit and segment == segment.upper()
+
+
+def _redact_path(path: str) -> str:
+    """Mask credential-bearing path segments, keeping the path shape."""
+    if not path:
+        return path
+    return "/".join(
+        _MASK if seg and _looks_like_token(seg) else seg for seg in path.split("/")
+    )
+
+
+def _redact_query(query: str) -> str:
+    """Mask credential-bearing query values, keeping parameter names."""
+    if not query:
+        return query
+    redacted = []
+    for name, value in parse_qsl(query, keep_blank_values=True):
+        if name.lower() in _SECRETISH_QUERY_KEYS or (
+            value and _looks_like_token(value)
+        ):
+            redacted.append(f"{name}={_MASK}")
+        else:
+            redacted.append(f"{name}={value}")
+    return "&".join(redacted)
+
+
+def redact_webhook_url(url: str | None, limit: int = 160) -> str:
+    """Render a webhook URL safe to log: host and path shape kept, secrets masked.
+
+    ``https://hooks.slack.com/services/T0AAA/B0BBB/xOXpAb…`` becomes
+    ``https://hooks.slack.com/services/***/***/***``, and
+    ``https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<uuid>`` becomes
+    ``…/send?key=***``. Any ``user:password@`` userinfo is dropped outright.
+    """
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        # Unparseable (e.g. a bad IPv6 literal) — refuse to log it at all
+        # rather than guess where the credential is.
+        return _MASK
+
+    netloc = hostname or ""
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    if parts.username or parts.password:
+        netloc = f"{_MASK}@{netloc}" if netloc else _MASK
+
+    redacted = urlunsplit(
+        (
+            parts.scheme,
+            netloc,
+            _redact_path(parts.path),
+            _redact_query(parts.query),
+            "",  # fragment: never meaningful in a webhook URL
+        )
+    )
+    return _sanitize_for_log(redacted, limit)
+
+
 class WebhookDispatcher:
-    """Dispatches MBEvents to configured webhook endpoints."""
+    """Dispatches MBEvents to configured webhook endpoints.
+
+    ``transport``, ``clock`` and ``sleep`` are seams for deterministic tests:
+    they default to :func:`requests.post`, :func:`time.monotonic` and
+    :func:`time.sleep`. ``transport`` receives the same keyword arguments
+    :func:`requests.post` does and must return an object exposing
+    ``status_code``, ``text`` and ``headers``.
+    """
 
     def __init__(
         self,
@@ -94,11 +247,19 @@ class WebhookDispatcher:
         verify_tls: bool = True,
         timeout: float = 10.0,
         max_retries: int = 3,
+        total_budget_seconds: float = MAX_TOTAL_RETRY_SECONDS,
+        transport: Any | None = None,
+        clock: Any | None = None,
+        sleep: Any | None = None,
     ):
         self.webhooks = webhooks or []
         self.verify_tls = verify_tls
         self.timeout = timeout
         self.max_retries = max_retries
+        self.total_budget_seconds = total_budget_seconds
+        self._transport = transport or requests.post
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or time.sleep
 
     @staticmethod
     def _compute_signature(secret: str, timestamp: str, payload_bytes: bytes) -> str:
@@ -120,7 +281,11 @@ class WebhookDispatcher:
 
             reason = _validate_webhook_url(webhook.url)
             if reason:
-                log.error("Refusing to dispatch to %s: %s", webhook.url, reason)
+                log.error(
+                    "Refusing to dispatch to %s: %s",
+                    redact_webhook_url(webhook.url),
+                    reason,
+                )
                 results.append(
                     {
                         "url": webhook.url,
@@ -152,6 +317,14 @@ class WebhookDispatcher:
     def _post_with_retry(
         self, webhook: WebhookConfig, payload_bytes: bytes, event_type: str
     ) -> tuple[bool, int | None, str | None]:
+        """POST one endpoint, with exponential backoff inside a hard ceiling.
+
+        The ceiling is wall-clock and covers request time as well as backoff
+        sleeps, so the total cost of one event is bounded no matter how slow the
+        endpoint is. Only transient failures are retried.
+        """
+        display = redact_webhook_url(webhook.url)
+
         # Wall-clock timestamp for the envelope; signed together with the body
         # so the header a receiver checks for freshness cannot be forged.
         timestamp = _wall_clock_timestamp()
@@ -168,56 +341,117 @@ class WebhookDispatcher:
 
         last_error: str | None = None
         status_code: int | None = None
-        started = time.monotonic()
+        attempts = 0
+        started = self._clock()
 
-        for attempt in range(self.max_retries):
+        for attempt in range(1, max(1, self.max_retries) + 1):
+            attempts = attempt
+            remaining = self.total_budget_seconds - (self._clock() - started)
+            if remaining <= 0:
+                last_error = last_error or "delivery_budget_exhausted"
+                log.error(
+                    "Aborting webhook to %s after %d attempt(s): exhausted the "
+                    "%.1fs delivery budget",
+                    display,
+                    attempt - 1,
+                    self.total_budget_seconds,
+                )
+                break
+
             try:
-                r = requests.post(
-                    webhook.url,
+                # The request timeout is clamped to the remaining budget so the
+                # *last* attempt cannot outrun the ceiling either.
+                r = self._transport(
+                    url=webhook.url,
                     data=payload_bytes,
                     headers=headers,
-                    timeout=self.timeout,
+                    timeout=min(self.timeout, remaining),
                     verify=self.verify_tls,
+                    # A 3xx must not be followed: `requests` would replay the
+                    # signed body and the signature headers to a *different*
+                    # host (307) or downgrade https to http (301/302), which is
+                    # exactly what signing is meant to prevent.
+                    allow_redirects=False,
                 )
-                status_code = r.status_code
-                if r.status_code < 400:
+                status_code = getattr(r, "status_code", None)
+                body = getattr(r, "text", "") or ""
+
+                if isinstance(status_code, int) and status_code < 300:
                     log.info(
-                        "Webhook delivered successfully to %s (status %d)",
-                        webhook.url,
-                        r.status_code,
+                        "Webhook delivered to %s (status %d, %d attempt(s))",
+                        display,
+                        status_code,
+                        attempt,
                     )
                     return True, status_code, None
-                # Sanitize the remote body before it reaches logs or JSON output.
-                last_error = _sanitize_for_log(
-                    f"HTTP {r.status_code}: {r.text}"
-                )
-            except Exception as exc:
-                last_error = _sanitize_for_log(str(exc))
 
-            if attempt < self.max_retries - 1:
-                delay = 1.0 * (2**attempt)
-                elapsed = time.monotonic() - started
-                if elapsed + delay > MAX_TOTAL_RETRY_SECONDS:
+                last_error = _sanitize_for_log(f"HTTP {status_code}: {body}")
+
+                if isinstance(status_code, int) and 300 <= status_code < 400:
+                    # The endpoint has moved — that is a config fix, not a
+                    # backoff problem.
+                    location = _sanitize_for_log(
+                        str((getattr(r, "headers", None) or {}).get("Location", "")),
+                        120,
+                    )
+                    last_error = f"HTTP {status_code}: redirect_not_followed"
+                    if location:
+                        last_error += f" (Location: {location})"
                     log.error(
-                        "Aborting retries for %s after %.1fs total",
-                        webhook.url,
-                        elapsed,
+                        "Webhook to %s returned %d and is not being followed: "
+                        "redirecting would re-send the signed payload to a new "
+                        "host (%s). Fix the configured URL instead.",
+                        display,
+                        status_code,
+                        redact_webhook_url(location) or "unknown",
                     )
                     break
+
+                if not _is_retryable_status(status_code):
+                    log.error(
+                        "Webhook to %s failed permanently with HTTP %s — "
+                        "retrying a non-retryable status would only delay the "
+                        "diagnosis",
+                        display,
+                        status_code,
+                    )
+                    break
+            except Exception as exc:
+                # Network-level fault: retryable.
+                last_error = _sanitize_for_log(str(exc))
+
+            if attempt < max(1, self.max_retries):
+                remaining = self.total_budget_seconds - (self._clock() - started)
+                if remaining <= 0:
+                    last_error = last_error or "delivery_budget_exhausted"
+                    log.error(
+                        "Aborting webhook to %s after %d attempt(s): exhausted "
+                        "the %.1fs delivery budget",
+                        display,
+                        attempt,
+                        self.total_budget_seconds,
+                    )
+                    break
+                # Backoff is clamped to the remaining budget so the sleeps
+                # alone can never push the total past the ceiling.
+                delay = min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), remaining)
                 log.warning(
-                    "Webhook to %s failed (%s) — retrying in %.1fs (attempt %d/%d)",
-                    webhook.url,
+                    "Webhook to %s failed (%s) — retrying in %.1fs "
+                    "(attempt %d/%d, %.1fs of the %.1fs budget used)",
+                    display,
                     last_error,
                     delay,
-                    attempt + 1,
+                    attempt,
                     self.max_retries,
+                    self._clock() - started,
+                    self.total_budget_seconds,
                 )
-                time.sleep(delay)
+                self._sleep(delay)
 
         log.error(
-            "Failed to deliver webhook to %s after %d attempts: %s",
-            webhook.url,
-            self.max_retries,
+            "Failed to deliver webhook to %s after %d attempt(s): %s",
+            display,
+            attempts,
             last_error,
         )
         return False, status_code, last_error
