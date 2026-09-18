@@ -702,7 +702,7 @@ class TestDefaults:
     def test_default_cache_dir(self):
         from mb_cli.cache import DEFAULT_CACHE_DIR
 
-        assert DEFAULT_CACHE_DIR == Path.home() / ".config" / "mb-crawler" / "cache"
+        assert DEFAULT_CACHE_DIR == Path.home() / ".config" / "tahuti" / "cache"
 
     def test_default_enabled(self, tmp_path: Path):
         cache = ResponseCache(cache_dir=tmp_path)
@@ -714,7 +714,7 @@ class TestDefaults:
 
     def test_none_cache_dir_uses_default(self):
         cache = ResponseCache(cache_dir=None)
-        assert cache.cache_dir == Path.home() / ".config" / "mb-crawler" / "cache"
+        assert cache.cache_dir == Path.home() / ".config" / "tahuti" / "cache"
 
     def test_string_cache_dir_converted_to_path(self, tmp_path: Path):
         cache = ResponseCache(cache_dir=str(tmp_path))

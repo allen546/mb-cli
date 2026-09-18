@@ -327,7 +327,7 @@ class TestBuildClient:
 
         from pathlib import Path
         mock_load_creds.assert_called_once_with(
-            str(Path.home() / ".config" / "mb-crawler" / "creds.json")
+            str(Path.home() / ".config" / "tahuti" / "creds.json")
         )
         mock_client.login.assert_called_once_with(
             "allen@example.com", "pass123", remember=True
