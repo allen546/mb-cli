@@ -7,7 +7,6 @@ import random
 import re
 import time
 from typing import Any
-from bs4 import BeautifulSoup
 
 from ..client import ManageBacClient
 from ..filters import is_submitted_badge

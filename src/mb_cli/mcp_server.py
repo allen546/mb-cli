@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from mcp.server.fastmcp import FastMCP
 
 from .auth import build_client
-from .client import ManageBacClient, parse_task_url
+from .client import parse_task_url
 from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)

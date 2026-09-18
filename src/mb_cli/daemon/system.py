@@ -239,7 +239,6 @@ class ServiceManager:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         python_bin = sys.executable
-        mb_bin = shutil.which("mb") or f"{python_bin} -m mb_cli"
 
         args_xml = f"""    <string>{python_bin}</string>
     <string>-m</string>

@@ -25,7 +25,6 @@ from .daemon import (
     DaemonConfig,
     DaemonService,
     ServiceManager,
-    WebhookConfig,
     WebhookDispatcher,
     configure_channel_send,
     configure_webhook,
@@ -37,7 +36,6 @@ from .daemon import _resolve_secret
 from .exceptions import CommandError
 from .filters import (
     classify_task_view,
-    filter_result_by_subject,
     find_task_by_id,
     result_views,
 )
@@ -361,7 +359,6 @@ def cmd_list(args) -> int:
         crawled_at_str = old_snapshot.get("crawled_at")
         if crawled_at_str:
             try:
-                from datetime import datetime
                 crawled_at = datetime.fromisoformat(crawled_at_str)
                 age = (datetime.now() - crawled_at).total_seconds()
                 if age < 900:  # 15 minutes TTL

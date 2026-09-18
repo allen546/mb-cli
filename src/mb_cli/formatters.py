@@ -14,8 +14,6 @@ from .task_status import (
     get_task_display_grade,
     get_task_display_status,
     is_task_completed,
-    is_task_submitted,
-    is_task_todo,
 )
 
 

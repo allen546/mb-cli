@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import re
 
 
@@ -27,15 +26,11 @@ def filter_result_by_subject(result: dict, subject: str) -> dict:
 
 from .task_status import (
     GradeStatus,
-    SubmissionStatus,
     classify_task_view,
     get_grade_status,
-    get_submission_status,
     is_submitted_badge,
     is_task_completed,
-    is_task_graded,
     is_task_submitted,
-    is_task_submitted_or_graded,
     is_task_todo,
 )
 
