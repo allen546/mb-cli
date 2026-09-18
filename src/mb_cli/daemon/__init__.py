@@ -1,4 +1,4 @@
-"""Daemon package for mb-cli real-time notifications and deadline tracking."""
+"""Daemon package for tahuti real-time notifications and deadline tracking."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..client import ManageBacClient
+from ..config import config_dir
 from .events import (
     DEFAULT_REMINDER_THRESHOLDS,
     DaemonConfig,
@@ -59,9 +60,9 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DAEMON_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.json"
+DEFAULT_DAEMON_PATH = config_dir() / "daemon.json"
 DEFAULT_WEBHOOK_URL = "http://127.0.0.1:42617/webhook"
-DEFAULT_SNAPSHOT_PATH = Path.home() / ".config" / "mb-crawler" / "snapshot.json"
+DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
 
 DEFAULT_ACTIVE_WINDOWS: list[list[str]] = [
     ["07:00", "07:30"],
@@ -343,7 +344,7 @@ def _post_webhook(
     import requests
     message = "\n".join(alert["message"] for alert in alerts)
     footer = (
-        f"\n[mb-crawler daemon] student={result.get('student_name')} "
+        f"\n[tahuti daemon] student={result.get('student_name')} "
         f"upcoming={result.get('summary', {}).get('upcoming_count', '?')}"
     )
     payload = {"message": message + footer}
@@ -440,7 +441,7 @@ def _is_mb_cli_pid(pid: int) -> bool:
         # No bare "mb" here: it matches unrelated processes (systemd, etc.)
         # and a stale pid file would then signal the wrong process.
         return any(
-            k in cmdline for k in ("mb-cli", "mb_cli", "mb_crawler", "mb.cli")
+            k in cmdline for k in ("tahuti", "mb_cli", "mb_crawler", "mb.cli")
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
