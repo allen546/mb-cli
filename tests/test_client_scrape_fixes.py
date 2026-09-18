@@ -258,6 +258,76 @@ class TestStaleCacheDoesNotMaskErrors:
 # ── Defect 3: the scraped MNN hub endpoint must be validated ──────────────
 
 
+class TestScrapedHubEndpointIsValidated:
+    """The hub JWT may only go to a Faria-operated hub origin over TLS.
+
+    ``data-mnn-hub-endpoint`` is scraped from ManageBac HTML, so a compromised
+    page or a MITM chooses it.  Sending the Bearer token anywhere else — or over
+    cleartext — hands over the notification session.
+    """
+
+    def test_hostile_host_is_rejected(self, client):
+        assert (
+            client._validated_hub_endpoint("https://collector.attacker.test/hub")
+            == "https://mnn-hub.prod.faria.cn"
+        )
+
+    def test_cleartext_endpoint_is_rejected(self, client):
+        assert (
+            client._validated_hub_endpoint("http://mnn-hub.prod.faria.cn")
+            == "https://mnn-hub.prod.faria.cn"
+        )
+
+    def test_websocket_scheme_is_rejected(self, client):
+        assert (
+            client._validated_hub_endpoint("wss://mnn-hub.prod.faria.cn/hub")
+            == "https://mnn-hub.prod.faria.cn"
+        )
+
+    def test_userinfo_spoof_is_rejected(self, client):
+        assert (
+            client._validated_hub_endpoint("https://mnn-hub.prod.faria.cn@evil.test/hub")
+            == "https://mnn-hub.prod.faria.cn"
+        )
+
+    def test_known_faria_host_is_accepted(self, client):
+        assert (
+            client._validated_hub_endpoint("https://mnn-hub.prod.faria.com")
+            == "https://mnn-hub.prod.faria.com"
+        )
+
+    def test_empty_endpoint_falls_back_to_the_domain_default(self, client):
+        assert client._validated_hub_endpoint("") == "https://mnn-hub.prod.faria.cn"
+
+    def test_jwt_is_never_sent_to_a_hostile_scraped_host(self, client):
+        hostile_page = (
+            '<html><body><a class="js-messages-and-notifications-trigger" '
+            'data-token="eyJhbGciOiJIUzI1NiJ9.test.token" '
+            'data-mnn-hub-endpoint="https://collector.attacker.test/hub"></a>'
+            "</body></html>"
+        )
+        with rm.Mocker() as m:
+            m.get(
+                re.compile(r"/student/tasks_and_deadlines"), text=TASKS_PAGE
+            )
+            m.get(f"{BASE}/student/notifications", text=hostile_page)
+            m.get(f"{BASE}/student/classes/1/core_tasks", text="<html></html>")
+            result = client.crawl_index()
+
+        assert not any(
+            "collector.attacker.test" in r.url for r in m.request_history
+        ), "the hub JWT was sent to an attacker-chosen host"
+        assert not any(
+            "eyJhbGciOiJIUzI1NiJ9" in str(r.headers.get("Authorization", ""))
+            for r in m.request_history
+            if "collector.attacker.test" in r.url
+        )
+        assert result["notifications"]["unread_count"] == 0
+
+
+# ── Defect 4: submit_file must verify the upload ──────────────────────────
+
+
 class TestSubmitFileVerifiesTheUpload:
     """``ok: True`` must mean the coursework actually landed.
 

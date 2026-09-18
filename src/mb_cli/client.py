@@ -980,7 +980,9 @@ class ManageBacClient:
     def get_notification_token(self, bypass_cache: bool = False) -> tuple[str, str]:
         """Extract MNN hub endpoint and JWT from the notifications page.
 
-        Returns ``(hub_endpoint, jwt_token)``.
+        Returns ``(hub_endpoint, jwt_token)``.  ``hub_endpoint`` is whatever the
+        page said — pass it through :meth:`_validated_hub_endpoint` before use,
+        since it is attacker-influenced scraped HTML.
         """
         soup = self._get("/student/notifications", bypass_cache=bypass_cache)
         trigger = soup.find("a", class_="js-messages-and-notifications-trigger")
@@ -991,12 +993,97 @@ class ManageBacClient:
             trigger.get("data-token", ""),
         )
 
+    def _validated_hub_endpoint(self, scraped: str) -> str:
+        """Return the only hub origin the JWT may be sent to.
+
+        ``data-mnn-hub-endpoint`` comes verbatim out of scraped ManageBac HTML,
+        so a compromised page, a poisoned edge, or a TLS-stripping MITM chooses
+        it.  Handing it to ``MNNHubClient`` unexamined put the ``Authorization:
+        Bearer <jwt>`` header on whatever host was named — and an ``http://``
+        endpoint shipped the token in cleartext.
+
+        The scraped value is used only when it is https **and** its host is one
+        of the Faria-operated hubs in ``notifications.HUB_ENDPOINTS`` (which
+        contains the expected host for this domain).  Anything else — a foreign
+        host, a cleartext scheme, a ``wss://`` scheme, or a userinfo spoof like
+        ``https://mnn-hub.prod.faria.cn@evil.test`` — falls back to
+        ``hub_for_domain(self.domain)``.
+        """
+        from .notifications import HUB_ENDPOINTS, hub_for_domain
+
+        fallback = hub_for_domain(self.domain)
+        candidate = (scraped or "").strip()
+        if not candidate:
+            return fallback
+
+        parsed = urlparse(candidate)
+        host = parsed.netloc.lower()
+        if parsed.scheme.lower() != "https" or not host:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r (not https); using %s",
+                candidate,
+                fallback,
+            )
+            return fallback
+        # Reject "user@host" and "host:port" spellings outright: urlparse folds
+        # both into netloc, so a naive startswith check would be fooled.
+        if "@" in host or ":" in host:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r (unexpected host form %r); using %s",
+                candidate,
+                host,
+                fallback,
+            )
+            return fallback
+
+        known_hosts = {urlparse(e).netloc.lower() for e in HUB_ENDPOINTS.values()}
+        if host not in known_hosts:
+            log.warning(
+                "Ignoring scraped MNN hub endpoint %r — host %r is not a known "
+                "Faria hub; using %s",
+                candidate,
+                host,
+                fallback,
+            )
+            return fallback
+
+        return f"https://{host}"
+
+    def _fetch_notifications(self) -> dict:
+        """Pull unread count + items from the MNN hub.
+
+        Both the light ``crawl_index`` and the full ``crawl_all`` need this, and
+        the two copies had drifted into the same unvalidated-endpoint shape, so
+        the logic lives here once.
+        """
+        hub_endpoint, token = self.get_notification_token()
+        if not hub_endpoint:
+            return {"unread_count": 0, "items": []}
+
+        from .notifications import MNNHubClient
+
+        hub = MNNHubClient(self._validated_hub_endpoint(hub_endpoint), token)
+        stats = hub.stats()
+        result = hub.list(page=1, per_page=10, filter_="unread")
+        return {
+            "unread_count": stats.get("unread_count", 0),
+            "items": result.get("items", []),
+        }
+
     # ── File submission ─────────────────────────────────────────────────
 
     def submit_file(self, class_id: str, task_id: str, file_path: str) -> dict:
         """Upload a file to a task's dropbox.
 
         Returns ``{"ok": True, "filename": ..., "task_url": ...}``.
+
+        Raises
+        ------
+        RuntimeError
+            If the upload did not actually land.  ManageBac signals rejection
+            with a 200 and an explanatory sentence, so the response is inspected
+            rather than assumed — reporting ``ok: True`` for a rejected upload
+            tells the user coursework was submitted when it was not.
         """
         from pathlib import Path
 
@@ -2196,19 +2283,7 @@ class ManageBacClient:
 
         notifications: dict = {"unread_count": 0, "items": []}
         try:
-            hub_endpoint, token = self.get_notification_token()
-            if hub_endpoint:
-                from .notifications import MNNHubClient, hub_for_domain
-
-                if not hub_endpoint:
-                    hub_endpoint = hub_for_domain(self.domain)
-                hub = MNNHubClient(hub_endpoint, token)
-                stats = hub.stats()
-                result = hub.list(page=1, per_page=10, filter_="unread")
-                notifications = {
-                    "unread_count": stats.get("unread_count", 0),
-                    "items": result.get("items", []),
-                }
+            notifications = self._fetch_notifications()
         except Exception as exc:
             log.warning("notifications fetch failed: %s", exc)
 
@@ -2307,19 +2382,7 @@ class ManageBacClient:
         # Retrieve notifications
         notifications: dict = {"unread_count": 0, "items": []}
         try:
-            hub_endpoint, token = self.get_notification_token()
-            if hub_endpoint:
-                from .notifications import MNNHubClient, hub_for_domain
-
-                if not hub_endpoint:
-                    hub_endpoint = hub_for_domain(self.domain)
-                hub = MNNHubClient(hub_endpoint, token)
-                stats = hub.stats()
-                result = hub.list(page=1, per_page=10, filter_="unread")
-                notifications = {
-                    "unread_count": stats.get("unread_count", 0),
-                    "items": result.get("items", []),
-                }
+            notifications = self._fetch_notifications()
         except Exception as exc:
             log.warning("notifications fetch failed: %s", exc)
 
