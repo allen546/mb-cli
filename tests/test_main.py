@@ -539,14 +539,123 @@ class TestMainNotifications:
 
 class TestMainDaemon:
     def test_daemon_stop(self, tmp_path: Path, monkeypatch):
+        """A stop that stopped something exits 0.
+
+        REPLACED: this test used to assert ``code == 0`` on the exact
+        "did nothing" payload (``{"stopped": False, "reason":
+        "pid_file_missing"}``), which pinned the defect — a `stop && start`
+        script read that exit code and silently ran two daemons.
+        """
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
 
-        with patch("mb_cli.__main__.stop_daemon") as mock_stop:
-            mock_stop.return_value = {"stopped": False, "reason": "pid_file_missing"}
+        with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.stop_background.return_value = {
+                "stopped": True,
+                "pid": 4242,
+            }
             with patch("builtins.print"):
                 with pytest.raises(SystemExit) as exc_info:
                     main(["daemon", "stop", "--format", "json"])
+                assert exc_info.value.code == 0
+
+    def test_daemon_stop_that_stopped_nothing_exits_nonzero(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`{"stopped": false, "reason": "pid_file_missing"}` is a failure."""
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+
+        with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.stop_background.return_value = {
+                "stopped": False,
+                "reason": "not_running",
+            }
+            with patch("mb_cli.__main__.stop_daemon") as mock_stop:
+                mock_stop.return_value = {
+                    "stopped": False,
+                    "reason": "pid_file_missing",
+                    "pid_file": str(tmp_path / "config.pid"),
+                }
+                with patch("builtins.print") as mock_print:
+                    with pytest.raises(SystemExit) as exc_info:
+                        main(["daemon", "stop", "--format", "json"])
+                    assert exc_info.value.code == 1
+        payload = json.loads(mock_print.call_args[0][0])
+        assert payload["ok"] is True
+        assert payload["data"]["stopped"] is False
+        # The payload must not pretend the config's pid file was the one asked
+        # about when the user named one.
+        assert "pid_file_fallback" in payload["data"]
+
+    def test_daemon_stop_reports_both_pid_paths_when_falling_back(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`--pid-file` must not be silently substituted by daemon.json's."""
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        mine = tmp_path / "mine.pid"
+
+        with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.stop_background.return_value = {
+                "stopped": False,
+                "reason": "not_running",
+            }
+            with patch("mb_cli.__main__.stop_daemon") as mock_stop:
+                mock_stop.return_value = {
+                    "stopped": False,
+                    "reason": "pid_file_missing",
+                    "pid_file": str(tmp_path / "config.pid"),
+                }
+                with patch("builtins.print") as mock_print:
+                    with pytest.raises(SystemExit):
+                        main(
+                            [
+                                "daemon",
+                                "stop",
+                                "--pid-file",
+                                str(mine),
+                                "--format",
+                                "json",
+                            ]
+                        )
+        data = json.loads(mock_print.call_args[0][0])["data"]
+        assert data["pid_file_requested"] == str(mine)
+        assert data["pid_file_fallback"] == str(tmp_path / "config.pid")
+
+    def test_daemon_status_not_running_exits_nonzero(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+
+        with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.status.return_value = {
+                "running": False,
+                "pid": None,
+                "pid_file": str(tmp_path / "daemon.pid"),
+                "log_file": str(tmp_path / "daemon.log"),
+            }
+            with patch("builtins.print") as mock_print:
+                with pytest.raises(SystemExit) as exc_info:
+                    main(["daemon", "status", "--format", "json"])
+                assert exc_info.value.code == 1
+        assert json.loads(mock_print.call_args[0][0])["data"]["running"] is False
+
+    def test_daemon_status_running_exits_zero(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+
+        with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+            mock_mgr_cls.return_value.status.return_value = {
+                "running": True,
+                "pid": 4242,
+                "pid_file": str(tmp_path / "daemon.pid"),
+                "log_file": str(tmp_path / "daemon.log"),
+            }
+            with patch("builtins.print"):
+                with pytest.raises(SystemExit) as exc_info:
+                    main(["daemon", "status", "--format", "json"])
                 assert exc_info.value.code == 0
 
     def test_daemon_configure_webhook(self, tmp_path: Path, monkeypatch):
