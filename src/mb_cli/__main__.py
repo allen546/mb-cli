@@ -1658,15 +1658,21 @@ def cmd_download(args) -> int:
     # 2. Fetch task details
     log.info("Fetching details for task %s...", task_id)
     detail = client.get_task_detail(link, from_hint=False)
-    # A fetch failure comes back as a *truthy* `{"error": ...}` dict, which
-    # `not detail` alone never sees — the run would report `downloaded_count: 0`
-    # under an `ok: true` envelope and exit 0.
-    if not detail or (isinstance(detail, dict) and detail.get("error")):
+    # A fetch failure used to come back as a *truthy* `{"error": ...}` dict,
+    # which `not detail` alone never saw — the run would report
+    # `downloaded_count: 0` under an `ok: true` envelope and exit 0.
+    # `get_task_detail` now returns `None` and logs the reason instead, so the
+    # dict shape is defence-in-depth; keep reading its message when one turns up.
+    detail_error = ""
+    if isinstance(detail, dict):
+        detail_error = str(detail.get("error") or "")
+    if not detail or detail_error:
         payload = error(
             "download",
             "detail_fetch_failed",
             f"Failed to fetch details for task {task_id}."
-            + (f" Detail fetch error: {detail_error}" if detail_error else ""),
+            + (f" Detail fetch error: {detail_error}" if detail_error else
+               " The reason is in the log above."),
         )
         print_payload(payload, args.output, args.format)
         return EXIT_FAILURE
