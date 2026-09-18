@@ -31,22 +31,21 @@ This is the preferred channel: the report is visible only to the maintainers,
 you get a private fork to collaborate on a fix, and we can publish a coordinated
 advisory and CVE with credit to you.
 
-> **OWNER ACTION REQUIRED — GitHub private vulnerability reporting must be
-> enabled before this link works.** Until then the URL returns "not found",
-> which reads as "no such repo" rather than "report here". To enable it:
-> repository **Settings → Code security and analysis → Private vulnerability
-> reporting → Enable**. No paid plan is required. Until that is switched on, use
-> the email fallback below.
+> **Prerequisite — GitHub private vulnerability reporting must be enabled for
+> this link to work.** Until then the URL returns "not found", which reads as
+> "no such repo" rather than "report here". To enable it: repository
+> **Settings → Code security and analysis → Private vulnerability reporting →
+> Enable**. No paid plan is required. Until that is switched on, use the email
+> fallback below.
 
 ### Fallback: private email
 
 If you do not have (or do not want to use) a GitHub account:
 
-> **`SECURITY_CONTACT_PLACEHOLDER@example.invalid`**
->
-> **OWNER ACTION REQUIRED — this is a placeholder and is NOT monitored.** Replace
-> it with a real, privately monitored address before publishing, or delete this
-> section if GitHub private reporting is the only channel you intend to run.
+> **allen.haha@hotmail.com**
+
+Please do not use this address for anything other than a security report, and
+please do not include credentials or session cookies in your message.
 
 Include as much of the following as you can:
 

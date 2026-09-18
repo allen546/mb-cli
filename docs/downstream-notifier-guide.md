@@ -6,52 +6,22 @@ This guide documents the architecture, configuration, and operation of the stand
 
 ## 1. Architectural Overview
 
-`mb-cli` is architected as an **unopinionated event producer**. It handles authentication, ManageBac MNN notification polling, HTML delta crawling, and deadline countdown tracking. It dispatches standardized, typed event envelopes (`MBEvent`) over HTTP webhooks or through Python's `async for event in daemon.stream()`.
+`tahuti` is architected as an **unopinionated event producer**. It handles authentication, ManageBac MNN notification polling, HTML delta crawling, and deadline countdown tracking. It dispatches standardized, typed event envelopes (`MBEvent`) over HTTP webhooks or through Python's `async for event in daemon.stream()`.
 
-The standalone notifier in `extras/mb-notifier` acts as a **specialized downstream consumer**. It listens for webhook events from `mb-cli`, filters redundant alerts, maps course names to concise aliases, formats compact multi-line text optimized for iOS notification screens, and routes alerts to Apple devices via the Bark push notification service.
+The standalone notifier in `extras/mb-notifier` acts as a **specialized downstream consumer**. It listens for webhook events from `tahuti`, filters redundant alerts, maps course names to concise aliases, formats compact multi-line text optimized for iOS notification screens, and routes alerts to Apple devices via the Bark push notification service.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ManageBac Cloud (managebac.com / .cn)                     │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTPS (Polling & HTML Scrape)
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       mb-cli (Core Event Producer)                          │
-│                                                                             │
-│  - Session Auth & Automated Token Refresh                                   │
-│  - Real-Time MNN Notification Polling & HTML Crawling                       │
-│  - Background Deadline Countdown Evaluator                                  │
-│  - State Tracking & Delta Detection                                         │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTP POST /webhook (JSON MBEvent)
-                                       │ (Headers: X-MB-Event, X-MB-Signature)
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│             extras/mb-notifier (bark_webhook_receiver.py)                   │
-│                                                                             │
-│  - HTTP Webhook Server (Default port: 42617)                                │
-│  - Event De-duplication & State-Based Suppression                           │
-│  - Course Alias Translation (course_aliases.json, dynamic hot-reload)       │
-│  - Mobile Viewport Optimization (Strict 3-field / 4-line layout)            │
-│  - Event-Specific Sound & Priority Selection                                │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ CLI Execution / Local Subprocess
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Bark Push Client                               │
-│                                                                             │
-│  - Local CLI binary (/srv/data/tools/bark or custom path)                 │
-│  - Apple Push Notification service (APNs) Delivery                          │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ APNs Push
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       End-User iOS & macOS Devices                          │
-│                                                                             │
-│  - iPhone / iPad / Apple Watch / Mac (Bark App)                             │
-│  - Instant 1-click tap-through URL opening ManageBac task directly           │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    MB["<b>ManageBac Cloud</b><br/>managebac.com / .cn"]
+    PROD["<b>tahuti</b> — core event producer<br/>• Session auth &amp; automated token refresh<br/>• MNN notification polling + HTML crawling<br/>• Background deadline countdown evaluator<br/>• State tracking &amp; delta detection"]
+    NOT["<b>extras/mb-notifier</b><br/>bark_webhook_receiver.py<br/>• HTTP webhook server (default port 42617)<br/>• De-duplication &amp; state-based suppression<br/>• Course alias translation, hot-reloaded<br/>• Mobile viewport optimization (3-field / 4-line)<br/>• Event-specific sound &amp; priority selection"]
+    BARK["<b>Bark push client</b><br/>• Local CLI binary<br/>• APNs delivery"]
+    DEV["<b>End-user devices</b><br/>iPhone / iPad / Watch / Mac<br/>1-click tap-through to the task"]
+
+    MB -->|"HTTPS — polling &amp; HTML scrape"| PROD
+    PROD -->|"HTTP POST /webhook (JSON MBEvent)<br/>X-MB-Event, X-MB-Signature"| NOT
+    NOT -->|"CLI execution / local subprocess"| BARK
+    BARK -->|"APNs push"| DEV
 ```
 
 ---
