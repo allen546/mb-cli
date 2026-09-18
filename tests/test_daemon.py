@@ -330,12 +330,44 @@ class TestStartLoop:
 
 class TestStopDaemon:
     def test_no_pid_file(self, tmp_path: Path):
-        daemon_config = {
-            "pid_file": str(tmp_path / "nonexistent.pid"),
-        }
-        result = stop_daemon(str(tmp_path / "nonexistent.json"))
-        # stop_daemon loads daemon config from the path, not from daemon_config
-        # Need to use the actual daemon config loading
+        """`stop` on a config whose pid file is absent must report, not crash.
+
+        This had no assertion at all, and built a `daemon_config` dict it then
+        ignored — `stop_daemon` reads its config from the path it is given, so
+        the local dict never reached it. Passing a nonexistent config path made
+        `load_daemon_config` fall back to `DEFAULT_PID_PATH`, i.e. the real
+        ~/.config/tahuti/daemon.pid, so the test also probed the operator's
+        home directory. Writing the config makes the pid path explicit.
+        """
+        missing_pid = tmp_path / "nonexistent.pid"
+        assert not missing_pid.exists()
+
+        config_path = tmp_path / "daemon.json"
+        config_path.write_text(json.dumps({"pid_file": str(missing_pid)}))
+
+        result = stop_daemon(str(config_path))
+
+        assert result["stopped"] is False
+        assert result["reason"] == "pid_file_missing"
+        assert Path(result["pid_file"]) == missing_pid, (
+            "stop_daemon reported a different pid file than the config names"
+        )
+        # Nothing to kill, and the missing pid file must not be conjured up.
+        assert not missing_pid.exists()
+
+    def test_no_pid_file_is_reported_when_config_is_absent(self, tmp_path: Path):
+        """Same outcome when daemon.json itself is missing.
+
+        `load_daemon_config` substitutes defaults, so this must still resolve to
+        a pid path inside the test sandbox rather than the operator's home.
+        """
+        result = stop_daemon(str(tmp_path / "absent.json"))
+
+        assert result["stopped"] is False
+        assert result["reason"] == "pid_file_missing"
+        assert tmp_path in Path(result["pid_file"]).parents, (
+            f"{result['pid_file']} escaped the test sandbox"
+        )
 
     def test_invalid_pid_content(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
