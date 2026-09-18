@@ -521,3 +521,170 @@ class TestLoginPageDetectedByBody:
 # ── Defect 8: no request path may bypass the host guard ───────────────────
 
 
+class TestNoPathBypassesTheHostGuard:
+    """Every request that carries the session cookie goes through one gate."""
+
+    def _submission_page(self) -> str:
+        return (
+            '<html><head><meta name="csrf-token" content="csrf123"></head><body>'
+            '<form id="edit_dropbox_17874401"></form><table>'
+            '<tr class="file" id="asset_82189817"><td>'
+            '<a class="text-break" href="/uploads/asset/file/82189817/f.pdf">f.pdf</a>'
+            '<label>Uploaded Sep 13, 2026</label></td><td>'
+            '<a class="btn-remove" data-method="delete" '
+            'href="/student/dropboxes/17874401/destroy_asset?file_id=82189817">Delete</a>'
+            "</td></tr></table></body></html>"
+        )
+
+    def test_delete_submission_refuses_a_redirect_off_estate(self, client):
+        with rm.Mocker() as m:
+            m.get(
+                re.compile(r"/student/classes/1/core_tasks/9"),
+                text=self._submission_page(),
+            )
+            m.delete(
+                f"{BASE}/student/dropboxes/17874401/destroy_asset",
+                status_code=302,
+                headers={"Location": "https://evil.example.com/collect"},
+            )
+            m.get("https://evil.example.com/collect", text="stolen")
+
+            with pytest.raises(CommandError) as excinfo:
+                client.delete_submission("1", "9", "82189817")
+
+        assert excinfo.value.code == "cross_host_redirect_blocked"
+        assert _foreign_requests(m) == []
+
+    def test_delete_submission_is_retried_on_transient_failure(self, client, monkeypatch):
+        """Routing through the wrapper must buy the DELETE the retry it lost.
+
+        Also proves the post-delete verification still runs: the second read of
+        the task page shows the row gone, which is what makes ``ok`` honest.
+        """
+        client.retry = 1
+        monkeypatch.setattr("mb_cli.client.time.sleep", lambda _s: None)
+
+        deletes = {"n": 0}
+        reads = {"n": 0}
+        empty_page = (
+            "<html><head><meta name='csrf-token' content='csrf123'></head>"
+            "<body><form id='edit_dropbox_17874401'></form>"
+            "<table></table></body></html>"
+        )
+
+        def _read_task_page(request, context):
+            # Reads 1-2 are delete_submission's own lookups (CSRF, then
+            # get_submissions); read 3 is the post-delete verification, which
+            # must see the row gone or delete_submission rightly reports failure.
+            reads["n"] += 1
+            context.status_code = 200
+            return self._submission_page() if reads["n"] <= 2 else empty_page
+
+        def _delete(request, context):
+            deletes["n"] += 1
+            if deletes["n"] == 1:
+                context.status_code = 503
+                return "busy"
+            context.status_code = 200
+            return ""
+
+        with rm.Mocker() as m:
+            m.get(re.compile(r"/student/classes/1/core_tasks/9$"), text=_read_task_page)
+            m.delete(re.compile(r"/destroy_asset"), json=_delete)
+
+            result = client.delete_submission("1", "9", "82189817")
+
+        assert deletes["n"] == 2, "a retryable 503 was not retried"
+        assert result["ok"] is True
+        assert result["filename"] == "f.pdf"
+
+    def test_feedback_modal_get_refuses_a_redirect_off_estate(self, client, caplog):
+        with rm.Mocker() as m:
+            m.get(
+                f"{BASE}/student/classes/1/core_tasks/9/feedback",
+                text="<html></html>",
+            )
+            m.get(
+                f"{BASE}/preview/1",
+                status_code=302,
+                headers={"Location": "https://evil.example.com/collect"},
+            )
+            m.get("https://evil.example.com/collect", text="stolen")
+
+            result = client._parse_feedback_page(
+                f"{BASE}/student/classes/1/core_tasks/9/feedback",
+                preview_modal_url="/preview/1",
+            )
+
+        assert _foreign_requests(m) == []
+        # The guard fired before the send; _parse_feedback_page swallows modal
+        # errors into a log line, so that is where the evidence lands.
+        assert "Refusing to send authenticated request to 'evil.example.com'" in (
+            caplog.text
+        )
+        assert result["annotated_download_url"] is None
+
+    def test_foreign_attachment_url_is_dropped(self, client):
+        from bs4 import BeautifulSoup
+
+        html = (
+            '<div><a href="https://cdn.evil.test/payload.pdf" class="fr-file">'
+            "payload.pdf</a></div>"
+        )
+        assert client._extract_attachments(BeautifulSoup(html, "html.parser")) == []
+
+    def test_cleartext_attachment_url_is_dropped(self, client):
+        from bs4 import BeautifulSoup
+
+        html = (
+            '<div><a href="http://bj80.managebac.cn/uploads/x/plain.pdf" class="fr-file">'
+            "plain.pdf</a></div>"
+        )
+        assert client._extract_attachments(BeautifulSoup(html, "html.parser")) == []
+
+    def test_same_estate_attachment_is_kept(self, client):
+        from bs4 import BeautifulSoup
+
+        html = (
+            '<div><a href="/student/classes/1/attachments/123/report.pdf" '
+            'class="fr-file">report.pdf</a></div>'
+        )
+        atts = client._extract_attachments(BeautifulSoup(html, "html.parser"))
+        assert len(atts) == 1
+        assert atts[0]["url"] == f"{BASE}/student/classes/1/attachments/123/report.pdf"
+
+
+# ── Defect 9: the attachment dedup key must keep the query string ─────────
+
+
+class TestAttachmentDedupKeepsQuery:
+    """``?v=1`` and ``?v=2`` are different files; dropping the query loses one."""
+
+    def test_query_string_distinguishes_attachments(self, client):
+        from bs4 import BeautifulSoup
+
+        html = (
+            "<div>"
+            '<a href="/student/classes/1/attachments/1/essay.pdf?v=1" class="fr-file">essay.pdf</a>'
+            '<a href="/student/classes/1/attachments/1/essay.pdf?v=2" class="fr-file">essay.pdf</a>'
+            "</div>"
+        )
+        atts = client._extract_attachments(BeautifulSoup(html, "html.parser"))
+        assert len(atts) == 2, atts
+
+    def test_truly_identical_links_still_dedupe(self, client):
+        from bs4 import BeautifulSoup
+
+        html = (
+            "<div>"
+            '<a href="/student/classes/1/attachments/1/f.pdf" class="fr-file">f.pdf</a>'
+            '<a href="/student/classes/1/attachments/1/f.pdf" class="fr-file">f.pdf</a>'
+            "</div>"
+        )
+        atts = client._extract_attachments(BeautifulSoup(html, "html.parser"))
+        assert len(atts) == 1
+
+
+# ── Defect 10: parse_due_date must return one unambiguous type ────────────
+
+

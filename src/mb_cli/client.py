@@ -848,6 +848,28 @@ class ManageBacClient:
             return None
         return text[:limit] if limit else text
 
+    def _is_downloadable_attachment_url(self, resolved_url: str, raw_href: str) -> bool:
+        """True when an attachment URL is safe to hand to the download path.
+
+        ``_extract_attachments`` passes any absolute href straight through, so a
+        task page carrying ``https://cdn.evil.test/payload.pdf`` (or a plaintext
+        ``http://bj80.managebac.com/...``) put that URL in the download list,
+        where ``cmd_download`` fetches it with the authenticated session and
+        writes the body into the output directory.  Filtering here keeps the
+        decision in the client, next to the other host checks.
+
+        Same rules as every other request: HTTPS only, and a host inside the
+        ManageBac estate.
+        """
+        parsed = urlparse(resolved_url)
+        if parsed.scheme.lower() != "https":
+            return False
+        try:
+            self._assert_same_host(resolved_url)
+        except CommandError:
+            return False
+        return True
+
     def _extract_attachments(self, soup: BeautifulSoup) -> list[dict]:
         attachments: list[dict] = []
         seen: set[tuple[str, str]] = set()
@@ -889,6 +911,15 @@ class ManageBacClient:
                 continue
 
             url = urljoin(f"{self.base}/", href)
+            if not self._is_downloadable_attachment_url(url, href):
+                log.warning(
+                    "Skipping attachment link %r (shown as %r): not an HTTPS URL on "
+                    "the ManageBac estate — downloading it would send the session "
+                    "cookie to a third party",
+                    href,
+                    link.get_text(" ", strip=True),
+                )
+                continue
             source = "description"
             if link.find_parent(class_=re.compile(r"discussion", re.IGNORECASE)):
                 source = "discussion"
@@ -920,8 +951,11 @@ class ManageBacClient:
             }:
                 continue
 
-            base_url = url.split("?")[0]
-            key = (name, base_url)
+            # The query string is part of the file's identity: ManageBac serves
+            # revisioned attachments as essay.pdf?v=1 / essay.pdf?v=2.  Dropping
+            # it collapsed distinct files into one — the only dedup key in the
+            # codebase that omitted the query.
+            key = (name, url)
             if key in seen:
                 continue
             seen.add(key)
@@ -1274,7 +1308,11 @@ class ManageBacClient:
             "Referer": f"{self.base}{task_path}",
         }
 
-        r = self.session.request("DELETE", full_delete_url, headers=headers)
+        # Route through the shared wrapper, not session.request directly: the
+        # URL comes from scraped HTML and the CSRF token rides in a header, so
+        # it needs the same pre-send host check, rate limit and retry as every
+        # other authenticated request.
+        r = self._request_with_retry("DELETE", full_delete_url, headers=headers)
         if r.status_code >= 400:
             raise RuntimeError(
                 f"Delete request failed with HTTP {r.status_code}: {r.text[:200]}"
@@ -1318,11 +1356,12 @@ class ManageBacClient:
                 else f"{self.base}{preview_modal_url}"
             )
             try:
-                r = self.session.get(
+                # Through the validated wrapper: preview_modal_url is scraped
+                # HTML, and this request carries the session cookie.
+                r = self._request_with_retry(
+                    "GET",
                     modal_req_url,
                     headers={"X-Requested-With": "XMLHttpRequest"},
-                    timeout=30,
-                    verify=self.session.verify,
                 )
                 if r.status_code == 200:
                     ann_m = re.search(
