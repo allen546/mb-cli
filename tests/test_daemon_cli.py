@@ -14,7 +14,8 @@ def test_cli_daemon_status(tmp_path: Path, monkeypatch):
 
     REPLACED: this test asserted ``code == 0`` with no pid file present — i.e.
     it asserted the very thing that was broken, that reporting a dead daemon
-    looked like success to a shell caller.
+    looked like success to a shell caller. Exit 3 (``systemctl is-active``'s
+    "inactive"), not 1: the query succeeded and its answer is "no daemon".
     """
     monkeypatch.setenv(
         "MB_CRAWLER_CONFIG", str(tmp_path / "config.json")
@@ -32,8 +33,10 @@ def test_cli_daemon_status(tmp_path: Path, monkeypatch):
         with patch("builtins.print") as mock_print:
             with pytest.raises(SystemExit) as exc_info:
                 main(["daemon", "status", "--format", "json"])
-            assert exc_info.value.code == 1
-    assert json.loads(mock_print.call_args[0][0])["data"]["running"] is False
+            assert exc_info.value.code == 3
+    payload = json.loads(mock_print.call_args[0][0])
+    assert payload["data"]["running"] is False
+    assert payload["ok"] is True
 
 
 def test_cli_daemon_status_running_exits_zero(tmp_path: Path, monkeypatch):
