@@ -14,12 +14,16 @@ from pathlib import Path
 
 from .auth import build_client
 from .client import ManageBacClient, parse_task_url
+from . import keychain
 from .config import (
+    clear_creds,
     clear_session,
     config_dir,
     load_state,
+    resolve_creds_path,
     save_profile,
     save_session,
+    warn_on_weak_permissions,
 )
 from .daemon import (
     DaemonConfig,
@@ -51,17 +55,25 @@ log = logging.getLogger(__name__)
 def _build_client(args, command: str) -> tuple:
     """CLI wrapper: maps argparse namespace to :func:`auth.build_client`."""
     password = getattr(args, "password", None)
-    if not password and not args.cookie:
-        state = load_state(args.profile, args.config, args.session_file)
-        if not state.session.cookie or getattr(args, "reauth", False):
-            password = getpass.getpass("ManageBac password: ")
+    cookie = args.cookie
+    if not password and not cookie:
+        # Environment fallback for non-interactive/CI use. `mb daemon start -b`
+        # already hands these to the detached child, so reading them back closes
+        # the loop: `MB_CRAWLER_PASSWORD=... mb daemon run` needs no prompt.
+        # An explicit --password/--cookie still wins over the environment.
+        password = os.environ.get("MB_CRAWLER_PASSWORD") or None
+        cookie = os.environ.get("MB_CRAWLER_COOKIE") or None
+        if not password and not cookie:
+            state = load_state(args.profile, args.config, args.session_file)
+            if not state.session.cookie or getattr(args, "reauth", False):
+                password = getpass.getpass("ManageBac password: ")
     verify = not getattr(args, "no_verify_tls", False)
     return build_client(
         school=args.school,
         domain=args.domain,
         email=args.email,
         password=password,
-        cookie=args.cookie,
+        cookie=cookie,
         profile=args.profile,
         refresh=getattr(args, "refresh", False),
         reauth=getattr(args, "reauth", False),
@@ -69,6 +81,7 @@ def _build_client(args, command: str) -> tuple:
         cache_ttl=getattr(args, "cache_ttl", None),
         retry=getattr(args, "retry", 3),
         remember=not getattr(args, "temp", False),
+        use_keychain=getattr(args, "keychain", None),
     )
 
 
@@ -579,6 +592,18 @@ def cmd_logout(args) -> int:
         except Exception as e:
             log.warning("Failed to clear response cache on logout: %s", e)
 
+    # `logout` must mean logout for the password too. Leaving creds.json behind
+    # would keep the cleartext password on disk after the user asked to be
+    # logged out, so it goes by default; --keep-credentials opts back into
+    # silent re-login for users who find the prompt more annoying than the risk.
+    creds_removed = False
+    keychain_removed = False
+    if not getattr(args, "keep_credentials", False):
+        creds_removed = clear_creds(resolve_creds_path())
+        email = state.session.email or state.profile.email
+        if email:
+            keychain_removed = keychain.delete(email)
+
     payload = ok(
         "logout",
         state.active_profile,
@@ -586,6 +611,9 @@ def cmd_logout(args) -> int:
             "logged_out": True,
             "all_profiles": args.all,
             "cache_entries_removed": cache_cleared,
+            "credentials_removed": creds_removed,
+            "keychain_entry_removed": keychain_removed,
+            "credentials_kept": bool(getattr(args, "keep_credentials", False)),
         },
     )
     print_payload(payload, args.output, args.format)
@@ -1422,6 +1450,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not use 'remember me' (session expires when browser closes)",
     )
+    login.add_argument(
+        "--keychain",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Store the password in the OS keychain instead of cleartext "
+        "creds.json (macOS Keychain / Linux secret-tool). Overrides "
+        "MB_CRAWLER_KEYCHAIN.",
+    )
     login.set_defaults(func=cmd_login)
 
     list_parser = subparsers.add_parser("list", help="List ManageBac tasks")
@@ -1526,6 +1562,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-cache",
         action="store_true",
         help="Keep the on-disk response cache (it holds grade pages and a hub JWT)",
+    )
+    logout.add_argument(
+        "--keep-credentials",
+        action="store_true",
+        help="Keep the saved password so later commands can log in silently "
+        "(by default `logout` deletes creds.json and any keychain entry)",
     )
     logout.add_argument("--output", "-o", help="Write output to file")
     logout.add_argument(
@@ -1833,6 +1875,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser = build_parser()
     args = parser.parse_args(argv)
+    # File permissions are the only barrier protecting a cleartext creds.json,
+    # so say so loudly if something outside `mb` loosened them.
+    warn_on_weak_permissions()
     try:
         raise SystemExit(args.func(args))
     except CommandError as exc:

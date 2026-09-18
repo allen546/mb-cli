@@ -306,7 +306,7 @@ mb daemon configure-channel qq 123456789  # deliver via a zeroclaw channel inste
 - **Streams**: Standard output (`stdout`) is reserved for command data; logs and progress go to standard error (`stderr`).
 
 ### Configuration Files
-By default, `mb-cli` stores credentials and daemon states in `~/.config/mb-crawler/`:
+By default, `mb-cli` stores credentials and daemon states in `~/.config/tahuti/`:
 - `config.json` — School domain, preferences, and webhook settings
 - `session.json` — Authenticated session cookies and tokens
 - `creds.json` — **Plaintext ManageBac password**, stored to allow silent re-login
@@ -316,16 +316,31 @@ By default, `mb-cli` stores credentials and daemon states in `~/.config/mb-crawl
 - `daemon_state.json` — Notification/reminder dedup state
 
 Every file holding a credential or personal data is written with `0600` and the
-directory with `0700`.
+directory with `0700`. On startup `mb` warns on stderr if `creds.json`,
+`session.json`, or `config.json` is found group- or world-readable, since file
+permissions are the only barrier protecting a cleartext password. Set
+`MB_CRAWLER_NO_PERM_WARN=1` to silence it.
 
 > **`creds.json` holds your password in cleartext.** It is only written when a
 > password login succeeds *without* `--temp`. Use `mb login --temp` for a
-> one-off session that is not persisted. `mb logout` clears the session cookie
-> and the response cache, but does **not** delete `creds.json` — remove it
-> manually if you want the password gone:
+> one-off session that is not persisted — it writes nothing to disk at all: no
+> password, no session cookie, and no response cache (the cache holds grade
+> pages and the hub JWT, so persisting it would have quietly defeated the flag).
+>
+> `mb logout` **deletes** `creds.json` and any OS-keychain entry, as well as
+> clearing the session cookie and the response cache. Pass `--keep-credentials`
+> if you want silent re-login preserved instead.
+>
+> To avoid the cleartext file entirely, opt into the OS keychain:
 > ```bash
-> rm ~/.config/mb-crawler/creds.json
+> mb login --keychain                 # or: MB_CRAWLER_KEYCHAIN=1 mb login
 > ```
+> This stores the password in the macOS Keychain or Linux Secret Service via the
+> `security` / `secret-tool` helpers already on the system — no extra dependency,
+> and nothing is stored if you do not ask for it. If the keychain is unavailable
+> (for example a headless Linux box with no secret service), `mb` falls back to
+> `creds.json` with a warning rather than losing the credential. See
+> [SECURITY.md](SECURITY.md) for the limits of both backends.
 
 `--config <file>` and `--session-file <file>` override the default config and
 session paths, as do the environment variables `MB_CRAWLER_CONFIG`,
@@ -345,12 +360,23 @@ your shell history and out of `ps` output:
   `--secret` when both are set.
 - `MB_CRAWLER_PASSWORD` — ManageBac password.
 - `MB_CRAWLER_COOKIE` — `_managebac_session` cookie value.
+- `MB_CRAWLER_KEYCHAIN` — set to `1` to store the password in the OS keychain
+  instead of cleartext `creds.json` (equivalent to `mb login --keychain`).
+- `MB_CRAWLER_NO_PERM_WARN` — set to `1` to silence the loose-permission warning.
 
-> `MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are **write-only** in the current
-> CLI: `mb daemon start -b` copies them into the detached child's environment so
-> the secret never travels in `argv`, but nothing in `mb-cli` reads them back as
-> input. Supply a password with `--password` / `-p` or the interactive prompt
-> rather than relying on these two.
+`MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are read back as **input** as well
+as exported into the daemon child, so a non-interactive run needs no prompt:
+
+```bash
+MB_CRAWLER_PASSWORD=... mb daemon run          # no prompt, secret not in argv
+MB_CRAWLER_COOKIE=... mb list --format json    # cookie straight from the env
+```
+
+An explicit `--password` / `--cookie` takes precedence over the environment, and
+an exported-but-empty value is treated as unset. `mb daemon start -b` still
+copies them into the detached child's environment so the secret never travels in
+`argv`. The trade-off: a leaked environment variable is now directly usable as a
+credential, and a process's environment is readable by its own user.
 
 ---
 

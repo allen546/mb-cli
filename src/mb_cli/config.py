@@ -6,13 +6,22 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import sys
 import tempfile
 
 CONFIG_ENV = "MB_CRAWLER_CONFIG"
 SESSION_ENV = "MB_CRAWLER_SESSION"
+CREDS_ENV = "MB_CRAWLER_CREDS_PATH"
+# Escape hatch so scripts and CI can silence the loose-permission warning.
+PERM_WARN_ENV = "MB_CRAWLER_NO_PERM_WARN"
 CONFIG_DIR = Path.home() / ".config" / "tahuti"
 DEFAULT_CONFIG_PATH = CONFIG_DIR / "config.json"
 DEFAULT_SESSION_PATH = CONFIG_DIR / "session.json"
+DEFAULT_CREDS_PATH = CONFIG_DIR / "creds.json"
+
+# Permission floor for anything this package writes that can hold a secret.
+# Any group- or other-readable bit means every local user can read the file.
+SECURE_FILE_MODE = 0o600
 
 
 @dataclass
@@ -75,6 +84,32 @@ def resolve_session_path(explicit: str | None = None) -> Path:
     if env_value:
         return Path(env_value).expanduser()
     return DEFAULT_SESSION_PATH
+
+
+def resolve_creds_path(explicit: str | None = None) -> Path:
+    """Resolve the file holding the saved password for silent re-login."""
+    if explicit:
+        return Path(explicit).expanduser()
+    env_value = os.environ.get(CREDS_ENV)
+    if env_value:
+        return Path(env_value).expanduser()
+    return DEFAULT_CREDS_PATH
+
+
+def clear_creds(path: str | Path) -> bool:
+    """Delete the saved password file.
+
+    Returns *True* when a file was actually removed, *False* when there was
+    nothing to delete or the unlink failed. Callers surface this so
+    ``mb logout`` can report honestly rather than claiming a deletion that
+    did not happen.
+    """
+    try:
+        Path(path).unlink()
+        return True
+    except OSError:
+        # FileNotFoundError lands here too — "nothing to delete" is not an error.
+        return False
 
 
 def _read_json(path: Path) -> dict:
@@ -231,3 +266,66 @@ def clear_session(state: AppState, all_profiles: bool = False) -> None:
         _write_json(state.session_path, session_data)
     elif state.session_path.exists():
         state.session_path.unlink()
+
+
+def file_mode(path: str | Path) -> int | None:
+    """Return the file's permission bits, or *None* if it cannot be stat'd."""
+    try:
+        return Path(path).stat().st_mode & 0o777
+    except OSError:
+        return None
+
+
+def is_too_permissive(path: str | Path) -> bool:
+    """True when *path* is readable or writable by group/other.
+
+    ``creds.json`` and ``session.json`` are written 0600 by this package, so a
+    looser mode means something outside `mb` changed it — a stray backup, a
+    `cp` that dropped modes, a config-management tool. Since file permissions
+    are the *only* barrier protecting a cleartext password here, silently
+    accepting a 0644 creds file would undercut the whole storage model.
+    """
+    mode = file_mode(path)
+    if mode is None:
+        return False
+    return bool(mode & 0o077)
+
+
+def insecure_state_files() -> list[Path]:
+    """Every existing credential-bearing state file with looser-than-0600 modes."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (
+        resolve_creds_path(),
+        resolve_session_path(),
+        resolve_config_path(),
+    ):
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if is_too_permissive(candidate):
+            found.append(candidate)
+    return found
+
+
+def warn_on_weak_permissions(stream=None) -> list[str]:
+    """Warn on stderr about any credential file readable by other local users.
+
+    Returns the warnings emitted. Writes to *stream* (stderr by default) rather
+    than using :mod:`logging` so the message survives a caller that has
+    reconfigured logging, and never contaminates ``--format json`` stdout.
+    """
+    stream = sys.stderr if stream is None else stream
+    insecure = insecure_state_files()
+    if not insecure:
+        return []
+    messages = [
+        f"{path} is mode {file_mode(path):04o} — readable by other users on this "
+        f"machine. Your ManageBac password or session cookie may be exposed; run "
+        f"`chmod 600 {path}`."
+        for path in insecure
+    ]
+    if not os.environ.get(PERM_WARN_ENV):
+        for message in messages:
+            print(f"warning: {message}", file=stream)
+    return messages
