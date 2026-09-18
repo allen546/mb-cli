@@ -17,6 +17,39 @@ version string in `pyproject.toml`); there are no git tags in this repository.
   but that were never declared, so a plain `uv sync` could not run the tests.
 
 ### Fixed
+- **Piped output is now the documented JSON.** `resolve_format` returned `pretty`
+  for any unset `--format`, with no TTY check, so `mb list | jq .` failed with a
+  parse error and every JSON consumer had to remember `--format json`. It now
+  picks `pretty` for an interactive terminal and `json` otherwise (matching the
+  `--format` help text and the README), with `MB_CLI_FORMAT=json|pretty` as an
+  escape hatch for scripts that run with and without a terminal.
+- **MCP `list_tasks` no longer answers "no homework" for a misspelled `view`.**
+  An unrecognised value matched none of the three section checks, so all three
+  lists stayed empty and the tool returned `total_count: 0` — a valid-looking
+  wrong answer. `view` is now validated against one canonical vocabulary
+  (case-insensitive, with aliases like `Upcoming` / `upcoming tasks`) shared with
+  `filters.result_views`, and an unknown value returns a structured error instead
+  of crawling anything.
+- **`--grade` / `grade=` now match `+`/`-` modifiers.** The extraction regex
+  `^([A-F][+-]?)\b` could never capture the modifier — there is no word boundary
+  between `+`/`-` and a following space, so it always backtracked to empty and
+  `"A+ (95/100)"` was read as `"A"`. A task whose card carries only
+  `grade_score: "A+ (95/100)"` was therefore invisible to `--grade A+`.
+- **Mixed naive/aware due dates can no longer crash the pretty renderer.**
+  `parse_due_date` returns an aware datetime for ISO input with an offset and a
+  naive one for every HTML format; sorting a section that contained both raised
+  `TypeError: can't compare offset-naive and offset-aware datetimes` out of
+  `render_pretty`, which `main()` does not catch — the user got a traceback and
+  no payload. Both `task_sort_key` and `classify_task_view` now normalise through
+  one shared helper.
+- **MCP tools validate their inputs.** `view_task` derived the task id with
+  `target.split("core_tasks/")[-1].split("/")[0]`, so a URL without
+  `/core_tasks/` made the entire string the id; `get_class_grades` interpolated
+  `class_id` straight into a ManageBac URL path; `get_calendar_events` /
+  `get_timetable` passed arbitrary strings into query params; and `submit_file`
+  handed an unchecked path to the filesystem. Each now returns a structured,
+  actionable error for a malformed argument instead of a 404 or a raw
+  `FileNotFoundError`.
 - **Packaging:** the sdist no longer leaks a nested copy of the repository. It
   previously shipped 76 entries under `.claude/`, including
   `.claude/worktrees/finish-security-audit/` — a complete clone of the repo with
