@@ -1,4 +1,4 @@
-# mb-cli: ManageBac CLI, Python SDK & Event Engine
+# tahuti: ManageBac CLI, Python SDK & Event Engine
 
 An unopinionated, robust toolkit for **ManageBac**: typed Python SDK, command-line interface, Model Context Protocol (MCP) server for AI assistants, and a near-real-time event streaming and webhook engine.
 
@@ -12,18 +12,18 @@ Supports both international (`managebac.com`) and China (`managebac.cn`) instanc
    - Authenticate seamlessly via credentials or saved session cookies (`ManageBacClient.from_config()`).
    - Programmatic access to tasks, submissions, grades, calendar feeds, weekly timetables, and MNN notifications.
    - Clean separation of concerns: produces pure, typed data with zero vendor-specific assumptions or hardcoded push rules.
-2. **Interactive CLI** (`mb login`, `mb list`, `mb view`, `mb grades`, `mb submit`, `mb daemon`):
+2. **Interactive CLI** (`tahuti login`, `tahuti list`, `tahuti view`, `tahuti grades`, `tahuti submit`, `tahuti daemon`):
    - Fast terminal workflows for everyday student tasks: listing assignments, viewing details, uploading files, inspecting grades, checking schedules, and managing background daemons.
    - Smart output formatting: human-friendly colored tables on interactive TTYs, structured JSON when piped to files or other tools (`jq`).
 3. **MCP Server for AI Coding Assistants**:
-   - Built-in Model Context Protocol server (`mb-mcp`) with 14 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
+   - Built-in Model Context Protocol server (`tahuti-mcp`) with 14 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
 4. **Event Streaming & Webhook Engine**:
    - In-process async event streaming (`async for event in daemon.stream()`) for Python bots and background tasks.
-   - Background daemon service (`mb daemon run --webhook-url ...`) dispatching typed `MBEvent` payloads to HTTP webhooks with HMAC-SHA256 signatures, exponential backoff retries, stealth jitter, and active-hours scheduling.
+   - Background daemon service (`tahuti daemon run --webhook-url ...`) dispatching typed `MBEvent` payloads to HTTP webhooks with HMAC-SHA256 signatures, exponential backoff retries, stealth jitter, and active-hours scheduling.
    - For the full event contract and JSON schema, see [Event Stream Specification](docs/events.md). For operational push notification setups (such as Bark for iOS), see [Downstream Notifier Guide](docs/downstream-notifier-guide.md).
 
 > **Delivery is polling-based, not push.** No WebSocket or server-sent-event
-> transport exists in `mb-cli`, and the MNN hub endpoint ManageBac publishes is an
+> transport exists in `tahuti`, and the MNN hub endpoint ManageBac publishes is an
 > HTTPS origin rather than a socket URL — so there is nothing to subscribe to.
 > The daemon polls the ManageBac Notification Network (MNN) Hub REST API on a
 > configurable interval — `poll_interval_seconds` (default 30s) plus a random
@@ -58,12 +58,16 @@ Faria/ManageBac's legal documents restrict automated access:
 pip install .
 ```
 
-The `mb-mcp` MCP server needs one extra dependency. `mcp` is *not* a runtime
-dependency of the `mb` CLI, so a plain `pip install .` leaves `mb-mcp` failing
+The console commands are `tahuti` and `tahuti-mcp`. The pre-rename `mb` and
+`mb-mcp` are kept as aliases, so existing scripts, shell aliases and MCP client
+configs keep working — this document uses the new names throughout.
+
+The `tahuti-mcp` MCP server needs one extra dependency. `mcp` is *not* a runtime
+dependency of the `tahuti` CLI, so a plain `pip install .` leaves `tahuti-mcp` failing
 with `ModuleNotFoundError: No module named 'mcp'`:
 
 ```bash
-pip install "mb-cli[mcp]"
+pip install "tahuti[mcp]"
 ```
 
 Or install in editable mode for local development:
@@ -174,23 +178,23 @@ if __name__ == "__main__":
 
 ## Event Webhook Engine
 
-`mb-cli` includes a background daemon that dispatches polled events to HTTP webhook receivers (e.g. local scripts, microservices, or custom bots):
+`tahuti` includes a background daemon that dispatches polled events to HTTP webhook receivers (e.g. local scripts, microservices, or custom bots):
 
 ```bash
 # Run daemon in foreground with webhook dispatching
 # Pass the secret via the environment so it does not appear in `ps` output
 # or your shell history.
 export MB_WEBHOOK_SECRET="your-hmac-secret"
-mb daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "$MB_WEBHOOK_SECRET"
+tahuti daemon run --webhook-url http://127.0.0.1:8000/webhook --secret "$MB_WEBHOOK_SECRET"
 
 # Or configure webhook URL persistently and run daemon.
 # `start` only detaches when you pass -b/--background; without it the loop runs
 # in the foreground and dies with your terminal.
-mb daemon configure-webhook http://127.0.0.1:8000/webhook
-mb daemon start -b --interval 1800 --active-hours-start 7 --active-hours-end 23
+tahuti daemon configure-webhook http://127.0.0.1:8000/webhook
+tahuti daemon start -b --interval 1800 --active-hours-start 7 --active-hours-end 23
 
 # Test the webhook connection with a mock ping
-mb daemon test-webhook http://127.0.0.1:8000/webhook
+tahuti daemon test-webhook http://127.0.0.1:8000/webhook
 ```
 
 > **Verify the signature.** The daemon signs every payload with HMAC-SHA256,
@@ -203,7 +207,7 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 - **Method**: `POST`
 - **Headers**:
   - `Content-Type: application/json; charset=utf-8`
-  - `User-Agent: mb-crawler-daemon/1.0`
+  - `User-Agent: tahuti-daemon/1.0`
   - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
   - `X-MB-Signature: sha256=<hex_hmac>` (when `--secret` is configured)
 - **Retry Mechanism**: Exponential backoff (`1s`, `2s`, `4s`) on network or server errors.
@@ -214,7 +218,7 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 > ManageBac publishes it. Inside an active window the cycle sleeps
 > `poll_interval_seconds + random(0, poll_jitter_seconds)` (defaults 30s and 5s, so
 > 30-35s); the jitter keeps request timing irregular rather than a fixed cadence.
-> `mb daemon run` sets this with `--poll-interval`, `mb daemon start` with
+> `tahuti daemon run` sets this with `--poll-interval`, `tahuti daemon start` with
 > `--interval`. Lower it if you want tighter detection, but each cycle issues
 > authenticated requests to ManageBac — an aggressive interval raises the risk of
 > rate limiting or account flagging. There is no push channel to subscribe to
@@ -234,33 +238,33 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
 
 ```bash
 # Authentication & Session
-mb login --school your-school --domain managebac.com -e student@example.com
-mb --version                           # print the installed version and exit
-mb logout
+tahuti login --school your-school --domain managebac.com -e student@example.com
+tahuti --version                       # print the installed version and exit
+tahuti logout
 
 # Tasks & Coursework
-mb list                                 # list upcoming tasks
-mb list --view past                     # past tasks
-mb list --subject "Math"                # filter by class/subject
-mb list --view overdue --details        # overdue tasks with full descriptions
-mb view 1000025                        # view single task by ID
-mb view "https://your-school.managebac.com/student/classes/1000024/core_tasks/1000025"
+tahuti list                             # list upcoming tasks
+tahuti list --view past                 # past tasks
+tahuti list --subject "Math"            # filter by class/subject
+tahuti list --view overdue --details    # overdue tasks with full descriptions
+tahuti view 1000025                    # view single task by ID
+tahuti view "https://your-school.managebac.com/student/classes/1000024/core_tasks/1000025"
 
 # File Submission
-mb submit 1000026 homework.pdf         # upload file to assignment dropbox
+tahuti submit 1000026 homework.pdf     # upload file to assignment dropbox
 
 # Submission Lifecycle
-mb submissions 1000026 --list          # list current submissions for a task
-mb submissions 1000026 --add hw.pdf    # upload to the task dropbox
-mb submissions 1000026 --delete hw.pdf # delete a submission by asset ID or filename
-mb submissions 1000026 --check-feedback # teacher feedback for a task
-mb submissions 1000026 --check-feedback hw.pdf  # …narrowed to one submission (asset ID or filename)
-mb download 1000026                    # download every attachment + submission for a task
-mb download 1000026 --no-attachments --output-dir ./math  # student submissions only
-mb download 1000026 --pages 5          # search 5 pages server-side when the task is not in snapshot.json
-mb feedback 1000026                    # fetch teacher feedback for a submitted task
+tahuti submissions 1000026 --list      # list current submissions for a task
+tahuti submissions 1000026 --add hw.pdf  # upload to the task dropbox
+tahuti submissions 1000026 --delete hw.pdf  # delete a submission by asset ID or filename
+tahuti submissions 1000026 --check-feedback  # teacher feedback for a task
+tahuti submissions 1000026 --check-feedback hw.pdf  # …narrowed to one submission (asset ID or filename)
+tahuti download 1000026                # download every attachment + submission for a task
+tahuti download 1000026 --no-attachments --output-dir ./math  # student submissions only
+tahuti download 1000026 --pages 5      # search 5 pages server-side when the task is not in snapshot.json
+tahuti feedback 1000026                # fetch teacher feedback for a submitted task
 
-> **`mb download` reports what it wrote.** Every run ends in one payload:
+> **`tahuti download` reports what it wrote.** Every run ends in one payload:
 > `downloaded` and `failed` lists with `downloaded_count` / `failed_count`, the
 > resolved `output_dir`, and the task title. A partial failure is still a success
 > — exit 0 as long as at least one file landed — and exit 1 means nothing landed,
@@ -269,41 +273,41 @@ mb feedback 1000026                    # fetch teacher feedback for a submitted 
 > `./task_<id>_<slug>/` under the current directory.
 
 # Grades & Analytics
-mb grades                               # grades for every enrolled class
-mb grades --class-id 1000023           # detailed task grades for one class
-mb grades --subject "Physics"           # fuzzy match class name
-mb count-grade-freq                     # grade distribution across all classes
+tahuti grades                           # grades for every enrolled class
+tahuti grades --class-id 1000023       # detailed task grades for one class
+tahuti grades --subject "Physics"       # fuzzy match class name
+tahuti count-grade-freq                 # grade distribution across all classes
 
 # Notifications & Feed
-mb notifications                        # list MNN notifications (page 1)
-mb notifications --unread-only          # unread only
-mb notifications --read 235151424       # mark notification as read
-mb notifications --unread 235151424     # mark it unread again
-mb notifications --read-all             # mark all notifications read
+tahuti notifications                    # list MNN notifications (page 1)
+tahuti notifications --unread-only      # unread only
+tahuti notifications --read 235151424   # mark notification as read
+tahuti notifications --unread 235151424  # mark it unread again
+tahuti notifications --read-all         # mark all notifications read
 
 # Schedule & Calendar
-mb calendar                             # calendar events for next 7 days
-mb calendar --today                     # today's events
-mb calendar --ical -o calendar.ics      # export raw iCal feed
-mb timetable                            # view weekly class timetable
+tahuti calendar                         # calendar events for next 7 days
+tahuti calendar --today                 # today's events
+tahuti calendar --ical -o calendar.ics  # export raw iCal feed
+tahuti timetable                        # view weekly class timetable
 
 # Background Daemon
-mb daemon run --webhook-url http://127.0.0.1:8000/webhook  # foreground loop, Ctrl+C to stop
-mb daemon start -b                     # detached background loop (-b / --background)
-mb daemon start                        # foreground loop; dies with your terminal
-mb daemon start --once                 # run one check cycle and exit
-mb daemon stop                         # stop background loop
-mb daemon status                       # show daemon process status
-mb daemon install                      # register an auto-start service (launchd/systemd)
-mb daemon uninstall                    # remove the auto-start service
-mb daemon configure-channel qq 123456789  # deliver via a zeroclaw channel instead of HTTP
+tahuti daemon run --webhook-url http://127.0.0.1:8000/webhook  # foreground loop, Ctrl+C to stop
+tahuti daemon start -b                 # detached background loop (-b / --background)
+tahuti daemon start                    # foreground loop; dies with your terminal
+tahuti daemon start --once             # run one check cycle and exit
+tahuti daemon stop                     # stop background loop
+tahuti daemon status                   # show daemon process status
+tahuti daemon install                  # register an auto-start service (launchd/systemd)
+tahuti daemon uninstall                # remove the auto-start service
+tahuti daemon configure-channel qq 123456789  # deliver via a zeroclaw channel instead of HTTP
 ```
 
-> **`mb daemon start` does not background by default.** Without `-b` /
+> **`tahuti daemon start` does not background by default.** Without `-b` /
 > `--background` the polling loop runs in the *foreground* and terminates when
-> your terminal closes. `start -b` re-executes itself as `mb daemon run` in a
-> new session, writes the child's PID to `~/.config/mb-crawler/daemon.pid`, and
-> appends output to `~/.config/mb-crawler/daemon.log` (both `0600`). Override
+> your terminal closes. `start -b` re-executes itself as `tahuti daemon run` in a
+> new session, writes the child's PID to `~/.config/tahuti/daemon.pid`, and
+> appends output to `~/.config/tahuti/daemon.log` (both `0600`). Override
 > either location with `--pid-file` / `--log-file`: `start` and `status` accept
 > both, `stop` accepts only `--pid-file`, and `install` accepts only
 > `--log-file`.
@@ -327,7 +331,7 @@ mb daemon configure-channel qq 123456789  # deliver via a zeroclaw channel inste
 - **Streams**: Standard output (`stdout`) is reserved for command data; logs and progress go to standard error (`stderr`).
 
 ### Configuration Files
-By default, `mb-cli` stores credentials and daemon states in `~/.config/tahuti/`:
+By default, `tahuti` stores credentials and daemon states in `~/.config/tahuti/`:
 - `config.json` — School domain, preferences, and webhook settings
 - `session.json` — Authenticated session cookies and tokens
 - `creds.json` — **Plaintext ManageBac password**, stored to allow silent re-login
@@ -337,29 +341,29 @@ By default, `mb-cli` stores credentials and daemon states in `~/.config/tahuti/`
 - `daemon_state.json` — Notification/reminder dedup state
 
 Every file holding a credential or personal data is written with `0600` and the
-directory with `0700`. On startup `mb` warns on stderr if `creds.json`,
+directory with `0700`. On startup `tahuti` warns on stderr if `creds.json`,
 `session.json`, or `config.json` is found group- or world-readable, since file
 permissions are the only barrier protecting a cleartext password. Set
 `MB_CRAWLER_NO_PERM_WARN=1` to silence it.
 
 > **`creds.json` holds your password in cleartext.** It is only written when a
-> password login succeeds *without* `--temp`. Use `mb login --temp` for a
+> password login succeeds *without* `--temp`. Use `tahuti login --temp` for a
 > one-off session that is not persisted — it writes nothing to disk at all: no
 > password, no session cookie, and no response cache (the cache holds grade
 > pages and the hub JWT, so persisting it would have quietly defeated the flag).
 >
-> `mb logout` **deletes** `creds.json` and any OS-keychain entry, as well as
+> `tahuti logout` **deletes** `creds.json` and any OS-keychain entry, as well as
 > clearing the session cookie and the response cache. Pass `--keep-credentials`
 > if you want silent re-login preserved instead.
 >
 > To avoid the cleartext file entirely, opt into the OS keychain:
 > ```bash
-> mb login --keychain                 # or: MB_CRAWLER_KEYCHAIN=1 mb login
+> tahuti login --keychain             # or: MB_CRAWLER_KEYCHAIN=1 tahuti login
 > ```
 > This stores the password in the macOS Keychain or Linux Secret Service via the
 > `security` / `secret-tool` helpers already on the system — no extra dependency,
 > and nothing is stored if you do not ask for it. If the keychain is unavailable
-> (for example a headless Linux box with no secret service), `mb` falls back to
+> (for example a headless Linux box with no secret service), `tahuti` falls back to
 > `creds.json` with a warning rather than losing the credential. See
 > [SECURITY.md](SECURITY.md) for the limits of both backends.
 
@@ -382,19 +386,19 @@ your shell history and out of `ps` output:
 - `MB_CRAWLER_PASSWORD` — ManageBac password.
 - `MB_CRAWLER_COOKIE` — `_managebac_session` cookie value.
 - `MB_CRAWLER_KEYCHAIN` — set to `1` to store the password in the OS keychain
-  instead of cleartext `creds.json` (equivalent to `mb login --keychain`).
+  instead of cleartext `creds.json` (equivalent to `tahuti login --keychain`).
 - `MB_CRAWLER_NO_PERM_WARN` — set to `1` to silence the loose-permission warning.
 
 `MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are read back as **input** as well
 as exported into the daemon child, so a non-interactive run needs no prompt:
 
 ```bash
-MB_CRAWLER_PASSWORD=... mb daemon run          # no prompt, secret not in argv
-MB_CRAWLER_COOKIE=... mb list --format json    # cookie straight from the env
+MB_CRAWLER_PASSWORD=... tahuti daemon run       # no prompt, secret not in argv
+MB_CRAWLER_COOKIE=... tahuti list --format json # cookie straight from the env
 ```
 
 An explicit `--password` / `--cookie` takes precedence over the environment, and
-an exported-but-empty value is treated as unset. `mb daemon start -b` still
+an exported-but-empty value is treated as unset. `tahuti daemon start -b` still
 copies them into the detached child's environment so the secret never travels in
 `argv`. The trade-off: a leaked environment variable is now directly usable as a
 credential, and a process's environment is readable by its own user.
@@ -403,10 +407,10 @@ credential, and a process's environment is readable by its own user.
 
 ## MCP Server (AI Coding Assistants)
 
-`mb-cli` includes a built-in Model Context Protocol (MCP) server for integration with Claude Desktop, Cursor, Gemini, and other AI agents:
+`tahuti` includes a built-in Model Context Protocol (MCP) server for integration with Claude Desktop, Cursor, Gemini, and other AI agents:
 
 ```bash
-mb-mcp
+tahuti-mcp
 ```
 
 ### Example Claude Desktop Configuration
@@ -415,7 +419,7 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "managebac": {
-      "command": "mb-mcp"
+      "command": "tahuti-mcp"
     }
   }
 }
@@ -427,7 +431,7 @@ The MCP server exposes 14 tools: `list_tasks`, `view_task`, `submit_file`, `dele
 
 ## Downstream Integrations
 
-`mb-cli` intentionally avoids coupling itself to specific push providers, notification line limits, or personal course naming conventions. Instead, downstream consumers subscribe to events and apply customized logic:
+`tahuti` intentionally avoids coupling itself to specific push providers, notification line limits, or personal course naming conventions. Instead, downstream consumers subscribe to events and apply customized logic:
 
 - **[Event Stream Specification](docs/events.md)**: Full specification of the event data contract, lifecycle states, and JSON payloads.
 - **[Downstream Notifier Guide](docs/downstream-notifier-guide.md)**: Operational guide for deploying `extras/mb-notifier` (Bark push alerts, 3-field / 4-line mobile screen budgeting, course aliases, and sound customization).

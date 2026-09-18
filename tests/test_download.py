@@ -1,4 +1,4 @@
-"""Coverage for `mb download`.
+"""Coverage for `tahuti download`.
 
 `download` writes to the filesystem and had no dedicated tests: its four
 failure paths reported only through the log, so a `--format json` caller got an
@@ -345,7 +345,7 @@ def test_download_skips_entries_without_name_or_url(tmp_path):
     ],
 )
 def test_download_payload_shape_end_to_end(tmp_path, argv, expected_rc_key):
-    """`mb download` reaches print_payload with the format argparse gives it."""
+    """`tahuti download` reaches print_payload with the format argparse gives it."""
     from mb_cli.__main__ import build_parser, cmd_download as handler
 
     parser = build_parser()

@@ -302,7 +302,7 @@ def test_e2e_background_process_lifecycle(tmp_path: Path):
     status = mgr.status()
     assert status["running"] is False
 
-    # Start a mock background process representing mb-cli daemon
+    # Start a mock background process representing the tahuti daemon
     cmd = [sys.executable, "-c", "import time; time.sleep(30)"]
     proc = subprocess.Popen(
         cmd,

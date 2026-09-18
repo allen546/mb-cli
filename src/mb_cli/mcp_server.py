@@ -18,7 +18,7 @@ from .notifications import MNNHubClient, hub_for_domain
 log = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "mb-cli",
+    "tahuti",
     instructions=(
         "ManageBac MCP server. Provides tools to interact with ManageBac: "
         "list/view tasks, submit files, view notifications, calendar events, "
