@@ -78,8 +78,56 @@ class TestManageBacClientInit:
             mock_build.assert_called_once_with(profile=None)
 
     def test_headers_set(self, client):
+        """Every static header must reach the session verbatim.
+
+        The User-Agent is checked separately, in
+        `test_user_agent_names_the_running_platform`: asserting it against
+        `HEADERS` here would be circular, since `HEADERS` is the very value
+        under test.
+        """
         for key, val in HEADERS.items():
+            if key == "User-Agent":
+                continue
             assert client.session.headers.get(key) == val
+
+    @pytest.mark.xfail(
+        reason="src/mb_cli/client.py:63-66 hardcodes a macOS User-Agent on every "
+        "platform, so on Linux/Windows the fingerprint names the wrong OS. "
+        "Test-only change: the src fix belongs to whoever owns client.py. "
+        "This mark reports XPASS once the UA follows sys.platform — delete it then.",
+        strict=False,
+    )
+    def test_user_agent_names_the_running_platform(self, client):
+        """The User-Agent must describe the OS it is actually running on.
+
+        `HEADERS` hardcodes a macOS fingerprint on every platform, so the old
+        assertion — `session.headers["User-Agent"] == HEADERS["User-Agent"]` —
+        could never fail: it compared the constant to itself. A crawler that
+        announces "Macintosh; Intel Mac OS X" from a Linux box or a Windows
+        Server is a trivially fingerprintable lie, and no test could see it.
+        """
+        user_agent = client.session.headers.get("User-Agent")
+        assert user_agent, "no User-Agent was set on the session"
+
+        # The OS token ManageBac would see, per platform.
+        expected_token = {
+            "darwin": "Macintosh",
+            "win32": "Windows NT",
+        }.get(sys.platform)
+        if expected_token is None:
+            # Linux and other POSIX: a real Linux UA names X11 or Linux.
+            assert (
+                "X11" in user_agent or "Linux" in user_agent
+            ), f"User-Agent does not name Linux: {user_agent!r}"
+        else:
+            assert expected_token in user_agent, (
+                f"on {sys.platform} the User-Agent must name {expected_token!r}, "
+                f"got {user_agent!r}"
+            )
+
+        # The rest of the fingerprint must stay a well-formed browser string.
+        assert "Mozilla/5.0" in user_agent
+        assert "AppleWebKit/537.36" in user_agent
 
     def test_initial_student_name_none(self, client):
         assert client.student_name is None
