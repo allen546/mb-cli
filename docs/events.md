@@ -6,7 +6,93 @@ This document defines the event data contract, delivery channels, standard paylo
 
 ## 1. Overview & Architecture
 
-### 1.1 Unopinionated Event Producer
+### 1.1 Notification Transport: Polling, Not Push
+
+**`mb-cli` does not receive real-time push notifications from ManageBac.** It detects
+changes by polling on a fixed interval and diffing the results against locally
+persisted state. This section records why, so the question does not have to be
+re-investigated.
+
+**What ManageBac exposes.** The `/student/notifications` page embeds two attributes
+on its `a.js-messages-and-notifications-trigger` element:
+
+| Attribute | Purpose |
+| :--- | :--- |
+| `data-token` | A JWT authorising requests to the ManageBac Notification Network (MNN) Hub. |
+| `data-mnn-hub-endpoint` | The **HTTPS base URL** of the MNN Hub — not a WebSocket URL. |
+
+`mb-cli` scrapes both (`ManageBacClient.get_notification_token()`) and uses the
+endpoint to build an ordinary REST client: `f"{endpoint}/api/frontend/v2"`, called
+with `Authorization: Bearer <jwt>` over plain HTTPS. Every notification read and
+mutation in this project is an HTTP `GET`/`PUT`.
+
+**Evidence that the endpoint is REST, not a WebSocket:**
+
+1. **No WebSocket client exists anywhere in the project.** A grep of `src/` for
+   `websocket`, `ws://`, `wss://`, `websockets`, and `socket.io` returns no matches,
+   and there is no WebSocket dependency in `pyproject.toml`. Only `requests` talks to
+   the hub.
+2. **The transport was never implemented as a socket in any commit.** A pickaxe
+   search of the full history (`git log --all -S'wss://'`, `-S'ws://'`,
+   `-S'websocket'`) finds no commit that ever opened, dialled, or upgraded a
+   WebSocket connection. There is no reverted attempt to point at.
+3. **The recorded endpoint value is an `https://` URL.** The only captured sample of
+   the attribute (`tests/conftest.py`, `sample_notifications_page_html`) is
+   `data-mnn-hub-endpoint="https://mnn-hub.prod.faria.com"`. A WebSocket endpoint
+   would be `wss://…`. The value is consumed as a REST base by
+   `MNNHubClient.__init__` (`self.base = f"{endpoint}/api/frontend/v2"`), which only
+   works if the scheme is `https://`.
+4. **The hardcoded fallbacks are HTTPS origins.** `mb_cli.notifications.HUB_ENDPOINTS`
+   maps `managebac.com` → `https://mnn-hub.prod.faria.com` and `managebac.cn` →
+   `https://mnn-hub.prod.faria.cn`, used verbatim as the REST base. These are also
+   what `hub_for_domain()` returns when the scrape yields no endpoint.
+5. **Both hosts resolve over DNS** (`mnn-hub.prod.faria.com` and
+   `mnn-hub.prod.faria.cn`), so the hosts are live and reachable — the constraint is
+   the protocol, not availability. Note that DNS resolution says nothing about which
+   protocol the host speaks, so this item is supporting context rather than proof;
+   points 1-4 are the load-bearing evidence.
+
+**What this means for consumers.** No push transport is implemented here, and the
+endpoint ManageBac publishes is an HTTPS origin rather than a socket URL — so there
+is no persistent channel to subscribe to. Event latency is therefore bounded below by
+one poll interval.
+
+*Scope of this finding.* The evidence above establishes what the published attribute
+is and how this project uses it. It does not rule out an undocumented socket
+elsewhere on ManageBac's frontend that is not exposed through `data-mnn-hub-endpoint`;
+confirming or excluding that would require an authenticated browser session. What can
+be stated without credentials is that **no socket endpoint is published to the
+notifications page, none is implemented, and the recorded value is an HTTPS origin.**
+
+**Polling model in use.**
+
+| Setting | Default | Meaning |
+| :--- | :--- | :--- |
+| `poll_interval_seconds` | `30` | Base seconds between daemon check cycles. |
+| `poll_jitter_seconds` | `5` | Upper bound of a uniform random addition, so the cycle is 30-35s. |
+| `full_sync_interval_minutes` | `15` | Minimum cadence for a full upcoming-task recrawl (floored at 12h in the loop). |
+
+The jitter is deliberate: a metronomic 30s cadence is trivial to fingerprint as a
+bot, whereas a randomised one- to five-second offset does not look like automation.
+Read requests to the MNN Hub carry an additional 1-3s sleep (`MNNHubClient._jitter`)
+for the same reason; mutations do not, since they are user-initiated.
+
+**Practical guidance.** Pick the largest interval your use case tolerates — a
+deadline reminder does not need 5s resolution, and every cycle sends authenticated
+requests to ManageBac. Events are de-duplicated by `event_id`, so shortening the
+interval is safe; it just costs more requests. Lowering it below roughly 30s
+increases exposure to rate limiting and the account-termination risk described in
+the README disclaimer.
+
+> **Do not "fix" this by adding a WebSocket client.** The attribute is an HTTPS
+> origin and no socket endpoint is documented. If you believe a push channel has
+> appeared, verify it against the live page first — capture the exact
+> `data-mnn-hub-endpoint` value and confirm the scheme is `wss://` — before writing
+> any transport code.
+
+---
+
+### 1.2 Unopinionated Event Producer
 
 `mb-cli` acts as an **unopinionated ManageBac Event Producer**. Its sole responsibility is to interact with ManageBac—authenticating, polling for updates, parsing coursework details, detecting deltas, and evaluating upcoming deadlines—and emitting standardized, typed facts.
 
@@ -17,40 +103,31 @@ This document defines the event data contract, delivery channels, standard paylo
 
 Downstream consumer applications (such as iOS push notifiers, Web Dashboards, Todoist synchronization bots, or Telegram/Discord channels) subscribe to these events and apply their own presentation, categorization, and alerting rules.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       mb-cli (Core Event Producer)                          │
-│                                                                             │
-│  - Session Auth & Automated Token Refresh                                   │
-│  - Real-Time MNN Notification Polling & HTML Crawling                       │
-│  - Background Deadline Countdown Evaluator                                  │
-│  - State Tracking & Delta Detection                                         │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ Standard MBEvent Envelopes
-                                       │ (task_created, task_graded, etc.)
-            ┌──────────────────────────┴──────────────────────────┐
-            ▼                                                     ▼
-┌──────────────────────────────────────┐  ┌───────────────────────────────────┐
-│ Channel A: HTTP Webhook Dispatcher   │  │ Channel B: Python Async SDK       │
-│                                      │  │                                   │
-│ CLI: mb daemon run --webhook-url ... │  │ Code: async for ev in             │
-│ - POST JSON to HTTP endpoints        │  │           daemon.stream():        │
-│ - HMAC-SHA256 signature verification │  │ - In-process asyncio event loop   │
-│ - Exponential backoff retry          │  │ - Non-blocking worker thread pool │
-└──────────────────┬───────────────────┘  └─────────────────┬─────────────────┘
-                   │                                        │
-                   ▼                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            Downstream Consumers                             │
-│                                                                             │
-│  - mb-notifier (Bark iOS push alerts, course aliases, alarm sounds)         │
-│  - mb-dashboard (FastAPI / Next.js web application, SQLite analytics)      │
-│  - mb-todoist (Two-way task synchronization, priority adjustments)          │
-│  - Custom Bots (Discord, Telegram, Slack, Lark / Feishu integrations)       │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph producer["mb-cli — Core Event Producer"]
+        A["Session auth and automated token refresh"]
+        B["MNN Hub REST polling and HTML crawling"]
+        C["Background deadline countdown evaluator"]
+        D["State tracking and delta detection"]
+    end
+
+    subgraph channels["Event delivery"]
+        E["Channel A: HTTP Webhook Dispatcher<br/>POST JSON, HMAC-SHA256 signature,<br/>exponential backoff retry"]
+        F["Channel B: Python Async SDK<br/>async for ev in daemon.stream(),<br/>non-blocking worker thread pool"]
+    end
+
+    subgraph consumers["Downstream consumers"]
+        G["mb-notifier — Bark iOS push alerts, course aliases<br/>mb-dashboard — FastAPI / Next.js, SQLite analytics<br/>mb-todoist — two-way task synchronization<br/>Custom bots — Discord, Telegram, Slack, Feishu"]
+    end
+
+    B -->|"Standard MBEvent envelopes<br/>(task_created, task_graded, ...)"| E
+    B --> F
+    E --> G
+    F --> G
 ```
 
-### 1.2 Event Delivery Channels
+### 1.3 Event Delivery Channels
 
 Downstream systems can consume ManageBac events via two primary channels:
 
