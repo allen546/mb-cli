@@ -75,7 +75,10 @@ def test_scheduler_skips_graded_task_in_cache(tmp_path: Path):
 
     now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=30)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # isoformat() keeps the offset: parse_due_date returns aware datetimes,
+    # and a strftime'd string carrying no offset would be read as the host's
+    # local time rather than this test's UTC frame.
+    due_str = due_dt.isoformat()
 
     # Task is graded (7/7) but NOT submitted (e.g. offline assignment or graded early)
     mgr.update_task(
@@ -100,7 +103,7 @@ def test_scheduler_live_check_detects_graded_task(tmp_path: Path):
 
     now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
     due_dt = now + timedelta(minutes=30)
-    due_str = due_dt.strftime("%Y-%m-%d %H:%M:%S")
+    due_str = due_dt.isoformat()
 
     # In cache, task is not submitted and not graded yet
     mgr.update_task(
@@ -147,7 +150,7 @@ def test_service_pre_alarm_check_with_graded_stealth_details(tmp_path: Path):
         "task_id": "888",
         "class_id": "1000014",
         "title": "In-Class Essay",
-        "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "due_date": due_dt.isoformat(),
         "status": "not-submitted",
         "has_submit_button": False,
     }
@@ -166,7 +169,7 @@ def test_service_pre_alarm_check_with_graded_stealth_details(tmp_path: Path):
             "task_id": "888",
             "class_id": "1000014",
             "title": "In-Class Essay",
-            "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "due_date": due_dt.isoformat(),
             "status": "not-submitted",
             "has_submit_button": False,
             "grade_letter": "A",

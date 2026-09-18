@@ -758,3 +758,67 @@ class TestAttachmentDedupKeepsQuery:
 # ── Defect 10: parse_due_date must return one unambiguous type ────────────
 
 
+class TestParseDueDateIsConsistentlyAware:
+    """Mixing naive and aware datetimes crashes the pretty renderer.
+
+    The school-display format used to yield a naive local datetime while ISO
+    input yielded an aware one, so ``sorted`` raised ``TypeError`` out of
+    ``render_pretty`` — a raw traceback from ``main()``.
+    """
+
+    def test_school_display_format_is_aware(self):
+        dt = parse_due_date("September 15, 2026 at 23:59")
+        assert dt is not None
+        assert dt.tzinfo is not None, "school-display format yielded a naive datetime"
+
+    def test_iso_with_offset_stays_aware(self):
+        dt = parse_due_date("2026-09-20T23:59:00+08:00")
+        assert dt is not None
+        assert dt.tzinfo is not None
+        assert dt.utcoffset().total_seconds() == 8 * 3600
+
+    def test_iso_without_offset_becomes_aware(self):
+        dt = parse_due_date("2026-09-20T23:59:00")
+        assert dt is not None
+        assert dt.tzinfo is not None
+
+    def test_all_shapes_are_comparable(self):
+        """Every parseable shape must sort against every other without TypeError."""
+        samples = [
+            "2026-09-20T23:59:00+08:00",
+            "Sep 19, 11:59 PM",
+            "September 15, 2026 at 23:59",
+            "Sep 15",
+            None,
+            "not a date",
+        ]
+        parsed = [parse_due_date(s) for s in samples]
+        assert parsed[0] is not None and parsed[1] is not None
+        for a in parsed:
+            for b in parsed:
+                if a is None or b is None:
+                    continue
+                assert (a < b) in (True, False)  # must not raise TypeError
+
+    def test_school_display_and_iso_can_be_sorted_together(self):
+        mixed = [
+            {"due_date": "2026-09-20T23:59:00+08:00"},
+            {"due_date": "Sep 19, 11:59 PM"},
+        ]
+        keys = [parse_due_date(t["due_date"]) for t in mixed]
+        assert sorted(keys) is not None
+
+    def test_year_wrapping_still_works(self):
+        """The tz change must not disturb the infer-year-and-wrap logic."""
+        from datetime import datetime
+
+        fixed_now = datetime(2026, 12, 28, 12, 0, 0)
+        dt = parse_due_date("Jan 4, 9:30 PM", now_ref=fixed_now)
+        assert dt is not None
+        assert (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (2027, 1, 4, 21, 30)
+
+    def test_naive_now_ref_is_accepted(self):
+        from datetime import datetime
+
+        dt = parse_due_date("September 15, 2026 at 10:00 AM", now_ref=datetime(2026, 9, 1))
+        assert dt is not None and dt.tzinfo is not None

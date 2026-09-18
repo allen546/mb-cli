@@ -145,7 +145,10 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
                 "title": "NAME LIST",
                 "class_id": "1000012",
                 "class_name": "AP Physics 1",
-                "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                # isoformat() keeps the offset: parse_due_date returns aware datetimes,
+                # and a strftime'd string carrying no offset would be read as the host's
+                # local time rather than this test's UTC frame.
+                "due_date": due_dt.isoformat(),
                 "status": "not-submitted",
             },
             {
@@ -153,7 +156,7 @@ def test_e2e_full_daemon_check_cycle_pipeline(tmp_path: Path):
                 "title": "Already Completed Math Task",
                 "class_id": "1000012",
                 "class_name": "Math HL",
-                "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "due_date": due_dt.isoformat(),
                 "status": "submitted",  # Should be silenced
             },
         ]

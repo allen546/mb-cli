@@ -110,7 +110,14 @@ HEADERS = {
 
 
 def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
-    """Parse due date string with multi-format and year wrapping correction."""
+    """Parse a ManageBac due date into a **timezone-aware** datetime.
+
+    Every return value carries a ``tzinfo``, so two parsed dates are always
+    comparable.  See :func:`_school_display_tz` for the timezone assumption
+    applied to inputs that carry no offset of their own.
+
+    Returns ``None`` when *due_date_str* is empty or unparseable.
+    """
     if not due_date_str:
         return None
     try:
@@ -122,32 +129,47 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
         if "-" in cleaned and ("T" in cleaned or ":" in cleaned):
             try:
                 import datetime as _std_dt
-                return _std_dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+                parsed_iso = _std_dt.datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+                # An ISO string with an offset keeps it; one without gets the
+                # school-display timezone rather than staying naive.
+                if parsed_iso.tzinfo is None:
+                    parsed_iso = parsed_iso.replace(tzinfo=_school_display_tz())
+                return parsed_iso
             except (ValueError, TypeError):
                 pass
 
-        # 2. Try formats with explicit year
+        # 2. Try formats with explicit year.
+        # ManageBac renders the same date both ways — "September 15, 2026 at
+        # 11:59 PM" and "September 15, 2026 at 23:59" — so both the 12-hour and
+        # the 24-hour spelling need to parse.  Without the %H:%M variants the
+        # 24-hour form returned None, which callers read as "no due date".
         for fmt in (
             "%B %d, %Y %I:%M %p",
             "%b %d, %Y %I:%M %p",
+            "%B %d, %Y %H:%M",
+            "%b %d, %Y %H:%M",
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%d %H:%M",
             "%Y-%m-%d",
         ):
             try:
-                return datetime.strptime(cleaned_no_at, fmt)
+                return datetime.strptime(cleaned_no_at, fmt).replace(
+                    tzinfo=_school_display_tz()
+                )
             except ValueError:
                 continue
 
         # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=_school_display_tz())
         current_year = ref.year
 
         dt = None
         for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
                 parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
-                dt = parsed
+                dt = parsed.replace(tzinfo=_school_display_tz())
                 break
             except ValueError:
                 continue
