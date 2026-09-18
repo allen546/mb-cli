@@ -8,7 +8,14 @@ from pathlib import Path
 
 from .cache import ResponseCache
 from .client import ManageBacClient
-from .config import AppState, load_creds, load_state, save_creds, save_session
+from .config import (
+    AppState,
+    config_dir,
+    load_creds,
+    load_state,
+    save_creds,
+    save_session,
+)
 from .exceptions import CommandError
 
 log = logging.getLogger(__name__)
@@ -16,7 +23,7 @@ log = logging.getLogger(__name__)
 _CREDS_PATH_ENV = "MB_CRAWLER_CREDS_PATH"
 _CREDS_PATH = os.environ.get(
     _CREDS_PATH_ENV,
-    str(Path.home() / ".config" / "mb-crawler" / "creds.json"),
+    str(config_dir() / "creds.json"),
 )
 
 
@@ -109,7 +116,7 @@ def build_client(
         if not login_email or not login_pass:
             raise CommandError(
                 "missing_credentials",
-                "No session, no password — pass password= or configure mb_config.json",
+                "No session, no password — pass password= or set a password via `mb login`",
             )
         if not client.login(login_email, login_pass, remember=remember):
             raise CommandError("authentication_failed", "ManageBac login failed")
@@ -148,7 +155,7 @@ def _is_session_alive(client: ManageBacClient) -> bool:
 
 
 def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
-    """Re-login using credentials from mb_config.json. Raises CommandError on failure."""
+    """Re-login using saved credentials. Raises CommandError on failure."""
     creds = load_creds(_creds_path())
     if not creds or "email" not in creds or "password" not in creds:
         raise CommandError(

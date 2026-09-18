@@ -1,4 +1,4 @@
-"""Disk-based HTTP response cache with TTL for mb-cli."""
+"""Disk-based HTTP response cache with TTL for tahuti."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ import tempfile
 import time
 from pathlib import Path
 
-DEFAULT_CACHE_DIR = Path.home() / ".config" / "mb-crawler" / "cache"
+from .config import config_dir
+
+DEFAULT_CACHE_DIR = config_dir() / "cache"
 DEFAULT_TTL = 900  # 15 minutes
 
 

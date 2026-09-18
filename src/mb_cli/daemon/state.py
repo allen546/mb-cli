@@ -13,10 +13,11 @@ import time
 from typing import Any
 
 from ..client import parse_due_date
+from ..config import config_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = Path.home() / ".config" / "mb-crawler" / "daemon_state.json"
+DEFAULT_STATE_PATH = config_dir() / "daemon_state.json"
 
 
 def _ensure_parent(path: Path) -> None:

@@ -14,7 +14,13 @@ from pathlib import Path
 
 from .auth import build_client
 from .client import ManageBacClient, parse_task_url
-from .config import clear_session, load_state, save_profile, save_session
+from .config import (
+    clear_session,
+    config_dir,
+    load_state,
+    save_profile,
+    save_session,
+)
 from .daemon import (
     DaemonConfig,
     DaemonService,
@@ -85,7 +91,7 @@ def _authenticate_client(state, client, email: str) -> str:
     return email or state.profile.email or ""
 
 
-DEFAULT_SNAPSHOT_PATH = Path.home() / ".config" / "mb-crawler" / "snapshot.json"
+DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
 
 
 def load_snapshot(path: Path) -> dict:

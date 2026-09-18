@@ -13,10 +13,12 @@ import sys
 import time
 from typing import Any
 
+from ..config import config_dir
+
 log = logging.getLogger(__name__)
 
-DEFAULT_PID_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.pid"
-DEFAULT_LOG_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.log"
+DEFAULT_PID_PATH = config_dir() / "daemon.pid"
+DEFAULT_LOG_PATH = config_dir() / "daemon.log"
 
 
 def _harden_dir(path: Path) -> None:
@@ -28,7 +30,7 @@ def _harden_dir(path: Path) -> None:
 
 
 def _is_mb_cli_process(pid: int) -> bool:
-    """Verify PID corresponds to an mb-cli process to prevent terminating recycled PIDs.
+    """Verify PID corresponds to a tahuti process to prevent terminating recycled PIDs.
 
     The bare ``"mb"`` substring is deliberately absent: it matches any process
     whose command line merely contains those two letters (``systemd``,

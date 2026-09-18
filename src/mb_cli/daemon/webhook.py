@@ -121,7 +121,7 @@ class WebhookDispatcher:
     ) -> tuple[bool, int | None, str | None]:
         headers = {
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "mb-crawler-daemon/1.0",
+            "User-Agent": "tahuti-daemon/1.0",
             "X-MB-Event": event_type,
             "X-MB-Timestamp": f"{time.time():.3f}",
         }
@@ -192,7 +192,7 @@ class WebhookDispatcher:
             event="test_ping",
             data={
                 "message": "ManageBac Webhook Test Ping — daemon connection successful!",
-                "service": "mb-crawler-daemon",
+                "service": "tahuti-daemon",
             },
         )
         wh = WebhookConfig(url=url, secret=secret, events=["*"], enabled=True)
