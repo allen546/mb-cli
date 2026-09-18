@@ -12,6 +12,7 @@ Covers four behaviours that were previously either wrong or undocumented:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -491,6 +492,309 @@ class TestKeychainModule:
         monkeypatch.setattr(keychain, "_run", fake_run)
         assert keychain.delete("a@b.c") is True
         assert "delete-generic-password" in seen["argv"]
+
+
+# ── Windows keychain — WinRT PasswordVault via powershell.exe ────────────
+#
+# Exercised on macOS/CI by faking `sys.platform` and `shutil.which`, so the
+# win32 branches are reachable here. No test below launches a real PowerShell;
+# they assert on the argv / script / stdin the module would hand the child.
+
+#: Stands in for the prefix `keychain._tool()` builds on Windows.
+_WIN_TOOL = [
+    r"C:\WINDOWS\System32\powershell.exe",
+    "-NoProfile",
+    "-NoLogo",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+]
+
+
+#: The genuine `_tool` probe, captured before the autouse fixture stubs it out.
+_REAL_TOOL = keychain._tool
+
+
+def _only_these_exist(monkeypatch, *names):
+    """Make `shutil.which` find exactly *names*, probing with the real `_tool`.
+
+    Returns the list of program names probed, in order. The autouse fixture
+    stubs ``keychain._tool`` out so backend selection is deterministic; the
+    discovery tests need the genuine probe back.
+    """
+    asked = []
+
+    def which(name, *args, **kwargs):
+        asked.append(name)
+        return "/usr/bin/" + name if name in names else None
+
+    monkeypatch.setattr(keychain.shutil, "which", which)
+    monkeypatch.setattr(keychain, "_tool", _REAL_TOOL)
+    return asked
+
+
+def _win32(monkeypatch, tool=None):
+    """Pretend to be Windows, with *tool* as the credential-helper prefix."""
+    monkeypatch.setattr(keychain.sys, "platform", "win32")
+    monkeypatch.setattr(
+        keychain, "_tool", lambda: _WIN_TOOL if tool is None else tool
+    )
+
+
+class TestWindowsKeychainBackend:
+    """Windows must be a real credential store, not a silent cleartext fallback.
+
+    Three properties matter: the secret never reaches argv or the child's
+    environment, the vault can be read back (the daemon needs silent re-login),
+    and any failure degrades to creds.json instead of dropping the password.
+    """
+
+    def _script(self, monkeypatch, fn, *args, **kwargs):
+        """Run *fn* on a fake Windows and return what the child would have got.
+
+        ``script`` / ``stdin`` / ``argv`` describe the *first* invocation, the
+        operation under test; ``store`` may follow it with a verifying lookup.
+        """
+        seen = {"calls": []}
+
+        def fake_run(argv, **run_kwargs):
+            seen["calls"].append({"argv": argv, "kwargs": run_kwargs})
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        fn(*args, **kwargs)
+        first = seen["calls"][0]
+        seen["argv"] = first["argv"]
+        seen["script"] = first["argv"][-1]
+        seen["stdin"] = first["kwargs"].get("stdin")
+        seen["kwargs"] = first["kwargs"]
+        return seen
+
+    # ── helper discovery ─────────────────────────────────────────────────
+
+    def test_tool_probes_powershell_first(self, monkeypatch):
+        asked = _only_these_exist(monkeypatch, "powershell")
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        assert keychain._tool() == [
+            "/usr/bin/powershell",
+            "-NoProfile",
+            "-NoLogo",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+        ]
+        assert asked == ["powershell"], "pwsh must only be tried when 5.1 is absent"
+
+    def test_tool_falls_back_to_powershell_7(self, monkeypatch):
+        asked = _only_these_exist(monkeypatch, "pwsh")
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        assert keychain._tool()[0] == "/usr/bin/pwsh"
+        assert asked == ["powershell", "pwsh"]
+
+    def test_tool_absent_without_powershell(self, monkeypatch):
+        _only_these_exist(monkeypatch)
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        assert keychain._tool() is None
+        assert keychain.available() is False
+
+    def test_win32_never_falls_through_to_secret_tool(self, monkeypatch):
+        """`secret-tool` is a Linux binary; the win32 branch must win over it."""
+        _only_these_exist(monkeypatch, "secret-tool", "powershell")
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        tool = keychain._tool()
+        assert tool is not None, "Windows must not report 'no helper'"
+        assert tool[0] == "/usr/bin/powershell"
+
+    @pytest.mark.parametrize(
+        "platform, expected",
+        [("linux", "secret-tool"), ("darwin", "security")],
+    )
+    def test_other_platforms_never_pick_up_powershell(
+        self, monkeypatch, platform, expected
+    ):
+        """A developer with PowerShell installed on macOS must be unaffected."""
+        _only_these_exist(
+            monkeypatch, "powershell", "pwsh", "security", "secret-tool"
+        )
+        monkeypatch.setattr(keychain.sys, "platform", platform)
+        assert keychain._tool()[0].endswith(expected)
+
+    def test_enabled_on_windows_with_powershell(self, monkeypatch):
+        _only_these_exist(monkeypatch, "powershell")
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        monkeypatch.setenv("MB_CRAWLER_KEYCHAIN", "1")
+        assert keychain.enabled() is True
+
+    # ── store ────────────────────────────────────────────────────────────
+
+    def test_store_keeps_the_secret_out_of_argv(self, monkeypatch):
+        seen = self._script(monkeypatch, keychain.store, "a@b.c", "s3cret-pw")
+        assert "s3cret-pw" not in " ".join(seen["argv"]), "secret leaked into argv"
+        assert seen["stdin"] == b"s3cret-pw", "secret must travel on stdin"
+
+    def test_store_keeps_the_secret_out_of_the_child_environment(self, monkeypatch):
+        """Guards against 'fixing' argv leakage by smuggling it through env."""
+        seen = self._script(monkeypatch, keychain.store, "a@b.c", "s3cret-pw")
+        assert "env" not in seen["kwargs"], "the child must inherit env unchanged"
+
+    def test_store_script_drives_the_vault(self, monkeypatch):
+        seen = self._script(monkeypatch, keychain.store, "a@b.c", "pw")
+        script = seen["script"]
+        assert "PasswordVault" in script
+        assert "$v.Remove($v.Retrieve('tahuti','a@b.c'))" in script, (
+            "a re-login must update in place"
+        )
+        assert "$v.Add(" in script
+
+    def test_store_adds_a_passwordcredential(self, monkeypatch):
+        """`Add`/`Remove` take a PasswordCredential; only `Retrieve` takes a pair."""
+        seen = self._script(monkeypatch, keychain.store, "a@b.c", "pw")
+        assert "::new('tahuti','a@b.c',$pw)" in seen["script"]
+        assert "$v.Add('tahuti','a@b.c',$pw)" not in seen["script"]
+
+    def test_store_reads_the_existing_item_before_removing_it(self, monkeypatch):
+        """`Remove` takes the credential object, so `Retrieve` must run first."""
+        seen = self._script(monkeypatch, keychain.store, "a@b.c", "pw")
+        assert "$v.Remove($v.Retrieve('tahuti','a@b.c'))" in seen["script"]
+        assert seen["script"].index("$v.Remove(") < seen["script"].index("$v.Add(")
+
+    def test_store_quotes_the_account_name(self, monkeypatch):
+        """The account comes from the CLI and must not be able to inject script."""
+        seen = self._script(monkeypatch, keychain.store, "o'brien@x.com", "pw")
+        assert "'o''brien@x.com'" in seen["script"], "quote not doubled"
+        assert "'o'brien@x.com'" not in seen["script"]
+
+    def test_store_substitutes_the_account_last(self, monkeypatch):
+        """Braces in the account must survive verbatim, not hit a placeholder."""
+        seen = self._script(
+            monkeypatch, keychain.store, "a{target}{notfound}@x.com", "pw"
+        )
+        assert "'a{target}{notfound}@x.com'" in seen["script"]
+
+    def test_store_nonzero_rc_returns_false(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1, b"", b"WinRT type not found")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.store("a@b.c", "pw") is False
+
+    def test_store_reports_false_when_the_item_cannot_be_read_back(self, monkeypatch):
+        """`auth` deletes creds.json on True, so a write-only vault must not pass."""
+
+        def fake_run(argv, **kwargs):
+            if ".Add(" in argv[-1]:
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return subprocess.CompletedProcess(argv, 1, b"", b"vault unreadable")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.store("a@b.c", "pw") is False
+
+    def test_store_verifies_by_reading_the_item_back(self, monkeypatch):
+        scripts = []
+
+        def fake_run(argv, **kwargs):
+            scripts.append(argv[-1])
+            if ".Add(" in argv[-1]:
+                return subprocess.CompletedProcess(argv, 0, b"", b"")
+            return subprocess.CompletedProcess(
+                argv, 0, base64.b64encode(b"pw"), b""
+            )
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.store("a@b.c", "pw") is True
+        assert len(scripts) == 2, "store must read the item back before claiming success"
+
+    # ── lookup ───────────────────────────────────────────────────────────
+
+    def test_lookup_calls_retrieve_password(self, monkeypatch):
+        """`Retrieve` leaves `.Password` empty until `RetrievePassword()` runs."""
+        seen = self._script(monkeypatch, keychain.lookup, "a@b.c")
+        assert "$c.RetrievePassword()" in seen["script"]
+
+    def test_lookup_decodes_base64(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            out = base64.b64encode("line1\nline2".encode())
+            return subprocess.CompletedProcess(argv, 0, out, b"")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        # A password with a newline proves the base64 hop: PowerShell's text
+        # output would have reflowed or CRLF-mangled it.
+        assert keychain.lookup("a@b.c") == "line1\nline2"
+
+    def test_lookup_missing_item_returns_none(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, keychain._PS_NOT_FOUND, b"", b"")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") is None
+
+    def test_lookup_unhandled_powershell_error_returns_none(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1, b"", b"Unable to cast")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") is None
+
+    def test_lookup_undecodable_output_returns_none(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, b"not base64 !!", b"")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") is None
+
+    def test_lookup_non_utf8_output_returns_none(self, monkeypatch):
+        """Undecodable bytes must degrade, not raise out of the daemon's path."""
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 0, base64.b64encode(b"\xff\xfe not utf-8"), b""
+            )
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.lookup("a@b.c") is None
+
+    def test_lookup_survives_a_hung_powershell(self, monkeypatch):
+        """The daemon calls this on every silent re-login; it must not raise."""
+
+        def boom(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 15)
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", boom)
+        assert keychain.lookup("a@b.c") is None
+
+    def test_store_without_powershell_returns_false(self, monkeypatch):
+        """No helper means `auth` writes creds.json rather than losing the password."""
+        _only_these_exist(monkeypatch)
+        monkeypatch.setattr(keychain.sys, "platform", "win32")
+        assert keychain.available() is False
+        assert keychain.store("a@b.c", "pw") is False
+
+    # ── delete ───────────────────────────────────────────────────────────
+
+    def test_delete_removes_from_the_vault(self, monkeypatch):
+        seen = self._script(monkeypatch, keychain.delete, "a@b.c")
+        assert "$v.Remove($v.Retrieve('tahuti','a@b.c'))" in seen["script"]
+        assert seen["stdin"] is None, "delete needs no secret on stdin"
+
+    def test_delete_missing_item_returns_false(self, monkeypatch):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, keychain._PS_NOT_FOUND, b"", b"")
+
+        _win32(monkeypatch=monkeypatch)
+        monkeypatch.setattr(keychain, "_run", fake_run)
+        assert keychain.delete("a@b.c") is False
 
 
 class TestKeychainWiring:
