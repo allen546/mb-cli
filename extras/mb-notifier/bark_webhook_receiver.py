@@ -76,10 +76,26 @@ def _log_safe(value: Any, limit: int = 200) -> str:
     return s
 
 
-def compute_signature(secret: str, payload_bytes: bytes) -> str:
+def signed_material(timestamp_header: str | None, payload_bytes: bytes) -> bytes:
+    """The exact bytes the daemon's HMAC covers: ``"<timestamp>." + body``.
+
+    BREAKING PROTOCOL CHANGE: the signature used to cover the body only, which
+    left ``X-MB-Timestamp`` unauthenticated — anyone who captured one POST could
+    replay it forever by rewriting that header, because the original digest
+    still validated and the freshness check below passed. Keep this in lockstep
+    with ``signed_material`` in ``mb_cli/daemon/webhook.py``.
+    """
+    return f"{timestamp_header or ''}.".encode("utf-8") + payload_bytes
+
+
+def compute_signature(
+    secret: str, payload_bytes: bytes, timestamp_header: str | None = None
+) -> str:
     """Compute the HMAC-SHA256 signature in the same format the daemon sends."""
     return "sha256=" + hmac.new(
-        secret.encode("utf-8"), payload_bytes, hashlib.sha256
+        secret.encode("utf-8"),
+        signed_material(timestamp_header, payload_bytes),
+        hashlib.sha256,
     ).hexdigest()
 
 
@@ -93,23 +109,29 @@ def verify_signature(
 
     Returns ``(ok, reason)``.  Fails closed: a missing header, a malformed
     header, a mismatched digest, or a stale timestamp all reject.
+
+    The digest is checked *before* freshness so a forged timestamp is reported
+    as what it is (a signature mismatch) rather than merely "old".
     """
     if not secret:
         return False, "no_secret_configured"
     if not signature_header:
         return False, "missing_signature"
+    if not timestamp_header:
+        # The timestamp is signed material: with no timestamp there is nothing
+        # to verify against, and freshness cannot be authenticated at all.
+        return False, "missing_timestamp"
 
-    expected = compute_signature(secret, payload_bytes)
+    expected = compute_signature(secret, payload_bytes, timestamp_header)
     if not hmac.compare_digest(expected, signature_header):
         return False, "signature_mismatch"
 
-    if timestamp_header is not None:
-        try:
-            ts = float(timestamp_header)
-        except (TypeError, ValueError):
-            return False, "bad_timestamp"
-        if abs(datetime.now().timestamp() - ts) > MAX_TIMESTAMP_SKEW_SECONDS:
-            return False, "stale_timestamp"
+    try:
+        ts = float(timestamp_header)
+    except (TypeError, ValueError):
+        return False, "bad_timestamp"
+    if abs(datetime.now().timestamp() - ts) > MAX_TIMESTAMP_SKEW_SECONDS:
+        return False, "stale_timestamp"
 
     return True, "ok"
 

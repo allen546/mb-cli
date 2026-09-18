@@ -31,7 +31,7 @@ from mb_cli.daemon.scheduler import DDLScheduler
 from mb_cli.daemon.service import DaemonService
 from mb_cli.daemon.state import DaemonStateManager
 from mb_cli.daemon.system import ServiceManager
-from mb_cli.daemon.webhook import WebhookDispatcher
+from mb_cli.daemon.webhook import WebhookDispatcher, signed_material
 
 
 class WebhookRecordingServer:
@@ -97,13 +97,24 @@ def test_e2e_webhook_ping_and_signature(tmp_path: Path):
         req = server.received_requests[0]
         assert req["headers"].get("X-MB-Event") == "test_ping"
 
-        # Verify HMAC signature
+        # Verify HMAC signature over "<X-MB-Timestamp>." + body. The timestamp
+        # is signed material, so a signature over the body alone is exactly the
+        # replay hole this construction closes.
         signature_header = req["headers"].get("X-MB-Signature")
         assert signature_header is not None
+        timestamp_header = req["headers"].get("X-MB-Timestamp")
+        assert timestamp_header is not None
         expected_sig = "sha256=" + hmac.new(
-            secret.encode("utf-8"), req["body_bytes"], hashlib.sha256
+            secret.encode("utf-8"),
+            signed_material(timestamp_header, req["body_bytes"]),
+            hashlib.sha256,
         ).hexdigest()
         assert signature_header == expected_sig
+        # Body-only signing is the vulnerable construction — assert it is gone.
+        body_only = "sha256=" + hmac.new(
+            secret.encode("utf-8"), req["body_bytes"], hashlib.sha256
+        ).hexdigest()
+        assert signature_header != body_only
 
         # Verify envelope structure
         payload = req["payload"]

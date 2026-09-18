@@ -10,6 +10,21 @@ version string in `pyproject.toml`); there are no git tags in this repository.
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING PROTOCOL CHANGE — webhook signatures.** `X-MB-Signature` now covers
+  `X-MB-Timestamp` as well as the body:
+  `sha256=` + HMAC-SHA256(secret, `f"{X-MB-Timestamp}.".encode() + body`). It
+  previously covered the body alone, which left `X-MB-Timestamp`
+  unauthenticated — anyone who captured a single POST could replay it
+  indefinitely by rewriting that header, because the original digest still
+  validated and the receiver's freshness check (`MAX_TIMESTAMP_SKEW_SECONDS`)
+  waved the replay through. **Any deployed receiver rejects every payload until
+  it adds the timestamp to its signed material.** `extras/mb-notifier/bark_webhook_receiver.py`
+  and the FastAPI recipe in `docs/events.md` are updated in the same change;
+  `verify_signature` now fails closed on a missing `X-MB-Timestamp` and checks
+  the digest before freshness, so a restamped payload reports
+  `signature_mismatch` rather than merely `stale_timestamp`.
+
 ### Added
 - `CHANGELOG.md`, `SECURITY.md`, and GitHub Actions CI (`.github/workflows/ci.yml`).
 - `[dependency-groups]` `dev` group in `pyproject.toml` declaring the test
