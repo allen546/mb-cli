@@ -13,15 +13,19 @@ from mb_cli.daemon import diff_index
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _make_client() -> ManageBacClient:
+def _make_client(cache_dir=None) -> ManageBacClient:
     import threading
-    from mb_cli.cache import ResponseCache
+    from mb_cli.cache import ResponseCache, DEFAULT_CACHE_DIR
     client = ManageBacClient.__new__(ManageBacClient)
     client.school = "testschool"
     client.domain = "managebac.cn"
     client.base = "https://testschool.managebac.cn"
     client.student_name = "Test Student"
-    client.cache = ResponseCache()
+    # Routed into the per-test tmp_path by the autouse `isolated_user_state`
+    # fixture in conftest.py, which patches DEFAULT_CACHE_DIR. Spelled out here
+    # so the dependency is visible at the call site: a bare ResponseCache()
+    # would otherwise read and write the operator's real ~/.config/tahuti/cache.
+    client.cache = ResponseCache(cache_dir=cache_dir or DEFAULT_CACHE_DIR)
     client.retry = 0
     client.request_delay = 0.0
     client._last_request_time = 0.0
