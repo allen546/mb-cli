@@ -1,6 +1,6 @@
-# mb-cli: ManageBac CLI, Python SDK & Real-Time Event Engine
+# mb-cli: ManageBac CLI, Python SDK & Event Engine
 
-An unopinionated, robust toolkit for **ManageBac**: typed Python SDK, command-line interface, Model Context Protocol (MCP) server for AI assistants, and a real-time event streaming and webhook engine.
+An unopinionated, robust toolkit for **ManageBac**: typed Python SDK, command-line interface, Model Context Protocol (MCP) server for AI assistants, and a near-real-time event streaming and webhook engine.
 
 Supports both international (`managebac.com`) and China (`managebac.cn`) instances.
 
@@ -17,10 +17,23 @@ Supports both international (`managebac.com`) and China (`managebac.cn`) instanc
    - Smart output formatting: human-friendly colored tables on interactive TTYs, structured JSON when piped to files or other tools (`jq`).
 3. **MCP Server for AI Coding Assistants**:
    - Built-in Model Context Protocol server (`mb-mcp`) with 14 tools for AI assistants like Claude Desktop, Gemini, and Cursor to inspect deadlines, grades, and coursework.
-4. **Real-Time Event Streaming & Webhook Engine**:
+4. **Event Streaming & Webhook Engine**:
    - In-process async event streaming (`async for event in daemon.stream()`) for Python bots and background tasks.
    - Background daemon service (`mb daemon run --webhook-url ...`) dispatching typed `MBEvent` payloads to HTTP webhooks with HMAC-SHA256 signatures, exponential backoff retries, stealth jitter, and active-hours scheduling.
    - For the full event contract and JSON schema, see [Event Stream Specification](docs/events.md). For operational push notification setups (such as Bark for iOS), see [Downstream Notifier Guide](docs/downstream-notifier-guide.md).
+
+> **Delivery is polling-based, not push.** No WebSocket or server-sent-event
+> transport exists in `mb-cli`, and the MNN hub endpoint ManageBac publishes is an
+> HTTPS origin rather than a socket URL — so there is nothing to subscribe to.
+> The daemon polls the ManageBac Notification Network (MNN) Hub REST API on a
+> configurable interval — `poll_interval_seconds` (default 30s) plus a random
+> `poll_jitter_seconds` (default 0-5s) — and emits events from the delta between
+> successive polls. Expect latency of roughly one poll interval after an event
+> appears on ManageBac. The hub endpoint attribute is scraped from the
+> notifications page and used **only** to obtain the hub JWT and to derive the REST
+> base URL; it is not a socket URL. See the
+> [notification transport findings](docs/events.md#11-notification-transport-polling-not-push)
+> for the full investigation.
 
 ---
 
@@ -116,9 +129,9 @@ client.submit_file(
 )
 ```
 
-### 2. Real-Time Async Event Streaming (`ManageBacDaemon`)
+### 2. Async Event Streaming (`ManageBacDaemon`)
 
-Use `ManageBacDaemon.stream()` to consume live ManageBac events asynchronously in your Python application:
+Use `ManageBacDaemon.stream()` to consume ManageBac events asynchronously in your Python application. Events are produced by polling on the interval you configure, so treat the first event after a change as arriving within one poll cycle rather than instantly:
 
 ```python
 import asyncio
@@ -159,9 +172,9 @@ if __name__ == "__main__":
 
 ---
 
-## Real-Time Webhook Engine
+## Event Webhook Engine
 
-`mb-cli` includes a robust background daemon that can dispatch events to HTTP webhook receivers (e.g. local scripts, microservices, or custom bots):
+`mb-cli` includes a background daemon that dispatches polled events to HTTP webhook receivers (e.g. local scripts, microservices, or custom bots):
 
 ```bash
 # Run daemon in foreground with webhook dispatching
@@ -195,6 +208,18 @@ mb daemon test-webhook http://127.0.0.1:8000/webhook
   - `X-MB-Signature: sha256=<hex_hmac>` (when `--secret` is configured)
 - **Retry Mechanism**: Exponential backoff (`1s`, `2s`, `4s`) on network or server errors.
 - **Specification**: See [docs/events.md](docs/events.md) for full payload schemas and documentation.
+
+> **Latency and polling interval.** Events are detected by polling, so a receiver
+> sees a new task or grade after the daemon's next cycle, not at the moment
+> ManageBac publishes it. The cycle sleeps
+> `poll_interval_seconds + random(0, poll_jitter_seconds)` (defaults 30s and 5s, so
+> 30-35s); the jitter keeps request timing irregular rather than a fixed cadence.
+> `mb daemon run` sets this with `--poll-interval`, `mb daemon start` with
+> `--interval`. Lower it if you want tighter detection, but each cycle issues
+> authenticated requests to ManageBac — an aggressive interval raises the risk of
+> rate limiting or account flagging. There is no push channel to subscribe to
+> instead; see the notification transport findings in
+> [docs/events.md](docs/events.md#11-notification-transport-polling-not-push).
 
 ---
 

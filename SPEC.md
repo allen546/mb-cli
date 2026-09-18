@@ -34,11 +34,20 @@ All relative to `https://{school}.{domain}` (e.g. `https://myschool.managebac.cn
 
 ### Notification Architecture
 
-Notifications come from **`mnn-hub.prod.faria.cn`** (Faria notification hub).
-The `/student/notifications` page embeds:
+Notifications come from **`mnn-hub.prod.faria.cn`** (Faria notification hub), reached
+over **HTTPS REST**, not over a WebSocket. The `/student/notifications` page embeds:
 - `data-token` — JWT for hub authentication
-- `data-mnn-hub-endpoint` — WebSocket server URL
+- `data-mnn-hub-endpoint` — HTTPS base URL of the hub (`https://mnn-hub.prod.faria.*`).
+  Despite the name, this is **not** a socket endpoint: it is used as
+  `f"{endpoint}/api/frontend/v2"` for plain HTTP requests. An earlier revision of this
+  document described it as a "WebSocket server URL" — that was incorrect and no
+  WebSocket transport was ever built or tested. See
+  [`docs/events.md` §1.1](docs/events.md#11-notification-transport-polling-not-push)
+  for the evidence.
 - Notification list is rendered client-side; we scrape the HTML page.
+
+Because no push channel is available to third-party clients, `mb-cli` detects changes
+by polling the hub REST API on a configurable interval with randomised jitter.
 
 ### Calendar Architecture
 
