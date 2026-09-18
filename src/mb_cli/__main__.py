@@ -31,9 +31,9 @@ from .config import (
 from .daemon import (
     DaemonConfig,
     DaemonService,
+    DEFAULT_WEBHOOK_URL,
     ServiceManager,
     WebhookDispatcher,
-    configure_channel_send,
     configure_webhook,
     load_daemon_config,
     start_loop,
@@ -761,14 +761,10 @@ def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
         ]
         daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
 
-    channel_id = getattr(args, "channel_id", None)
-    recipient = getattr(args, "recipient", None)
-    if channel_id and recipient:
-        daemon_config["delivery"] = {
-            "mode": "channel_send",
-            "channel_id": channel_id,
-            "recipient": recipient,
-        }
+    # Channel delivery is refused before it can be written: a `delivery` dict
+    # with mode "channel_send" is read by nothing, so writing it here is exactly
+    # the silent no-op this guard exists to prevent.
+    _reject_channel_delivery(args)
 
     # `run` spells this `--poll-interval`, `start` spells it `--interval`; both
     # names are accepted on both commands, but the config key is the one
@@ -793,7 +789,24 @@ def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
     return daemon_config
 
 
+def _error_payload(command: str, profile: str, code: str, message: str, data=None):
+    """An ``ok:false`` payload that still carries the run's data.
+
+    ``formatters.error`` has nowhere to put the alerts/summary a failed daemon
+    cycle computed, so the choice used to be "report failure and throw the
+    evidence away" or "report success". Neither is acceptable: a shell caller
+    needs a non-zero exit *and* the payload needs the machine-readable
+    ``error.code`` alongside what actually happened.
+    """
+    payload = error(command, code, message)
+    payload["profile"] = profile
+    if data is not None:
+        payload["data"] = data
+    return payload
+
+
 def cmd_daemon_run(args) -> int:
+    _reject_channel_delivery(args)
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
@@ -825,6 +838,9 @@ def cmd_daemon_run(args) -> int:
 
 
 def cmd_daemon_start(args) -> int:
+    # Refuse before anything is spawned or configured: a detached child that
+    # died on startup would still leave the parent reporting success.
+    _reject_channel_delivery(args)
     if getattr(args, "background", False):
         mgr = ServiceManager(
             pid_path=getattr(args, "pid_file", None),
@@ -886,23 +902,59 @@ def cmd_daemon_start(args) -> int:
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(args.daemon_config)
     _apply_daemon_overrides(daemon_config, args)
-    result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
-    payload = ok(
-        "daemon.start", state.active_profile, result | {"daemon": _redact_daemon_config(daemon_config)}
-    )
+    once = bool(getattr(args, "once", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    result = start_loop(client, daemon_config, dry_run=dry_run, once=once)
+    data = result | {"daemon": _redact_daemon_config(daemon_config)}
+    if dry_run:
+        data["delivered"] = False
+        data["dry_run"] = True
+
+    # `start_loop`'s `once` branch computes alerts, logs `delivered=False`
+    # literally and returns before `DaemonService` — the only thing that owns a
+    # `WebhookDispatcher` — is ever constructed. So `daemon start --once`
+    # --webhook-url …` sent nothing while exiting 0 with `delivered: false`.
+    # A dry run is *supposed* to deliver nothing; anything else that computed
+    # alerts and delivered none has failed and must say so.
+    alerts = result.get("alerts") or []
+    undelivered = bool(alerts) and not result.get("delivered") and not dry_run
+    if undelivered:
+        payload = _error_payload(
+            "daemon.start",
+            state.active_profile,
+            "delivery_failed",
+            f"{len(alerts)} alert(s) were computed but nothing was delivered "
+            "(no webhook was dispatched). Re-run with --webhook-url, or use "
+            "`tahuti daemon run --once`, which dispatches through DaemonService.",
+            data,
+        )
+        print_payload(payload, args.output, args.format)
+        return 1
+    payload = ok("daemon.start", state.active_profile, data)
     print_payload(payload, args.output, args.format)
     return 0
 
 
 def cmd_daemon_stop(args) -> int:
-    mgr = ServiceManager(pid_path=getattr(args, "pid_file", None))
+    # The pid file the *user* named, kept separate from whatever the fallback
+    # consults below. `--pid-file` is honoured when a process really is running
+    # there; only the not-running fallback cross-wires, and it used to report
+    # the config's path as if it were the one that had been checked.
+    requested_pid_file = getattr(args, "pid_file", None)
+    mgr = ServiceManager(pid_path=requested_pid_file)
     result = mgr.stop_background()
+    result["pid_file_requested"] = requested_pid_file
     if not result.get("stopped") and result.get("reason") == "not_running":
-        # Fall back to legacy stop_daemon logic
+        # Fall back to legacy stop_daemon logic, which resolves daemon.json's
+        # pid_file — a different file from the one the user asked about.
         result = stop_daemon(getattr(args, "daemon_config", None))
+        result["pid_file_requested"] = requested_pid_file
+        result["pid_file_fallback"] = result.get("pid_file")
     payload = ok("daemon.stop", "default", result)
     print_payload(payload, args.output, args.format)
-    return 0
+    # A stop that stopped nothing is not a success: `stop && start` scripts
+    # read this exit code and would otherwise double-run daemons.
+    return 0 if result.get("stopped") else 1
 
 
 def cmd_daemon_status(args) -> int:
@@ -913,7 +965,9 @@ def cmd_daemon_status(args) -> int:
     res = mgr.status()
     payload = ok("daemon.status", "default", res)
     print_payload(payload, args.output, args.format)
-    return 0
+    # `status` is a predicate for scripts ("is it up?"), so "not running" has to
+    # be a non-zero exit rather than a successful report about a failure.
+    return 0 if res.get("running") else 1
 
 
 def cmd_daemon_test_webhook(args) -> int:
@@ -960,10 +1014,28 @@ def cmd_daemon_configure_webhook(args) -> int:
 
 
 def cmd_daemon_configure_channel(args) -> int:
-    config = configure_channel_send(args.channel_id, args.recipient, args.daemon_config)
-    payload = ok("daemon.configure-channel", "default", config)
+    """Persist channel-send delivery — refused, because it does not exist.
+
+    The old body called ``configure_channel_send``, which wrote
+    ``daemon_config["delivery"] = {"mode": "channel_send", ...}`` and reported
+    success. ``DaemonConfig`` has no ``delivery`` field and ``from_dict`` never
+    reads it, and nothing in the tree invokes a zeroclaw binary — so the config
+    it printed back was decoration, and the next ``daemon run`` POSTed the alert
+    payload to the localhost webhook default with no error. Say so and fail
+    rather than write a key nothing reads.
+    """
+    payload = error(
+        "daemon.configure-channel",
+        "channel_delivery_not_implemented",
+        "Channel-send delivery is not implemented: no zeroclaw binary is "
+        "invoked and daemon configs carry no channel transport, so "
+        f"--channel {args.channel_id!r} -> {args.recipient!r} would write a "
+        f"config key nothing reads and then fall back to the HTTP webhook "
+        f"(default {DEFAULT_WEBHOOK_URL}). Nothing was written. Use "
+        "`tahuti daemon configure-webhook URL` to deliver over HTTP.",
+    )
     print_payload(payload, args.output, args.format)
-    return 0
+    return 1
 
 
 def _resolve_task_ids(
@@ -1842,7 +1914,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Poll interval in seconds (alias: --interval)",
     )
     daemon_run.add_argument(
-        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+        "--channel-id",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "using it with --recipient fails rather than silently falling back to "
+        "the HTTP webhook (e.g. qq, telegram)",
     )
     daemon_run.add_argument(
         "--recipient", help="Channel recipient ID (used with --channel-id)"
@@ -1878,7 +1953,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--secret", help="HMAC secret for webhook signatures"
     )
     daemon_start.add_argument(
-        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+        "--channel-id",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "using it with --recipient fails rather than silently falling back to "
+        "the HTTP webhook (e.g. qq, telegram)",
     )
     daemon_start.add_argument(
         "--recipient", help="Channel recipient ID (used with --channel-id)"
@@ -1992,7 +2070,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon_configure_ch = daemon_subparsers.add_parser(
         "configure-channel",
-        help="Persist delivery via zeroclaw channel send (no LLM call)",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "this command fails instead of writing a config key nothing reads",
     )
     daemon_configure_ch.add_argument(
         "channel_id", help="Channel name (e.g. qq, telegram)"
