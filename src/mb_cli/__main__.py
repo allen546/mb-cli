@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import copy
 import getpass
+import hashlib
 import json
 import logging
 import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .auth import build_client
 from .client import ManageBacClient, parse_task_url
@@ -87,12 +89,19 @@ def _build_client(args, command: str) -> tuple:
     )
 
 
-def _authenticate_client(state, client, email: str) -> str:
-    """Persist auth state to disk (CLI-specific)."""
+def _authenticate_client(state, client, email: str, persist: bool = True) -> str:
+    """Persist auth state to disk (CLI-specific).
+
+    *persist=False* is the ``login --temp`` case. :func:`auth.build_client`
+    already declines to write creds.json or enable the response cache for a
+    ``remember=False`` login; writing session.json here would hand back the
+    reusable cookie the flag exists to avoid, turning a ``--temp`` login into a
+    permanent one. The profile/session are still updated in memory so the
+    command can report what it just authenticated as.
+    """
     state.profile.school = client.school
     state.profile.domain = client.domain
     state.profile.email = email or state.profile.email
-    save_profile(state)
 
     state.session.school = client.school
     state.session.domain = client.domain
@@ -100,11 +109,45 @@ def _authenticate_client(state, client, email: str) -> str:
     state.session.base_url = client.base
     state.session.cookie = client.session.cookies.get("_managebac_session")
     state.session.logged_in_at = datetime.now().isoformat()
-    save_session(state)
+    if persist:
+        save_profile(state)
+        save_session(state)
     return email or state.profile.email or ""
 
 
+def _cache_dir_for_email(email: str | None) -> Path:
+    """The response-cache directory that belongs to *email*.
+
+    ``auth.build_client`` keys the cache on the first 16 hex digits of the
+    login email's SHA-256, so this is the only directory that login ever reads
+    or writes for that account. ``logout`` must resolve the same one, or it
+    deletes a different profile's cached pages (grade data and the MNN-hub
+    JWT) while leaving the ones it meant to clear in place.
+    """
+    from .cache import DEFAULT_CACHE_DIR
+
+    if not email:
+        return DEFAULT_CACHE_DIR
+    email_hash = hashlib.sha256(email.encode()).hexdigest()[:16]
+    return DEFAULT_CACHE_DIR / email_hash
+
+
+def _login_email(state) -> str | None:
+    """Resolve the account a login acted on, in the order login uses it.
+
+    Mirrors ``build_client``'s ``email or state.profile.email or
+    state.session.email``. Inverting that order here is what let ``logout``
+    hash a *different* profile's cache directory and leave the live JWT-bearing
+    entries behind.
+    """
+    return state.profile.email or state.session.email or None
+
+
 DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
+# Fallback freshness window for reusing the local snapshot instead of
+# re-crawling. `--cache-ttl` and `defaults.cache_ttl` override it; it used to
+# be hardcoded at the `list` call site so neither of them could.
+DEFAULT_SNAPSHOT_TTL = 900
 
 
 def load_snapshot(path: Path) -> dict:
@@ -367,8 +410,13 @@ def update_snapshot_with_class_tasks(
 
 
 def cmd_login(args) -> int:
+    # `--temp` is threaded all the way down: `build_client` gets
+    # remember=False (no creds.json, response cache disabled) and
+    # `_authenticate_client` is told not to persist either, so a temp login
+    # leaves nothing on disk for the next command to pick up.
+    temp = bool(getattr(args, "temp", False))
     state, client, email = _build_client(args, "login")
-    email = _authenticate_client(state, client, email)
+    email = _authenticate_client(state, client, email, persist=not temp)
     payload = ok(
         "login",
         state.active_profile,
@@ -378,6 +426,8 @@ def cmd_login(args) -> int:
             "email": email,
             "base_url": client.base,
             "auth_method": "cookie" if args.cookie else "password",
+            "temp": temp,
+            "persisted": not temp,
         },
     )
     print_payload(payload, args.output, args.format)
@@ -596,15 +646,11 @@ def cmd_logout(args) -> int:
     cache_cleared = None
     if not getattr(args, "keep_cache", False):
         try:
-            import hashlib
-            from .cache import DEFAULT_CACHE_DIR, ResponseCache
-            email = state.session.email or state.profile.email
-            if email:
-                email_hash = hashlib.sha256(email.encode()).hexdigest()[:16]
-                target = DEFAULT_CACHE_DIR / email_hash
-            else:
-                target = DEFAULT_CACHE_DIR
-            cache_cleared = ResponseCache(cache_dir=target).clear()
+            from .cache import ResponseCache
+
+            cache_cleared = ResponseCache(
+                cache_dir=_cache_dir_for_email(_login_email(state))
+            ).clear()
         except Exception as e:
             log.warning("Failed to clear response cache on logout: %s", e)
 
@@ -615,8 +661,10 @@ def cmd_logout(args) -> int:
     creds_removed = False
     keychain_removed = False
     if not getattr(args, "keep_credentials", False):
+        # Same resolution login used to write them, so logout cannot end up
+        # deleting another profile's files (or none at all).
         creds_removed = clear_creds(resolve_creds_path())
-        email = state.session.email or state.profile.email
+        email = _login_email(state)
         if email:
             keychain_removed = keychain.delete(email)
 
@@ -634,6 +682,33 @@ def cmd_logout(args) -> int:
     )
     print_payload(payload, args.output, args.format)
     return 0
+
+
+def _reject_channel_delivery(args) -> None:
+    """Refuse `--channel-id`/`--recipient` instead of silently not delivering.
+
+    Channel-send delivery has no implementation anywhere: nothing invokes a
+    zeroclaw binary, and ``DaemonConfig`` has no ``delivery`` field, so
+    ``from_dict`` never reads the ``delivery.mode`` these flags write. A run
+    that asked for QQ delivery therefore fell through to
+    ``delivery.webhook_url or DEFAULT_WEBHOOK_URL`` and POSTed the alert payload
+    to ``http://127.0.0.1:42617/webhook`` with no QQ message and no error.
+
+    Failing loudly is the honest option: the caller asked for a transport that
+    does not exist, and a silent localhost POST is worse than a refusal.
+    """
+    channel_id = getattr(args, "channel_id", None)
+    recipient = getattr(args, "recipient", None)
+    if not (channel_id and recipient):
+        return
+    raise CommandError(
+        "channel_delivery_not_implemented",
+        "Channel-send delivery is not implemented: no zeroclaw binary is "
+        "invoked and daemon configs carry no channel transport, so "
+        f"--channel-id {channel_id!r} would silently fall back to the HTTP "
+        f"webhook (default {DEFAULT_WEBHOOK_URL}). Use --webhook-url to deliver "
+        "over HTTP.",
+    )
 
 
 def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
