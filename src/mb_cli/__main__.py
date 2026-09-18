@@ -1594,8 +1594,8 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Store the password in the OS keychain instead of cleartext "
-        "creds.json (macOS Keychain / Linux secret-tool). Overrides "
-        "MB_CRAWLER_KEYCHAIN.",
+        "creds.json (macOS Keychain / Linux Secret Service / Windows "
+        "Credential Locker). Overrides MB_CRAWLER_KEYCHAIN.",
     )
     login.set_defaults(func=cmd_login)
 

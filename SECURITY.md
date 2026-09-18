@@ -114,10 +114,21 @@ By default `mb` keeps state in `~/.config/tahuti/` (override with
   File permissions are the only barrier here, so a `0644` creds file is worth
   shouting about. Set `MB_CRAWLER_NO_PERM_WARN=1` to silence it.
 - **An optional OS keychain exists.** `tahuti login --keychain` (or
-  `MB_CRAWLER_KEYCHAIN=1`) stores the password in the macOS Keychain or the
-  Linux Secret Service instead of `creds.json`. It adds no dependency — it
-  shells out to `security` / `secret-tool` — and is strictly opt-in. `tahuti logout`
-  deletes the keychain entry too.
+  `MB_CRAWLER_KEYCHAIN=1`) stores the password in the macOS Keychain, the Linux
+  Secret Service, or the Windows Credential Locker instead of `creds.json`. It
+  adds no dependency — it shells out to `security`, `secret-tool`, or
+  `powershell.exe` — and is strictly opt-in. `tahuti logout` deletes the keychain
+  entry too. Two Windows-specific limits are worth knowing before you opt in:
+  the Credential Locker **roams entries to your Microsoft account by default**,
+  and `PasswordVault` needs Windows PowerShell 5.1 (PowerShell 7 cannot load the
+  WinRT type). If either is unacceptable, do not pass `--keychain` on Windows.
+  The secret is handed to the helper over **stdin**, never `argv`, so it does not
+  appear in process listings.
+- **Windows credential support is implemented but has not been executed on real
+  Windows hardware.** The code paths are exercised by tests that fake
+  `sys.platform`, and the argv/script construction is verified, but the
+  PowerShell/WinRT calls themselves have not run against a live Credential
+  Locker. Treat `--keychain` on Windows as unvalidated until it has been.
 - Secrets passed to a background daemon go through the child process's
   **environment** (`MB_WEBHOOK_SECRET`, `MB_CRAWLER_PASSWORD`,
   `MB_CRAWLER_COOKIE`) rather than `argv`, because `argv` is readable by any
