@@ -13,7 +13,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .auth import build_client
+from .auth import build_client, hub_client
 from .client import parse_task_url
 from .filters import InvalidViewError, normalize_view
 from .notifications import MNNHubClient, hub_for_domain
@@ -685,7 +685,7 @@ def get_notifications(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
 
     stats = hub.stats()
     filter_ = "unread" if unread_only else "all"
@@ -731,7 +731,7 @@ def mark_notification(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
 
     actions = {
         "read": hub.mark_read,
@@ -779,7 +779,7 @@ def mark_all_notifications_read(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
     ok = hub.mark_all_read()
     return json.dumps({"ok": ok, "action": "mark_all_read"})
 

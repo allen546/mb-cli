@@ -42,7 +42,14 @@ def _client(detail_attachments, task=None, found_task=None):
     client.find_task_by_id.return_value = found_task
     resp = MagicMock()
     resp.iter_content.return_value = [b"data-"]
-    client.session.get.return_value.__enter__.return_value = resp
+    # `cmd_download` inspects the response before entering it, because it has to
+    # read the status and Location of every redirect hop itself rather than let
+    # `requests` follow one off-domain. These must be real booleans — a
+    # MagicMock is truthy and reads as "this is a redirect".
+    resp.is_redirect = False
+    resp.is_permanent_redirect = False
+    resp.status_code = 200
+    client.session.get.return_value = resp
     return client
 
 
@@ -225,8 +232,11 @@ def test_download_partial_failure_exits_zero_and_lists_failures(tmp_path):
 
     def _get(url, **kwargs):
         resp = MagicMock()
+        resp.is_redirect = False
+        resp.is_permanent_redirect = False
+        resp.status_code = 200
         if url.endswith("bad.pdf"):
-            resp.__enter__.side_effect = RuntimeError("connection reset")
+            resp.iter_content.side_effect = RuntimeError("connection reset")
             return resp
         resp.iter_content.return_value = [b"ok-"]
         return resp
@@ -249,7 +259,10 @@ def test_download_all_failures_exits_one(tmp_path):
     ]
     client = _client(attachments)
     resp = MagicMock()
-    resp.__enter__.side_effect = RuntimeError("boom")
+    resp.is_redirect = False
+    resp.is_permanent_redirect = False
+    resp.status_code = 200
+    resp.iter_content.side_effect = RuntimeError("boom")
     client.session.get.return_value = resp
 
     args = _Args(tmp_path)

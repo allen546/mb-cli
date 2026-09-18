@@ -33,7 +33,12 @@ def _coerce_notification_id(raw: Any) -> int | None:
         return None
     if isinstance(raw, int):
         return raw
-    if isinstance(raw, str) and raw.strip().isdigit():
+    # `str.isdigit()` is True for characters `int()` refuses — superscripts
+    # ('²'), subscripts ('₁'), and other Unicode digits — so it would raise the
+    # very ValueError this function exists to prevent, aborting the poll cycle
+    # and dropping every notification queued behind it. `isdecimal()` is also
+    # wider than needed, so pin it to ASCII digits.
+    if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
         return int(raw.strip())
     return None
 

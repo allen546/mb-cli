@@ -329,7 +329,7 @@ class TestGetNotificationsTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
-        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {"unread_messages": 3}
             mock_hub.list.return_value = {
@@ -343,9 +343,9 @@ class TestGetNotificationsTool:
 
     def test_unread_only_filter(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.get_notification_token.return_value = ("ep", "tok")
+        mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {}
             mock_hub.list.return_value = {"items": [], "meta": {}}
@@ -356,9 +356,9 @@ class TestGetNotificationsTool:
 class TestMarkNotificationTool:
     def test_mark_read(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.get_notification_token.return_value = ("ep", "tok")
+        mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_read.return_value = True
             result = mark_notification(notification_id=123, action="read")
@@ -368,9 +368,9 @@ class TestMarkNotificationTool:
 
     def test_invalid_action(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.get_notification_token.return_value = ("ep", "tok")
+        mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
             result = mark_notification(notification_id=123, action="invalid")
             data = json.loads(result)
             assert "error" in data
@@ -379,9 +379,9 @@ class TestMarkNotificationTool:
 class TestMarkAllNotificationsReadTool:
     def test_mark_all_read(self, mock_build_client):
         mock, mock_client = mock_build_client
-        mock_client.get_notification_token.return_value = ("ep", "tok")
+        mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.MNNHubClient") as MockHub:
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_all_read.return_value = True
             result = mark_all_notifications_read()

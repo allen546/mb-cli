@@ -42,9 +42,9 @@ import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
-from .auth import build_client
+from .auth import build_client, hub_client
 from .client import ManageBacClient, parse_task_url
 from . import __version__
 from . import keychain
@@ -1377,7 +1377,7 @@ def cmd_notifications(args) -> int:
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
 
     if args.read is not None:
         payload = _notification_mutation_payload(
@@ -1593,12 +1593,17 @@ def _expected_download_host(client) -> str | None:
 
     Attachment hrefs are scraped out of ManageBac HTML, so the only host this
     client has any business talking to is the one its own session is bound to.
+
+    Returns the bare hostname — no port. ``_refuse_reason_for_url`` compares it
+    against ``urlparse(...).hostname``, which also drops the port, so a
+    self-hosted or proxied instance on ``https://host:8443`` is not refused for
+    a port mismatch it does not actually have.
     """
     base = getattr(client, "base", None)
     if isinstance(base, str) and base:
-        netloc = urlparse(base).netloc
-        if netloc:
-            return netloc.lower()
+        host = urlparse(base).hostname
+        if host:
+            return host.lower()
     school = getattr(client, "school", None)
     domain = getattr(client, "domain", None)
     if isinstance(school, str) and isinstance(domain, str) and school and domain:
@@ -1770,7 +1775,38 @@ def cmd_download(args) -> int:
 
         log.info("  [%s] Downloading %s...", source_type, name)
         try:
-            with client.session.get(url, stream=True) as r:
+            # `requests` follows redirects by default and merges the whole
+            # cookie jar into each hop, so a validated URL that answers 302
+            # to an off-domain host would ship `_managebac_session` off-site
+            # and write the response here. `_refuse_reason_for_url` only
+            # validated the URL we asked for, not the one we ended up at, so
+            # turn redirects off and re-check every hop ourselves — the same
+            # reason `webhook` posts with `allow_redirects=False`.
+            current = url
+            r = None
+            for _hop in range(6):
+                resp = client.session.get(
+                    current, stream=True, allow_redirects=False, timeout=60
+                )
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    location = resp.headers.get("Location", "")
+                    resp.close()
+                    if not location:
+                        raise RuntimeError(f"redirect with no Location header from {current}")
+                    # A relative Location resolves against the URL we just hit.
+                    current = urljoin(current, location)
+                    redirect_problem = _refuse_reason_for_url(current, client)
+                    if redirect_problem:
+                        raise RuntimeError(
+                            f"{redirect_problem}: {current} "
+                            f"(redirected from the validated {url})"
+                        )
+                    continue
+                r = resp
+                break
+            if r is None:
+                raise RuntimeError(f"too many redirects from {url}")
+            with r:
                 r.raise_for_status()
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -1789,10 +1825,32 @@ def cmd_download(args) -> int:
     log.info(
         "Successfully downloaded %d/%d file(s).", len(downloaded), len(files_to_download)
     )
-    payload = ok(
-        "download",
-        state.active_profile,
-        {
+    # A partial success is still a usable run, so the envelope stays `ok` as long
+    # as something landed. When nothing did — every URL refused, or every fetch
+    # failed — the run is a failure, and reporting `ok: true` over it while
+    # exiting 1 is the contract violation the module docstring rules out. The
+    # counts are kept either way so the caller still sees what was attempted.
+    if downloaded or not failed:
+        payload = ok(
+            "download",
+            state.active_profile,
+            {
+                "task_id": task_id,
+                "task_title": task.get("title"),
+                "output_dir": str(out_dir),
+                "downloaded": downloaded,
+                "failed": failed,
+                "downloaded_count": len(downloaded),
+                "failed_count": len(failed),
+            },
+        )
+    else:
+        payload = error(
+            "download",
+            "no_files_downloaded",
+            f"None of the {len(failed)} attachment(s) could be downloaded.",
+        )
+        payload["data"] = {
             "task_id": task_id,
             "task_title": task.get("title"),
             "output_dir": str(out_dir),
@@ -1800,11 +1858,15 @@ def cmd_download(args) -> int:
             "failed": failed,
             "downloaded_count": len(downloaded),
             "failed_count": len(failed),
-        },
-    )
+        }
     print_payload(payload, args.output, args.format)
     # A partial success is still a usable run, so exit 0 unless *nothing* landed.
-    return 0 if downloaded else 1
+    # When nothing landed the envelope must not claim `ok: true` over it — a
+    # refused URL is a failure the caller has to see, and the exit-code contract
+    # says a non-zero exit never leaves its failure nested inside a success.
+    if not downloaded:
+        return EXIT_FAILURE
+    return EXIT_OK
 
 
 def cmd_feedback(args) -> int:

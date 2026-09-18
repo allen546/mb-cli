@@ -497,7 +497,7 @@ class TestMainNotifications:
             mock_bc.return_value = _mock_build_client_result(mock_client)
             with patch("mb_cli.__main__.save_profile"):
                 with patch("mb_cli.__main__.save_session"):
-                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
+                    with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.stats.return_value = {"unread_messages": 2}
                         mock_hub.list.return_value = {
@@ -520,7 +520,7 @@ class TestMainNotifications:
             mock_bc.return_value = _mock_build_client_result(mock_client)
             with patch("mb_cli.__main__.save_profile"):
                 with patch("mb_cli.__main__.save_session"):
-                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
+                    with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.mark_read.return_value = True
                         with patch("builtins.print"):

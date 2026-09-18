@@ -87,7 +87,11 @@ class TestNotificationsMutationExitCode:
             patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
             patch("mb_cli.__main__.save_profile"),
             patch("mb_cli.__main__.save_session"),
-            patch("mb_cli.__main__.MNNHubClient", return_value=hub),
+            # `cmd_notifications` builds its hub through `auth.hub_client`, not
+            # `MNNHubClient` directly, so this is the seam to patch. Patching
+            # the class left a real client talking to the fake `hub.example`
+            # endpoint the fixture names.
+            patch("mb_cli.__main__.hub_client", return_value=hub),
         ):
             return _run_main(argv)
 
@@ -382,7 +386,7 @@ def test_command_error_maps_to_failure(isolated_config):
         patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
         patch("mb_cli.__main__.save_profile"),
         patch("mb_cli.__main__.save_session"),
-        patch("mb_cli.__main__.MNNHubClient") as MockHub,
+        patch("mb_cli.__main__.hub_client") as MockHub,
     ):
         MockHub.return_value.list.side_effect = RuntimeError("hub down")
         code, _payloads = _run_main(["notifications", "--format", "json"])

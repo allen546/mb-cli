@@ -21,7 +21,7 @@ from .provider import AbstractNotificationProvider, MNNHubProvider
 from .scheduler import DDLScheduler
 from .state import DaemonStateManager
 from .stealth import StealthTaskCrawler
-from .webhook import WebhookDispatcher
+from .webhook import WebhookDispatcher, retryable_results
 
 log = logging.getLogger(__name__)
 
@@ -351,8 +351,14 @@ class DaemonService:
                 dispatched_events.append(event)
                 new_notifications_count += 1
 
-                # Only mark processed if delivery succeeded on at least one endpoint or no endpoints configured
-                if notif_id and (not self.config.webhooks or any(r.get("success") for r in results)):
+                # Mark processed only when no endpoint still owes the event.
+                # `any(r.get("success"))` was wrong: one success plus one
+                # transiently-failed endpoint marked the notification handled,
+                # so the endpoint that failed was silently abandoned — the
+                # `retryable_results` primitive existed for exactly this and
+                # nothing called it. A *permanently* failed endpoint is not
+                # retryable, so it does not re-poll forever.
+                if notif_id and (not self.config.webhooks or not retryable_results(results)):
                     self.state_manager.mark_notification_processed(int(notif_id))
 
         except Exception as exc:
@@ -368,7 +374,7 @@ class DaemonService:
 
                 t_id = ddl_event.data.get("task_id")
                 threshold = ddl_event.data.get("reminder_threshold")
-                if t_id and threshold and (not self.config.webhooks or any(r.get("success") for r in results)):
+                if t_id and threshold and (not self.config.webhooks or not retryable_results(results)):
                     self.state_manager.mark_reminder_dispatched(t_id, threshold)
         except Exception as exc:
             log.warning("Deadline evaluation error: %s", exc)
