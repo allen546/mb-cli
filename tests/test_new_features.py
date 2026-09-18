@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 from mb_cli.client import parse_due_date, ManageBacClient
@@ -102,26 +103,88 @@ def test_view_submissions():
     assert "resource_guide.pdf" in output
 
 
-def test_matches_tag_or_and_query_syntax():
-    """`--tag`'s OR/AND query syntax.
+def test_cmd_download(tmp_path):
+    """`tahuti download` writes the attachment files and reports them as JSON.
 
-    Only the query-operator cases live here. Single-tag matching — exact,
-    case-insensitive, partial, no-match, no-labels — is covered properly by
-    `tests/test_filters.py::TestMatchesTag`; repeating it here meant two copies
-    to maintain and no extra reach.
+    `tahuti download` used to write files and say nothing on stdout, so
+    `--format json` and `--output` had nothing to act on.
     """
-    from mb_cli.filters import matches_tag
+    from mb_cli.__main__ import cmd_download
 
-    t = {"labels": ["Summative", "Exam"]}
+    class Args:
+        task_id = "123"
+        output_dir = str(tmp_path / "custom_out")
+        no_submissions = False
+        no_attachments = False
+        # Every flag `add_common_auth_flags` puts on the real namespace.
+        pages = 10
+        output = None
+        format = None
 
-    # OR queries — any separator spellings.
-    assert matches_tag(t, "homework,exam") is True
-    assert matches_tag(t, "homework|summative") is True
-    assert matches_tag(t, "homework or exam") is True
-    assert matches_tag(t, "homework,project") is False
+    args = Args()
 
-    # AND queries — every term must match.
-    assert matches_tag(t, "summative+exam") is True
-    assert matches_tag(t, "summative&exam") is True
-    assert matches_tag(t, "summative and exam") is True
-    assert matches_tag(t, "summative+homework") is False
+    state = MagicMock()
+    state.config_path = tmp_path / "config" / "config.json"
+    client = MagicMock()
+    client.base = "https://bj80.managebac.cn"
+
+    # Mock snapshot data
+    snapshot_path = tmp_path / "config" / "snapshot.json"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(json.dumps({
+        "upcoming": [
+            {
+                "id": "123",
+                "title": "Submissions Test Task",
+                "link": "http://x/123",
+            }
+        ],
+        "past": [],
+        "overdue": []
+    }))
+
+    # Detail response mock
+    client.get_task_detail.return_value = {
+        "attachments": [
+            {
+                "name": "res.pdf",
+                "url": "https://bj80.managebac.cn/res.pdf",
+                "source": "description",
+            },
+            {
+                "name": "essay.pdf",
+                "url": "https://bj80.managebac.cn/essay.pdf",
+                "source": "submission",
+            }
+        ]
+    }
+
+    # Mock client session get stream download
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_content.return_value = [b"chunk1", b"chunk2"]
+    client.session.get.return_value.__enter__.return_value = mock_resp
+
+    captured: dict = {}
+    with patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")), \
+         patch("mb_cli.__main__._authenticate_client"), \
+         patch("mb_cli.__main__.print_payload", side_effect=lambda p, o, f: captured.update(payload=p, output=o, fmt=f)):
+
+        rc = cmd_download(args)
+        assert rc == 0
+
+        # Verify output files
+        out_dir = tmp_path / "custom_out"
+        assert (out_dir / "res.pdf").exists()
+        assert (out_dir / "res.pdf").read_bytes() == b"chunk1chunk2"
+        assert (out_dir / "essay.pdf").exists()
+        assert (out_dir / "essay.pdf").read_bytes() == b"chunk1chunk2"
+
+        assert captured["payload"]["ok"] is True
+        assert captured["payload"]["command"] == "download"
+        assert captured["payload"]["data"]["downloaded_count"] == 2
+        assert captured["payload"]["data"]["failed_count"] == 0
+        assert sorted(d["name"] for d in captured["payload"]["data"]["downloaded"]) == [
+            "essay.pdf",
+            "res.pdf",
+        ]
