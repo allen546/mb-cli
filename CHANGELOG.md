@@ -10,6 +10,36 @@ version string in `pyproject.toml`); there are no git tags in this repository.
 
 ## [Unreleased]
 
+### Fixed
+- **Webhook URLs are no longer logged verbatim.** `log.info`/`log.warning`/
+  `log.error` on every delivery and retry printed the full configured URL, so
+  providers that carry the credential in the path or query (Slack
+  `hooks.slack.com/services/T…/B…/<token>`, Bark `api.day.app/<key>/…`, WeCom
+  `…/send?key=…`) wrote a live token into `daemon.log`. URLs are now redacted
+  before logging — scheme, host, port and path shape are kept, credential-
+  bearing path segments and query values are masked, and any `user:password@`
+  userinfo is dropped. `daemon test-webhook` output additionally carries a
+  `url_display` field.
+- **The webhook retry "hard ceiling" now bounds request time, not just
+  sleeps.** `MAX_TOTAL_RETRY_SECONDS` was checked only before `time.sleep`, so
+  each attempt's `requests.post(timeout=10)` was unbounded by it and the final
+  attempt always ran its full timeout. With the default `max_retries=3` one
+  hanging endpoint cost ~33s of blocked polling, and the cost was linear in the
+  number of configured endpoints (2 endpoints ≈ 66s against a 30s poll
+  interval). Each attempt's timeout is now clamped to the remaining budget and
+  the backoff sleep is clamped to it too, so one event can never exceed the
+  ceiling.
+- **Permanent 4xx are no longer retried.** 400/401/403/404/410/422 were retried
+  three times with backoff even though no backoff can fix them, which both
+  stalled the poll loop and delayed the diagnosis. Only genuinely transient
+  statuses are retried now: 5xx, 408, 429 (and 425).
+- **Webhook redirects are no longer followed.** `requests.post` followed
+  redirects with the signed body and the signature headers intact, so a 307
+  re-sent them to a *different* host and a 301/302 could downgrade https to
+  http — defeating the point of signing. Dispatch now passes
+  `allow_redirects=False`; a 3xx is reported as a permanent failure naming the
+  `Location` so the configured URL can be corrected.
+
 ### Changed
 - **BREAKING PROTOCOL CHANGE — webhook signatures.** `X-MB-Signature` now covers
   `X-MB-Timestamp` as well as the body:
