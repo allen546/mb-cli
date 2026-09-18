@@ -11,6 +11,77 @@ version string in `pyproject.toml`); there are no git tags in this repository.
 ## [Unreleased]
 
 ### Added
+- **Per-endpoint delivery outcomes.** `WebhookDispatcher.dispatch()` returns a
+  machine-readable `outcome` per endpoint — `success`, `permanent_failure` or
+  `transient_failure` — alongside the existing `success` boolean, plus
+  `retryable`, `signed`, `attempts` and `url_display` fields. Previously the
+  only signal was a bare boolean, which collapsed "delivered", "will never
+  work" and "try again later" into one value.
+- `WebhookDispatcher.retry_failed(event, results)` re-attempts only the
+  endpoints that still owe the event, skipping the ones that already delivered
+  and the ones that failed permanently. Module-level `retryable_results()`
+  (what is still owed) and `all_delivered()` (is anything owed) give a caller
+  everything needed to implement per-endpoint at-least-once.
+- `daemon test-webhook` output now carries `url_display`, `outcome`,
+  `retryable`, `signed` and `attempts`.
+
+### Fixed
+- **A webhook with no secret no longer ships unsigned payloads silently.**
+  `if webhook.secret:` treated `""` as "no signing", so an empty secret sent
+  unsigned payloads with no warning anywhere. The dispatcher now logs an ERROR
+  once per endpoint explaining that every payload is UNSIGNED and that a
+  verifying receiver will reject it, and every result carries `signed: false`.
+- **`daemon test-webhook` now validates the URL.** `test_ping` bypassed
+  `_validate_webhook_url`, so the scheme/host guard applied on every real
+  dispatch was skipped on the one command where a user is most likely to paste
+  a wrong URL — `file://` and friends reached `requests` and surfaced as a
+  confusing network error. An invalid URL is now rejected before any network
+  call with `invalid_webhook_url:<reason>`.
+- **Webhook URLs are no longer logged verbatim.** `log.info`/`log.warning`/
+  `log.error` on every delivery and retry printed the full configured URL, so
+  providers that carry the credential in the path or query (Slack
+  `hooks.slack.com/services/T…/B…/<token>`, Bark `api.day.app/<key>/…`, WeCom
+  `…/send?key=…`) wrote a live token into `daemon.log`. URLs are now redacted
+  before logging — scheme, host, port and path shape are kept, credential-
+  bearing path segments and query values are masked, and any `user:password@`
+  userinfo is dropped. `daemon test-webhook` output additionally carries a
+  `url_display` field.
+- **The webhook retry "hard ceiling" now bounds request time, not just
+  sleeps.** `MAX_TOTAL_RETRY_SECONDS` was checked only before `time.sleep`, so
+  each attempt's `requests.post(timeout=10)` was unbounded by it and the final
+  attempt always ran its full timeout. With the default `max_retries=3` one
+  hanging endpoint cost ~33s of blocked polling, and the cost was linear in the
+  number of configured endpoints (2 endpoints ≈ 66s against a 30s poll
+  interval). Each attempt's timeout is now clamped to the remaining budget and
+  the backoff sleep is clamped to it too, so one event can never exceed the
+  ceiling.
+- **Permanent 4xx are no longer retried.** 400/401/403/404/410/422 were retried
+  three times with backoff even though no backoff can fix them, which both
+  stalled the poll loop and delayed the diagnosis. Only genuinely transient
+  statuses are retried now: 5xx, 408, 429 (and 425).
+- **Webhook redirects are no longer followed.** `requests.post` followed
+  redirects with the signed body and the signature headers intact, so a 307
+  re-sent them to a *different* host and a 301/302 could downgrade https to
+  http — defeating the point of signing. Dispatch now passes
+  `allow_redirects=False`; a 3xx is reported as a permanent failure naming the
+  `Location` so the configured URL can be corrected.
+
+### Changed
+- **BREAKING PROTOCOL CHANGE — webhook signatures.** `X-MB-Signature` now covers
+  `X-MB-Timestamp` as well as the body:
+  `sha256=` + HMAC-SHA256(secret, `f"{X-MB-Timestamp}.".encode() + body`). It
+  previously covered the body alone, which left `X-MB-Timestamp`
+  unauthenticated — anyone who captured a single POST could replay it
+  indefinitely by rewriting that header, because the original digest still
+  validated and the receiver's freshness check (`MAX_TIMESTAMP_SKEW_SECONDS`)
+  waved the replay through. **Any deployed receiver rejects every payload until
+  it adds the timestamp to its signed material.** `extras/mb-notifier/bark_webhook_receiver.py`
+  and the FastAPI recipe in `docs/events.md` are updated in the same change;
+  `verify_signature` now fails closed on a missing `X-MB-Timestamp` and checks
+  the digest before freshness, so a restamped payload reports
+  `signature_mismatch` rather than merely `stale_timestamp`.
+
+### Added
 - `CHANGELOG.md`, `SECURITY.md`, and GitHub Actions CI (`.github/workflows/ci.yml`).
 - `[dependency-groups]` `dev` group in `pyproject.toml` declaring the test
   dependencies (`pytest`, `requests-mock`, `mcp`) that the suite always needed

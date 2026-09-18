@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import io
 import json
 from datetime import datetime
@@ -5,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+import requests_mock
 
 from bark_webhook_receiver import (
     DEFAULT_ALIASES_PATH,
@@ -21,6 +24,7 @@ from bark_webhook_receiver import (
     reset_replay_cache,
     resolve_course_name,
     sanitize_tap_url,
+    signed_material,
     truncate,
     verify_signature,
 )
@@ -298,7 +302,10 @@ def test_webhook_handler_post(tmp_path):
         },
     }
     body_bytes = json.dumps(payload).encode("utf-8")
-    signature = compute_signature("test-secret", body_bytes)
+    # The timestamp is signed material: it must be minted first and handed to
+    # compute_signature together with the body.
+    timestamp = f"{datetime.now().timestamp():.3f}"
+    signature = compute_signature("test-secret", body_bytes, timestamp)
 
     # Simulate BaseHTTPRequestHandler
     handler = handler_cls.__new__(handler_cls)
@@ -306,7 +313,7 @@ def test_webhook_handler_post(tmp_path):
         "Content-Length": str(len(body_bytes)),
         "X-MB-Event": "task_created",
         "X-MB-Signature": signature,
-        "X-MB-Timestamp": f"{datetime.now().timestamp():.3f}",
+        "X-MB-Timestamp": timestamp,
     }
     handler.rfile = io.BytesIO(body_bytes)
     handler.wfile = io.BytesIO()
@@ -385,10 +392,11 @@ def test_webhook_rejects_replayed_event_id():
     handler_cls = make_request_handler(pusher, secret="s3cret")
     payload = {"event": "task_created", "event_id": "evt-replay-1", "data": {}}
     body = json.dumps(payload).encode()
+    timestamp = f"{datetime.now().timestamp():.3f}"
     headers = {
         "X-MB-Event": "task_created",
-        "X-MB-Signature": compute_signature("s3cret", body),
-        "X-MB-Timestamp": f"{datetime.now().timestamp():.3f}",
+        "X-MB-Signature": compute_signature("s3cret", body, timestamp),
+        "X-MB-Timestamp": timestamp,
     }
     assert _post(handler_cls, body, dict(headers)) == 200
     # Same event_id again must be refused as a replay.
@@ -407,12 +415,135 @@ def test_webhook_rejects_stale_timestamp():
         body,
         {
             "X-MB-Event": "task_created",
-            "X-MB-Signature": compute_signature("s3cret", body),
+            # Signed for a fresh moment, then restamped to the past: the digest
+            # must fail first, so this reports a signature mismatch rather than
+            # "merely old".
+            "X-MB-Signature": compute_signature(
+                "s3cret", body, f"{datetime.now().timestamp():.3f}"
+            ),
             "X-MB-Timestamp": f"{datetime.now().timestamp() - 99999:.3f}",
         },
     )
     assert status == 401
     assert not pusher.push.called
+
+
+# ── Signed material: X-MB-Timestamp is inside the HMAC ──────────────────
+#
+# The signature used to cover the body only, so X-MB-Timestamp was an
+# unauthenticated sibling header. Anyone who captured one POST could rewrite
+# that header to now and replay forever: the original digest still validated
+# and the freshness check above waved it through. These tests pin the
+# construction on the receiver side.
+
+
+def test_verify_signature_accepts_a_correctly_signed_push():
+    timestamp = f"{datetime.now().timestamp():.3f}"
+    ok, reason = verify_signature(
+        "s3cret",
+        compute_signature("s3cret", b'{"a":1}', timestamp),
+        b'{"a":1}',
+        timestamp,
+    )
+    assert (ok, reason) == (True, "ok")
+
+
+def test_verify_signature_rejects_a_restamped_payload():
+    """The replay: swap the timestamp, keep the captured signature.
+
+    The payload was captured long ago and is now replayed with
+    ``X-MB-Timestamp`` rewritten to *now*, so it sits inside the freshness
+    window. Under the old body-only construction the captured digest still
+    validated and this replay was accepted.
+    """
+    body = json.dumps({"event": "task_created", "event_id": "evt-x", "data": {}}).encode()
+    captured_at = "1700000000.000"
+    captured = compute_signature("s3cret", body, captured_at)
+
+    # The genuine timestamp at least clears the digest — proof that the
+    # signature itself is valid and only the restamp breaks it.
+    ok, reason = verify_signature("s3cret", captured, body, captured_at)
+    assert ok is False
+    assert reason == "stale_timestamp", "the digest should have matched"
+
+    for offset in (0.0, -120.0, 120.0):
+        forged = f"{datetime.now().timestamp() + offset:.3f}"
+        ok, reason = verify_signature("s3cret", captured, body, forged)
+        assert ok is False, "a fresh restamp of a captured payload was accepted"
+        assert reason == "signature_mismatch", reason
+
+
+def test_verify_signature_rejects_the_old_body_only_construction():
+    """A receiver that still signs the body alone must not be accepted."""
+    body = json.dumps({"event": "task_created", "event_id": "evt-x", "data": {}}).encode()
+    timestamp = f"{datetime.now().timestamp():.3f}"
+    body_only = "sha256=" + hmac.new(
+        b"s3cret", body, hashlib.sha256
+    ).hexdigest()
+    ok, reason = verify_signature("s3cret", body_only, body, timestamp)
+    assert ok is False
+    assert reason == "signature_mismatch"
+
+
+def test_verify_signature_fails_closed_without_a_timestamp():
+    body = b'{"a":1}'
+    signature = compute_signature("s3cret", body, "1700000000.000")
+    # No timestamp header at all: nothing to verify against.
+    ok, reason = verify_signature("s3cret", signature, body, None)
+    assert ok is False
+    assert reason == "missing_timestamp"
+
+
+def test_signed_material_is_unambiguous():
+    assert signed_material("17", b"89ab") != signed_material("1789", b"ab")
+    assert signed_material("1700000000.000", b"{}") == b"1700000000.000.{}"
+    # A missing timestamp must not silently produce a body-only signature.
+    assert signed_material(None, b"{}") == b".{}"
+
+
+def test_receiver_and_daemon_agree_on_the_signed_material():
+    """End-to-end: the dispatcher signs, this receiver verifies.
+
+    Skipped (not failed) when `tahuti` is not importable, so `extras/` tests
+    stay runnable standalone.
+    """
+    pytest.importorskip("requests_mock", reason="needs requests-mock")
+    try:
+        from mb_cli.daemon.events import MBEvent, WebhookConfig
+        from mb_cli.daemon.webhook import WebhookDispatcher
+    except ImportError:
+        pytest.skip("tahuti is not installed; cannot cross-check the producer")
+
+    reset_replay_cache()
+    pusher = MagicMock()
+    pusher.push.return_value = True
+    handler_cls = make_request_handler(pusher, secret="s3cret")
+
+    event = MBEvent.create(
+        "task_created",
+        {"class_name": "English Language Arts Hons", "title": "Novel Essay"},
+    )
+    dispatcher = WebhookDispatcher(
+        webhooks=[WebhookConfig(url="http://127.0.0.1:1/hook", secret="s3cret")]
+    )
+    with requests_mock.Mocker() as m:
+        m.post("http://127.0.0.1:1/hook", status_code=200)
+        dispatcher.dispatch(event)
+
+    body = event.to_json().encode("utf-8")
+    timestamp = m.last_request.headers["X-MB-Timestamp"]
+    signature = m.last_request.headers["X-MB-Signature"]
+
+    ok, reason = verify_signature("s3cret", signature, body, timestamp)
+    assert (ok, reason) == (True, "ok"), reason
+
+    # And the full handler path accepts the very same request.
+    assert _post(
+        handler_cls,
+        body,
+        {"X-MB-Event": "task_created", "X-MB-Signature": signature, "X-MB-Timestamp": timestamp},
+    ) == 200
+    assert pusher.push.called
 
 
 def test_webhook_rejects_oversized_body():

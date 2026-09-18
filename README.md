@@ -209,8 +209,26 @@ tahuti daemon test-webhook http://127.0.0.1:8000/webhook
   - `Content-Type: application/json; charset=utf-8`
   - `User-Agent: tahuti-daemon/1.0`
   - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
-  - `X-MB-Signature: sha256=<hex_hmac>` (when `--secret` is configured)
-- **Retry Mechanism**: Exponential backoff (`1s`, `2s`, `4s`) on network or server errors.
+- **Signing**: `X-MB-Signature: sha256=<hex_hmac>` (when `--secret` is configured).
+
+  **BREAKING PROTOCOL CHANGE.** The HMAC covers the timestamp *and* the body:
+
+  ```python
+  signed_material = f"{X-MB-Timestamp}.".encode("utf-8") + request_body
+  expected = "sha256=" + hmac.new(secret, signed_material, hashlib.sha256).hexdigest()
+  ```
+
+  Previously it covered the body alone, which left `X-MB-Timestamp`
+  unauthenticated: anyone who captured a single POST could replay it
+  indefinitely by rewriting that header, because the original digest still
+  validated and the receiver's freshness check passed. Receivers built against
+  the body-only construction reject **every** payload until they add the
+  timestamp to the signed material. The bundled receiver in
+  `extras/mb-notifier/` is updated in the same commit; check any receiver of
+  your own against the construction above. The `.` delimiter keeps `ts=17` +
+  `body="89ab"` from colliding with `ts=1789` + `body="ab"`.
+- **Retry Mechanism**: Exponential backoff (`1s`, `2s`, `4s`) on network or
+  server errors (5xx, 408, 429). Other 4xx are permanent and are not retried.
 - **Specification**: See [docs/events.md](docs/events.md) for full payload schemas and documentation.
 
 > **Latency and polling interval.** Events are detected by polling, so a receiver
