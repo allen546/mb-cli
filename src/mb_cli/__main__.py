@@ -615,6 +615,14 @@ def cmd_view(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
+    # `get_task_detail` reports a fetch failure by returning a *truthy*
+    # `{"error": ...}` dict rather than by raising, so without this check the
+    # success envelope below would nest that error inside `ok: true` and exit 0.
+    if isinstance(detail, dict) and detail.get("error"):
+        payload = error("view", "detail_fetch_failed", str(detail["error"]))
+        print_payload(payload, args.output, args.format)
+        return EXIT_FAILURE
+
     payload = ok(
         "view",
         state.active_profile,
