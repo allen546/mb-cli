@@ -509,16 +509,19 @@ class WebhookDispatcher:
                         ),
                         120,
                     )
+                    # Redacted for the result as well as the log: a redirect
+                    # target is remote-supplied and may itself carry a token.
+                    shown_location = redact_webhook_url(location)
                     last_error = f"HTTP {status_code}: redirect_not_followed"
-                    if location:
-                        last_error += f" (Location: {location})"
+                    if shown_location:
+                        last_error += f" (Location: {shown_location})"
                     log.error(
                         "Webhook to %s returned %d and is not being followed: "
                         "redirecting would re-send the signed payload to a new "
                         "host (%s). Fix the configured URL instead.",
                         display,
                         status_code,
-                        redact_webhook_url(location) or "unknown",
+                        shown_location or "unknown",
                     )
                     break
 

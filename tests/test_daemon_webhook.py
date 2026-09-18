@@ -514,8 +514,31 @@ def test_redirect_location_is_reported_so_the_config_can_be_fixed():
 
     assert results[0]["error"] is not None
     assert "redirect_not_followed" in results[0]["error"]
+    # The host is named so the config can be corrected, but a credential in the
+    # redirect target is not echoed into the result.
     assert "hooks.example.test" in results[0]["error"]
+    assert "sekrit" not in results[0]["error"]
     assert results[0]["status_code"] == 301
+
+
+def test_redirect_target_credentials_are_redacted_in_the_result():
+    wh = WebhookConfig(url="http://localhost:8888/webhook", secret=FAKE_SECRET)
+    with requests_mock.Mocker() as m:
+        m.post(
+            wh.url,
+            status_code=302,
+            headers={
+                "Location": (
+                    "https://api.day.app/ctAbCdEfGhIjKlMnOpQrSt/hook"
+                    "?key=693a91f6-7adc-4a1c-a7d2-0123456789ab"
+                )
+            },
+        )
+        results = WebhookDispatcher(webhooks=[wh]).dispatch(_event())
+
+    assert "ctAbCdEfGhIjKlMnOpQrSt" not in results[0]["error"]
+    assert "693a91f6" not in results[0]["error"]
+    assert "api.day.app" in results[0]["error"]
 
 
 # ── Per-endpoint outcomes, not one collapsed boolean ─────────────────────
