@@ -12,10 +12,7 @@ from typing import Any
 
 from ..client import ManageBacClient, parse_due_date
 from ..task_status import (
-    GradeStatus,
-    get_grade_status,
     format_grade_display,
-    is_task_submitted,
     is_task_graded,
     is_task_submitted_or_graded,
 )
@@ -372,8 +369,6 @@ class DaemonService:
         full_sync_interval_sec = self.config.full_sync_interval_minutes * 60
 
         while self._running:
-            start_time = time.time()
-
             # Only fallback recrawl if cache became empty or long fallback interval (12h) elapsed
             if not self.state_manager.tasks_cache or (
                 full_sync_interval_sec > 0

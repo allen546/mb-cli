@@ -672,7 +672,7 @@ class ManageBacClient:
                 "X-CSRF-Token": csrf,
                 "X-Requested-With": "XMLHttpRequest",
             }
-            r = self._request_with_retry(
+            self._request_with_retry(
                 "POST", upload_url, data=data, files=files, headers=headers
             )
 

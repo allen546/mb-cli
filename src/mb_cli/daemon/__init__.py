@@ -8,18 +8,13 @@ import json
 import logging
 import os
 from pathlib import Path
-import random
-import shutil
 import signal
 import subprocess
-import time
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..client import ManageBacClient
 from ..config import config_dir
 from .events import (
-    DEFAULT_REMINDER_THRESHOLDS,
     DaemonConfig,
     MBEvent,
     ReminderThreshold,
@@ -33,12 +28,12 @@ from .provider import (
 )
 from .scheduler import DDLScheduler
 from .service import DaemonService
-from .state import DEFAULT_STATE_PATH, DaemonStateManager
+from .state import DaemonStateManager
 from .stealth import StealthTaskCrawler
 from .stream import ManageBacDaemon
 from .system import DEFAULT_LOG_PATH, DEFAULT_PID_PATH, ServiceManager
 from .webhook import WebhookDispatcher
-from ..task_status import GradeStatus, get_grade_status, format_grade_display, is_task_graded
+from ..task_status import format_grade_display, is_task_graded
 
 __all__ = [
     "AbstractNotificationProvider",
