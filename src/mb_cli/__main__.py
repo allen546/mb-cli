@@ -1516,6 +1516,45 @@ def _safe_filename(name: str, fallback: str = "download") -> str:
     return base[:255]
 
 
+def _expected_download_host(client) -> str | None:
+    """The host attachment URLs are allowed to point at, or *None* if unknown.
+
+    Attachment hrefs are scraped out of ManageBac HTML, so the only host this
+    client has any business talking to is the one its own session is bound to.
+    """
+    base = getattr(client, "base", None)
+    if isinstance(base, str) and base:
+        netloc = urlparse(base).netloc
+        if netloc:
+            return netloc.lower()
+    school = getattr(client, "school", None)
+    domain = getattr(client, "domain", None)
+    if isinstance(school, str) and isinstance(domain, str) and school and domain:
+        return f"{school}.{domain}".lower()
+    return None
+
+
+def _refuse_reason_for_url(url: str, client) -> str | None:
+    """Why *url* must not be fetched, or *None* when it is acceptable.
+
+    ``_extract_attachments`` passes any absolute href through, so an
+    attacker-influenced detail page can hand ``download`` a URL on any host.
+    Fetching it would send the authenticated session cookie off-site and write
+    the response into the output directory, so the scheme and the host are both
+    checked here rather than trusted from the page.
+    """
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme != "https":
+        return "refused_insecure_scheme"
+    expected = _expected_download_host(client)
+    if not expected:
+        # Cannot tell which host is legitimate, so nothing is.
+        return "refused_unknown_host"
+    if (parsed.hostname or "").lower() != expected:
+        return "refused_off_domain_host"
+    return None
+
+
 def cmd_download(args) -> int:
     state, client, email = _build_client(args, "download")
     _authenticate_client(state, client, email)
@@ -1547,9 +1586,17 @@ def cmd_download(args) -> int:
     # 2. Fetch task details
     log.info("Fetching details for task %s...", task_id)
     detail = client.get_task_detail(link, from_hint=False)
-    if not detail:
+    # `get_task_detail` swallows every exception and returns {"error": ...},
+    # which is a one-key dict and therefore truthy — so `if not detail` never
+    # fired and an expired session reported "downloaded 0 files, ok: true",
+    # indistinguishable from a task that genuinely has no attachments.
+    detail_error = detail.get("error") if isinstance(detail, dict) else None
+    if not detail or detail_error:
         payload = error(
-            "download", "detail_fetch_failed", f"Failed to fetch details for task {task_id}."
+            "download",
+            "detail_fetch_failed",
+            f"Failed to fetch details for task {task_id}."
+            + (f" Detail fetch error: {detail_error}" if detail_error else ""),
         )
         print_payload(payload, args.output, args.format)
         return 1
@@ -1625,6 +1672,22 @@ def cmd_download(args) -> int:
                     "name": name,
                     "source": source_type,
                     "reason": "refused_outside_output_dir",
+                }
+            )
+            continue
+
+        # The other half of the containment check: the URL itself. A scraped
+        # href can name any host on the internet, and fetching it would carry
+        # the session cookie there and write the answer into out_dir.
+        url_problem = _refuse_reason_for_url(url, client)
+        if url_problem:
+            log.error("Refusing to fetch %r for %r: %s", url, name, url_problem)
+            failed.append(
+                {
+                    "name": name,
+                    "source": source_type,
+                    "url": url,
+                    "reason": url_problem,
                 }
             )
             continue
