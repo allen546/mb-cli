@@ -65,6 +65,7 @@ def list_tasks(
     submitted: bool | None = None,
     grade: str | None = None,
     tag: str | None = None,
+    completed: bool | None = None,
     details: bool = False,
     pages: int = 10,
     school: str | None = None,
@@ -82,6 +83,8 @@ def list_tasks(
         graded: Filter by graded status (True=graded only, False=not graded only)
         submitted: Filter by submission status (True=submitted only, False=not submitted only)
         grade: Filter by specific grade letter or GPA (e.g. 'B', 'B-', '4.0')
+        tag: Filter by label/tag query (supports 'a,b' OR and 'a+b' AND forms)
+        completed: Filter by completion status (True=completed only, False=todo only)
         details: Fetch task detail pages (slower, one request per task)
         pages: Max pages per view (default 10)
         school: School subdomain (e.g. "myschool")
@@ -158,6 +161,15 @@ def list_tasks(
         past = [t for t in past if matches_tag(t, tag)]
         overdue = [t for t in overdue if matches_tag(t, tag)]
 
+    # Same `completed`/`todo` pair the CLI's `list` command exposes; MCP folds
+    # both into one tri-state so callers keep the "completed only / todo only"
+    # semantics rather than having to know which helper to reach for.
+    if completed is not None:
+        from .filters import matches_completed
+        upcoming = [t for t in upcoming if matches_completed(t, completed)]
+        past = [t for t in past if matches_completed(t, completed)]
+        overdue = [t for t in overdue if matches_completed(t, completed)]
+
     from datetime import datetime
     result = {
         "student_name": client.student_name,
@@ -171,6 +183,7 @@ def list_tasks(
             "upcoming_count": len(upcoming),
             "past_count": len(past),
             "overdue_count": len(overdue),
+            "total_count": len(upcoming) + len(past) + len(overdue),
         },
     }
 

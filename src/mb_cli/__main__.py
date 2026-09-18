@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .auth import build_client
 from .client import ManageBacClient, parse_task_url
+from . import __version__
 from . import keychain
 from .config import (
     clear_creds,
@@ -41,6 +42,7 @@ from .exceptions import CommandError
 from .filters import (
     classify_task_view,
     find_task_by_id,
+    matches_subject,
     result_views,
 )
 from .formatters import error, ok, print_payload
@@ -559,6 +561,20 @@ def cmd_view(args) -> int:
             if k in detail and task.get(dest_key) is None:
                 task[dest_key] = detail[k]
 
+    # `--subject` narrows an id lookup to the class it is meant to belong to:
+    # resolving an id that turns out to live under a different class is a
+    # mismatch the caller asked us to rule out, so say so instead of showing
+    # the wrong task's detail page.
+    subject = getattr(args, "subject", None)
+    if subject and not matches_subject(task, subject):
+        payload = error(
+            "view",
+            "subject_mismatch",
+            f"Task {task_id} is not in a class matching {subject!r}",
+        )
+        print_payload(payload, args.output, args.format)
+        return 1
+
     payload = ok(
         "view",
         state.active_profile,
@@ -620,21 +636,63 @@ def cmd_logout(args) -> int:
     return 0
 
 
+def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
+    """Fold the shared daemon CLI flags into a daemon config dict, in place.
+
+    ``daemon run`` and ``daemon start`` expose the same delivery, interval and
+    active-window settings, so both resolve them through here. Sharing one code
+    path is the only thing that stops the two sibling commands from drifting
+    into meaning different things by the same flag name — which is exactly how
+    ``--interval`` ended up writing a key nothing reads.
+    """
+    if getattr(args, "webhook_url", None):
+        daemon_config["webhooks"] = [
+            {
+                "url": args.webhook_url,
+                "secret": _resolve_secret(getattr(args, "secret", None)),
+                "events": ["*"],
+                "enabled": True,
+            }
+        ]
+        daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
+
+    channel_id = getattr(args, "channel_id", None)
+    recipient = getattr(args, "recipient", None)
+    if channel_id and recipient:
+        daemon_config["delivery"] = {
+            "mode": "channel_send",
+            "channel_id": channel_id,
+            "recipient": recipient,
+        }
+
+    # `run` spells this `--poll-interval`, `start` spells it `--interval`; both
+    # names are accepted on both commands, but the config key is the one
+    # DaemonConfig.from_dict actually reads.
+    interval = getattr(args, "poll_interval", None)
+    if interval is None:
+        interval = getattr(args, "interval", None)
+    if interval is not None:
+        daemon_config["poll_interval_seconds"] = interval
+    daemon_config.pop("interval", None)
+
+    # Active hours are stored as `active_windows`, matching what
+    # load_daemon_config() derives from the same keys in daemon.json.
+    hours_start = getattr(args, "active_hours_start", None)
+    hours_end = getattr(args, "active_hours_end", None)
+    if hours_start is not None or hours_end is not None:
+        start = 7 if hours_start is None else hours_start
+        end = 23 if hours_end is None else hours_end
+        daemon_config["active_windows"] = [[f"{start:02d}:00", f"{end:02d}:00"]]
+    daemon_config.pop("active_hours_start", None)
+    daemon_config.pop("active_hours_end", None)
+    return daemon_config
+
+
 def cmd_daemon_run(args) -> int:
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
-    # `mb daemon start --background` hands the secret over via MB_WEBHOOK_SECRET
-    # rather than argv, so a foreground `daemon run` must read it from the
-    # environment — otherwise the daemon it spawns signs nothing.
-    secret = _resolve_secret(getattr(args, "secret", None))
-    if getattr(args, "webhook_url", None):
-        daemon_config["webhooks"] = [
-            {"url": args.webhook_url, "secret": secret, "events": ["*"], "enabled": True}
-        ]
-        daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
-    if getattr(args, "poll_interval", None) is not None:
-        daemon_config["poll_interval_seconds"] = args.poll_interval
+    _apply_daemon_overrides(daemon_config, args)
     config = DaemonConfig.from_dict(daemon_config)
 
     def refresh_fn() -> bool:
@@ -686,10 +744,26 @@ def cmd_daemon_start(args) -> int:
             extra_args.extend(["--daemon-config", args.daemon_config])
         if getattr(args, "webhook_url", None):
             extra_args.extend(["--webhook-url", args.webhook_url])
+        if getattr(args, "channel_id", None) and getattr(args, "recipient", None):
+            extra_args.extend(["--channel-id", args.channel_id])
+            extra_args.extend(["--recipient", args.recipient])
         if getattr(args, "secret", None):
             daemon_secret_env["MB_WEBHOOK_SECRET"] = args.secret
-        if getattr(args, "interval", None) is not None:
-            extra_args.extend(["--poll-interval", str(args.interval)])
+        interval = getattr(args, "interval", None)
+        if interval is None:
+            interval = getattr(args, "poll_interval", None)
+        if interval is not None:
+            extra_args.extend(["--poll-interval", str(interval)])
+        if getattr(args, "active_hours_start", None) is not None:
+            extra_args.extend(["--active-hours-start", str(args.active_hours_start)])
+        if getattr(args, "active_hours_end", None) is not None:
+            extra_args.extend(["--active-hours-end", str(args.active_hours_end)])
+        # Without forwarding these the detached child would ignore them: `-b
+        # --once` would loop forever and `-b --dry-run` would POST webhooks.
+        if getattr(args, "once", False):
+            extra_args.append("--once")
+        if getattr(args, "dry_run", False):
+            extra_args.append("--dry-run")
         if getattr(args, "no_verify_tls", False):
             extra_args.append("--no-verify-tls")
 
@@ -701,26 +775,7 @@ def cmd_daemon_start(args) -> int:
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(args.daemon_config)
-    if args.webhook_url:
-        daemon_config["delivery"] = {
-            "mode": "webhook",
-            "webhook_url": args.webhook_url,
-        }
-        daemon_config["webhooks"] = [
-            {"url": args.webhook_url, "secret": _resolve_secret(getattr(args, "secret", None)), "events": ["*"], "enabled": True}
-        ]
-    if args.channel_id and args.recipient:
-        daemon_config["delivery"] = {
-            "mode": "channel_send",
-            "channel_id": args.channel_id,
-            "recipient": args.recipient,
-        }
-    if args.interval is not None:
-        daemon_config["interval"] = args.interval
-    if args.active_hours_start is not None:
-        daemon_config["active_hours_start"] = args.active_hours_start
-    if args.active_hours_end is not None:
-        daemon_config["active_hours_end"] = args.active_hours_end
+    _apply_daemon_overrides(daemon_config, args)
     result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
     payload = ok(
         "daemon.start", state.active_profile, result | {"daemon": _redact_daemon_config(daemon_config)}
@@ -844,7 +899,9 @@ def cmd_submit(args) -> int:
     state, client, email = _build_client(args, "submit")
     _authenticate_client(state, client, email)
 
-    target = args.target
+    # `--id` is the alternate spelling of the positional `target`; sibling
+    # commands (`view`, `submissions`) accept both, so honour it here too.
+    target = args.target or getattr(args, "id", None)
     if not target:
         payload = error(
             "submit", "missing_target", "Provide a task id or URL and file path"
@@ -1002,24 +1059,34 @@ def cmd_submissions(args) -> int:
             if isinstance(args.check_feedback, str)
             else None
         )
+        # get_teacher_feedback returns a *dict* (`feedback_items` holds the list),
+        # so filtering has to reach into that key — iterating the dict yields
+        # only its keys, which is what used to crash with AttributeError.
         feedback_result = client.get_teacher_feedback(class_id, task_id)
         if target_asset:
+            items = feedback_result.get("feedback_items") or []
+            needle = target_asset.lower()
             matched = []
-            for item in feedback_result:
-                sub_name = item.get("submission_name", "")
-                att_names = [a.get("name", "") for a in item.get("attachments", [])]
-                if (
-                    target_asset.lower() in sub_name.lower()
-                    or any(target_asset.lower() in a.lower() for a in att_names)
-                ):
+            for item in items:
+                sub_name = (item.get("submission_name") or "").lower()
+                att_names = [
+                    (a.get("name") or "").lower()
+                    for a in (item.get("attachments") or [])
+                ]
+                if needle in sub_name or any(needle in a for a in att_names):
                     matched.append(item)
-            if matched:
-                feedback_result = matched
+            feedback_result = dict(feedback_result)
+            feedback_result["feedback_items"] = matched
+            feedback_result["feedback_count"] = len(matched)
         payload = ok("feedback", state.active_profile, feedback_result)
         print_payload(payload, args.output, args.format)
         return 0
 
     # 4. Action: --list or Default (when task ID is provided)
+    # `--list` is the explicit spelling of what already happens by default; the
+    # flag is read rather than ignored so it is echoed back and a future change
+    # to the default cannot silently change what the flag does.
+    explicit_list = bool(getattr(args, "list", False))
     submissions = client.get_submissions(class_id, task_id)
     data = {
         "action": "list",
@@ -1027,6 +1094,8 @@ def cmd_submissions(args) -> int:
         "task_title": task_title,
         "submissions": submissions,
     }
+    if explicit_list:
+        data["requested"] = "list"
     payload = ok("submissions", state.active_profile, data)
     print_payload(payload, args.output, args.format)
     return 0
@@ -1084,7 +1153,11 @@ def cmd_notifications(args) -> int:
         return 0
 
     stats = hub.stats()
-    result = hub.list(page=args.page, per_page=args.per_page)
+    result = hub.list(
+        page=args.page,
+        per_page=args.per_page,
+        filter_="unread" if getattr(args, "unread_only", False) else "all",
+    )
     payload = ok(
         "notifications",
         state.active_profile,
@@ -1275,21 +1348,28 @@ def cmd_download(args) -> int:
 
     if not task:
         log.info("Task %s not found in local snapshot. Searching server...", task_id)
-        task = client.find_task_by_id(task_id)
+        task = client.find_task_by_id(task_id, max_pages=getattr(args, "pages", 10) or 10)
         if not task:
-            log.error("Task %s not found on ManageBac.", task_id)
+            payload = error(
+                "download", "task_not_found", f"Task {task_id} not found on ManageBac."
+            )
+            print_payload(payload, args.output, args.format)
             return 1
 
     link = task.get("link")
     if not link:
-        log.error("Task %s has no detail link.", task_id)
+        payload = error("download", "no_task_link", f"Task {task_id} has no detail link.")
+        print_payload(payload, args.output, args.format)
         return 1
 
     # 2. Fetch task details
     log.info("Fetching details for task %s...", task_id)
     detail = client.get_task_detail(link, from_hint=False)
     if not detail:
-        log.error("Failed to fetch details for task %s.", task_id)
+        payload = error(
+            "download", "detail_fetch_failed", f"Failed to fetch details for task {task_id}."
+        )
+        print_payload(payload, args.output, args.format)
         return 1
 
     # 3. Determine output directory
@@ -1304,7 +1384,7 @@ def cmd_download(args) -> int:
 
     # 4. Collect files to download
     files_to_download = []
-    attachments = detail.get("attachments", [])
+    attachments = detail.get("attachments", []) or []
 
     for att in attachments:
         source = att.get("source")
@@ -1322,12 +1402,30 @@ def cmd_download(args) -> int:
 
     if not files_to_download:
         log.info("No matching attachments or submissions found to download.")
+        # No files is not a failure: an empty dropbox downloads nothing. Emit the
+        # structured summary anyway so `--format json` and `--output` still work
+        # and callers can tell "nothing to do" from "something went wrong".
+        payload = ok(
+            "download",
+            state.active_profile,
+            {
+                "task_id": task_id,
+                "task_title": task.get("title"),
+                "output_dir": str(out_dir),
+                "downloaded": [],
+                "failed": [],
+                "downloaded_count": 0,
+                "failed_count": 0,
+            },
+        )
+        print_payload(payload, args.output, args.format)
         return 0
 
     log.info("Downloading %d file(s) to %s...", len(files_to_download), out_dir)
     # Resolve once so containment can be verified for every file written.
     out_root = out_dir.resolve()
-    success_count = 0
+    downloaded: list[dict] = []
+    failed: list[dict] = []
     for name, url, source_type in files_to_download:
         safe_name = _safe_filename(name)
         dest_path = out_dir / safe_name
@@ -1340,6 +1438,13 @@ def cmd_download(args) -> int:
         # Defence in depth: never write outside the output directory.
         if out_root not in dest_path.resolve().parents:
             log.error("Refusing to write outside %s: %r", out_dir, name)
+            failed.append(
+                {
+                    "name": name,
+                    "source": source_type,
+                    "reason": "refused_outside_output_dir",
+                }
+            )
             continue
 
         log.info("  [%s] Downloading %s...", source_type, name)
@@ -1351,12 +1456,34 @@ def cmd_download(args) -> int:
                         if chunk:
                             f.write(chunk)
             log.info("    Saved as %s", dest_path.name)
-            success_count += 1
+            downloaded.append(
+                {"name": name, "path": str(dest_path), "source": source_type}
+            )
         except Exception as e:
             log.error("    Failed to download %s: %s", name, e)
+            failed.append(
+                {"name": name, "source": source_type, "reason": str(e)}
+            )
 
-    log.info("Successfully downloaded %d/%d file(s).", success_count, len(files_to_download))
-    return 0 if success_count > 0 else 1
+    log.info(
+        "Successfully downloaded %d/%d file(s).", len(downloaded), len(files_to_download)
+    )
+    payload = ok(
+        "download",
+        state.active_profile,
+        {
+            "task_id": task_id,
+            "task_title": task.get("title"),
+            "output_dir": str(out_dir),
+            "downloaded": downloaded,
+            "failed": failed,
+            "downloaded_count": len(downloaded),
+            "failed_count": len(failed),
+        },
+    )
+    print_payload(payload, args.output, args.format)
+    # A partial success is still a usable run, so exit 0 unless *nothing* landed.
+    return 0 if downloaded else 1
 
 
 def cmd_feedback(args) -> int:
@@ -1388,6 +1515,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mb",
         description="Crawl ManageBac tasks, grades & submissions",
+    )
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"mb {__version__}",
+        help="Show program version and exit",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1588,7 +1722,38 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_run.add_argument("--daemon-config", help="Path to daemon JSON config")
     daemon_run.add_argument("--webhook-url", help="Webhook destination URL")
     daemon_run.add_argument("--secret", help="HMAC secret for webhook signatures")
-    daemon_run.add_argument("--poll-interval", type=int, help="Poll interval in seconds")
+    # `--interval` is the spelling `daemon start` uses for the same setting; both
+    # names resolve to one dest so neither sibling can drift out of sync again.
+    daemon_run.add_argument(
+        "--poll-interval",
+        "--interval",
+        dest="poll_interval",
+        type=int,
+        help="Poll interval in seconds (alias: --interval)",
+    )
+    daemon_run.add_argument(
+        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+    )
+    daemon_run.add_argument(
+        "--recipient", help="Channel recipient ID (used with --channel-id)"
+    )
+    daemon_run.add_argument(
+        "--active-hours-start",
+        type=int,
+        metavar="HOUR",
+        help="Start of active hours (0-23, default: 7)",
+    )
+    daemon_run.add_argument(
+        "--active-hours-end",
+        type=int,
+        metavar="HOUR",
+        help="End of active hours (0-23, default: 23)",
+    )
+    daemon_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not POST webhook, only compute alerts",
+    )
     daemon_run.add_argument("--once", action="store_true", help="Run one cycle and exit")
     daemon_run.set_defaults(func=cmd_daemon_run)
 
@@ -1599,13 +1764,20 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start.add_argument("--daemon-config", help="Path to daemon JSON config")
     daemon_start.add_argument("--webhook-url", help="Override webhook URL for this run")
     daemon_start.add_argument(
+        "--secret", help="HMAC secret for webhook signatures"
+    )
+    daemon_start.add_argument(
         "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
     )
     daemon_start.add_argument(
         "--recipient", help="Channel recipient ID (used with --channel-id)"
     )
     daemon_start.add_argument(
-        "--interval", type=int, help="Polling interval in seconds"
+        "--interval",
+        "--poll-interval",
+        dest="interval",
+        type=int,
+        help="Polling interval in seconds (alias: --poll-interval)",
     )
     daemon_start.add_argument(
         "--active-hours-start",
@@ -1793,6 +1965,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Mark all notifications as read",
     )
+    notifications.add_argument(
+        "--unread-only",
+        action="store_true",
+        help="Only list unread notifications",
+    )
     notifications.set_defaults(func=cmd_notifications)
 
     calendar_p = subparsers.add_parser("calendar", help="View calendar events")
@@ -1834,6 +2011,12 @@ def build_parser() -> argparse.ArgumentParser:
     download_p.add_argument(
         "--output-dir",
         help="Directory to save the files (defaults to task_<id>_<title_slug> in current directory)",
+    )
+    download_p.add_argument(
+        "--pages",
+        type=int,
+        default=10,
+        help="Max pages to search when resolving by id (default: 10)",
     )
     download_p.add_argument(
         "--no-submissions",

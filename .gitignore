@@ -174,3 +174,8 @@ docs/deployments/
 course_aliases.json
 snapshot.json
 daemon_state.json
+
+# `mb download` default output dir (task_<id>_<title_slug>) when a test or a
+# manual run is invoked without --output-dir.
+/task_*
+

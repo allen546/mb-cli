@@ -66,7 +66,7 @@ class ResponseCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.cache_dir, 0o700)
         # Harden the parents too — mkdir(parents=True) would otherwise leave
-        # ~/.config/mb-crawler and its cache/ at the umask default (0755),
+        # ~/.config/tahuti and its cache/ at the umask default (0755),
         # making the credential-bearing tree traversable by other local users.
         for parent in (self.cache_dir, *self.cache_dir.parents):
             try:
