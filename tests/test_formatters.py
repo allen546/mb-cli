@@ -667,11 +667,15 @@ class TestPrintPayload:
 
     def test_no_temp_file_left_behind(self, tmp_path):
         payload = ok("login", "default", {"school": "bj80"})
-        dest = tmp_path / "output.json"
+        # Write into its own directory: the autouse isolation fixture creates
+        # `.config/` in tmp_path, which is not a leftover temp file.
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        dest = out_dir / "output.json"
         print_payload(payload, str(dest), "json")
         assert dest.exists()
         # mkstemp + chmod + os.replace: nothing partial may survive.
-        leftovers = [p.name for p in tmp_path.iterdir() if p.name != "output.json"]
+        leftovers = [p.name for p in out_dir.iterdir() if p.name != "output.json"]
         assert leftovers == []
 
     def test_write_is_atomic_replace_of_existing_file(self, tmp_path):
@@ -686,12 +690,16 @@ class TestPrintPayload:
 
     def test_write_failure_leaves_no_partial_file(self, tmp_path):
         payload = ok("login", "default", {"school": "bj80"})
-        dest = tmp_path / "output.json"
+        # Its own directory, so the isolation fixture's `.config/` does not
+        # count as a leftover.
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        dest = out_dir / "output.json"
         with patch("mb_cli.formatters.os.replace", side_effect=OSError("disk full")):
             with pytest.raises(OSError):
                 print_payload(payload, str(dest), "json")
         assert not dest.exists()
-        assert [p.name for p in tmp_path.iterdir()] == []
+        assert [p.name for p in out_dir.iterdir()] == []
 
     def test_output_path_creates_missing_parents(self, tmp_path):
         payload = ok("login", "default", {"school": "bj80"})
