@@ -1,4 +1,34 @@
-"""CLI entry-point for ``mb`` / ``python -m mb_cli``."""
+"""CLI entry-point for ``mb`` / ``python -m mb_cli``.
+
+Exit-code contract
+------------------
+Every ``cmd_*`` handler returns an ``int``, and ``main`` turns it straight into
+the process status (``raise SystemExit(args.func(args))``). The payload and the
+exit code must agree: a non-zero exit never leaves its failure described only
+*inside* an ``ok: true`` envelope.
+
+``0``
+    Success — the operation did what was asked.
+``1``
+    Operational failure the caller should react to: auth or network trouble, a
+    task that could not be resolved, a mutation the server rejected, a stop
+    request that stopped nothing, a download that landed no files.
+``2``
+    Usage error. Owned entirely by ``argparse`` — ``add_subparsers(required=
+    True)`` already exits 2 for a missing or unknown command — so no handler
+    returns it.
+``3``
+    "Not running". Only ``daemon status``: the query itself succeeded and its
+    answer is "there is no daemon", which a supervisor must be able to tell
+    apart from "the status call broke" (which is ``1``). Mirrors
+    ``systemctl is-active``.
+
+Client methods signal failure inconsistently — some raise, some return a bare
+``False`` (``MNNHubClient.mark_read``), and some return a *truthy*
+``{"error": ...}`` dict (``ManageBacClient.get_task_detail``). Each handler
+translates whichever it got into the contract above, so a guard written as
+``if not result:`` is not sufficient for the error-dict case.
+"""
 
 from __future__ import annotations
 
@@ -51,6 +81,16 @@ from .formatters import error, ok, print_payload
 from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)
+
+# Exit-code contract — see the module docstring for the reasoning.
+EXIT_OK = 0
+# 1 is the catch-all operational failure. 2 is deliberately absent: argparse
+# owns it (`add_subparsers(required=True)`) and never hands a handler a chance
+# to return it.
+EXIT_FAILURE = 1
+# Only `daemon status`: "there is no daemon", as distinct from "the status call
+# itself failed" (EXIT_FAILURE).
+EXIT_NOT_RUNNING = 3
 
 
 # ── Client helpers ──────────────────────────────────────────────────────
@@ -629,6 +669,15 @@ def cmd_view(args) -> int:
         else:
             detail = {}
 
+    # `get_task_detail` reports a fetch failure by returning a *truthy*
+    # `{"error": ...}` dict rather than by raising, so without this check the
+    # success envelope below would nest that error inside `ok: true` and exit 0
+    # — the same hole `download` had. Both `view` branches fetch details.
+    if isinstance(detail, dict) and detail.get("error"):
+        payload = error("view", "detail_fetch_failed", str(detail["error"]))
+        print_payload(payload, args.output, args.format)
+        return EXIT_FAILURE
+
     # Merge parsed card details from detail page back into task metadata
     if detail and isinstance(detail, dict):
         for k, dest_key in (
@@ -966,8 +1015,11 @@ def cmd_daemon_status(args) -> int:
     payload = ok("daemon.status", "default", res)
     print_payload(payload, args.output, args.format)
     # `status` is a predicate for scripts ("is it up?"), so "not running" has to
-    # be a non-zero exit rather than a successful report about a failure.
-    return 0 if res.get("running") else 1
+    # be a non-zero exit rather than a successful report about a failure. The
+    # query itself succeeded, so the envelope stays `ok` and `data.running` is
+    # the answer; EXIT_NOT_RUNNING keeps "no daemon" distinct from "the status
+    # call broke" for `systemctl is-active`-style callers.
+    return EXIT_OK if res.get("running") else EXIT_NOT_RUNNING
 
 
 def cmd_daemon_test_webhook(args) -> int:
