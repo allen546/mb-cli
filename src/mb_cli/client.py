@@ -2127,8 +2127,14 @@ class ManageBacClient:
 
         try:
             soup = self._get(task_path, bypass_cache=bypass_cache)
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:
+            # A single unreadable task must not abort a whole crawl, but the
+            # failure must not masquerade as a successful fetch either: return
+            # None so every caller's `if not detail` guard fires.  A truthy
+            # {"error": ...} dict slipped past those guards and was then merged
+            # into task metadata as if it were a parsed detail page.
+            log.warning("task detail fetch failed for %s: %s", task_path, exc)
+            return None
 
         detail: dict = {}
         main_content = soup.find("main") or soup

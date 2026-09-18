@@ -449,9 +449,18 @@ class TestCrawlAll:
                 re.compile(r"/student/classes/\d+/core_tasks/\d+$"),
                 text=sample_task_detail_html,
             )
+            # fetch_details goes through the event *hint* page, not the detail
+            # page. This route was previously unmatched, so get_task_detail
+            # swallowed the connection error and stored {"error": ...} as the
+            # "detail" — the assertion below passed on the error dict.
+            m.get(
+                re.compile(r"/student/classes/\d+/events/\d+/hint$"),
+                text=sample_task_detail_html,
+            )
             result = client.crawl_all(max_pages=1, fetch_details=True)
             assert len(result["upcoming"]) == 1
             assert "detail" in result["upcoming"][0]
+            assert "error" not in result["upcoming"][0]["detail"]
 
 
 class TestGetCalendarEvents:
