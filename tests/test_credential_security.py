@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mb_cli import __main__ as m
+from mb_cli import auth
 from mb_cli import keychain
 from mb_cli.auth import _load_creds, _store_password, build_client
 from mb_cli.config import (
@@ -1274,3 +1275,104 @@ class TestResolveCredsPath:
     def test_default_is_mode_guarded(self, isolated_env):
         """Sanity: the path we resolve is the one we write 0600."""
         assert resolve_creds_path().name == "creds.json"
+
+
+# ── the creds path is resolved once, per call, everywhere ─────────────────
+#
+# `auth` used to capture the path in a module-level constant at import *and*
+# re-resolve it in `_creds_path()`. Two code paths could therefore name two
+# different files: one writes the password to `~/.config/tahuti/creds.json`
+# while the other goes looking in `~/.config/mb-crawler/creds.json` and reports
+# `missing_credentials`. There is a live instance of that on the destination
+# host — an older `mb` install still using the pre-rename directory.
+
+
+class TestCredsPathResolvesOnce:
+    def test_no_import_time_constant_can_go_stale(self):
+        """The contract: nothing in `auth` may freeze the path at import."""
+        assert not hasattr(auth, "_CREDS_PATH")
+        assert not hasattr(auth, "_CREDS_PATH_ENV")
+
+    def test_auth_reads_no_credential_env_var_at_module_scope(self):
+        """Guards against reintroducing the constant in a new spelling.
+
+        `auth` used to capture ``MB_CRAWLER_CREDS_PATH`` at import *and*
+        re-resolve it per call, leaving two answers to one question. The
+        captured one was never read, so the split stayed latent — but a frozen
+        path is exactly the kind of thing a later change starts relying on, and
+        under pytest the snapshot would have pinned the *first* test's
+        ``tmp_path`` for the whole session.
+        """
+        source = Path(auth.__file__).read_text(encoding="utf-8")
+        module_scope = source.split("def _creds_path")[0]
+        assert "environ" not in module_scope, (
+            "auth must not read the environment at import time"
+        )
+
+    def test_every_path_follows_an_env_var_set_after_import(self, isolated_env, monkeypatch):
+        """Storing, reading, deleting and reporting must agree on one file."""
+        first = isolated_env / "first.json"
+        second = isolated_env / "second.json"
+
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        assert auth._creds_path() == str(first)
+
+        # Changed *after* import — the old constant would still have said `first`.
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(second))
+        assert auth._creds_path() == str(second)
+
+        with patch.object(keychain, "enabled", return_value=False):
+            assert auth._store_password("student@example.com", "s3cret") == "file"
+        assert second.exists(), "the password was written to the stale path"
+        assert not first.exists()
+        assert json.loads(second.read_text())["password"] == "s3cret"
+
+        assert auth._load_creds()["password"] == "s3cret"
+
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        assert auth._load_creds() is None, "read and write resolved different files"
+
+    def test_delete_follows_the_same_resolution(self, isolated_env, monkeypatch):
+        """`_store_password` must clear the file it just replaced, not a stale one."""
+        target = isolated_env / "creds.json"
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(target))
+        _write_creds(target, password="old")
+
+        with (
+            patch.object(keychain, "enabled", return_value=True),
+            patch.object(keychain, "store", return_value=True),
+        ):
+            assert auth._store_password("student@example.com", "new") == "keychain"
+        assert not target.exists(), "the cleartext copy was left behind"
+        assert not (isolated_env / "creds.json.other").exists()
+
+    def test_state_paths_follow_home_set_after_import(self, isolated_env, monkeypatch):
+        """`config_dir()` reads $HOME per call; a constant would freeze it."""
+        import mb_cli.config as config
+
+        # Drop the fixture's redirects so the defaults (not the env vars) apply.
+        for var in ("MB_CRAWLER_CREDS_PATH", "MB_CRAWLER_CONFIG", "MB_CRAWLER_SESSION"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("HOME", "/tmp/some-other-home")
+        other = Path("/tmp/some-other-home/.config/tahuti")
+        assert config.config_dir() == other
+        assert config.resolve_creds_path() == other / "creds.json"
+        assert config.resolve_config_path() == other / "config.json"
+        assert config.resolve_session_path() == other / "session.json"
+        # The legacy importable names must not be stale snapshots either.
+        assert config.CONFIG_DIR == other
+        assert config.DEFAULT_CREDS_PATH == other / "creds.json"
+
+    def test_legacy_path_names_stay_importable(self):
+        """Removing the constants must not break an out-of-tree importer."""
+        from mb_cli.config import CONFIG_DIR, DEFAULT_CONFIG_PATH, DEFAULT_CREDS_PATH
+
+        assert CONFIG_DIR == Path.home() / ".config" / "tahuti"
+        assert DEFAULT_CONFIG_PATH == CONFIG_DIR / "config.json"
+        assert DEFAULT_CREDS_PATH == CONFIG_DIR / "creds.json"
+
+    def test_unknown_attribute_still_raises(self):
+        import mb_cli.config as config
+
+        with pytest.raises(AttributeError):
+            config.THIS_NAME_DOES_NOT_EXIST
