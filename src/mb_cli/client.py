@@ -8,7 +8,8 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import urljoin, unquote, urlparse
 
 import requests
@@ -23,12 +24,53 @@ log = logging.getLogger(__name__)
 # Retryable HTTP status codes (server errors that may resolve on retry)
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
+# Statuses whose ``Location`` header names the next hop.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+# A chain longer than this is a loop, not a redirect.
+_MAX_REDIRECT_HOPS = 10
+
 # Only these domains are acceptable targets; anything else risks sending the
 # session cookie (and the login password) to an unintended host.
 ALLOWED_DOMAINS = frozenset({"managebac.com", "managebac.cn"})
 
 # A school subdomain must be a plain DNS label.
 _SCHOOL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$")
+
+
+class SessionExpiredError(RuntimeError):
+    """The server answered with the sign-in page — the session cookie is dead.
+
+    Subclasses :class:`RuntimeError` so existing ``except RuntimeError`` callers
+    keep working, but is its own type so :meth:`ManageBacClient._get` can tell
+    "the session is gone" (which must propagate) from a transport blip (where
+    serving stale cached content is acceptable).
+    """
+
+
+# Failures that a stale cache hit must never paper over.  Both describe the
+# *current* session — the credentials are dead, or a security policy refused the
+# request — so answering with last cycle's cached grades would convert a hard
+# stop into a silently wrong result.
+_NEVER_MASK_ERRORS = (CommandError, SessionExpiredError)
+
+
+def _school_display_tz() -> Any:
+    """The timezone ManageBac's human-readable dates are written in.
+
+    ManageBac renders school-local wall-clock times ("September 15, 2026 at
+    23:59") with no offset.  There is no per-school timezone setting, so the
+    assumption is made explicit here: **the school's clock is assumed to be this
+    machine's clock.**  That assumption is what makes the daemon's reminders
+    drift by the host/school offset; if a per-school offset is ever configured,
+    change this function and nothing else needs to move.
+
+    Returns an aware ``tzinfo`` rather than ``None`` so :func:`parse_due_date`
+    can hand back one unambiguous type — mixing naive and aware datetimes makes
+    ``sorted`` raise ``TypeError``.
+    """
+    offset_seconds = time.altzone if time.daylight else time.timezone
+    return timezone(timedelta(seconds=-offset_seconds))
 
 
 def _validate_school_domain(school: str, domain: str) -> tuple[str, str]:
@@ -256,13 +298,14 @@ class ManageBacClient:
         return False
 
     def _assert_same_host(self, url: str) -> None:
-        """Refuse to send an authenticated request to a host outside ManageBac.
+        """Refuse to **send** an authenticated request to a host outside ManageBac.
 
-        requests follows redirects by merging the whole cookie jar into the
-        new target and, on 307/308, replays the request body.  Since the login
-        POST body contains the plaintext password and the jar holds
+        Call this *before* issuing the request, never on a response you already
+        have.  requests follows redirects by merging the whole cookie jar into
+        the new target and, on 307/308, replays the request body.  Since the
+        login POST body contains the plaintext password and the jar holds
         ``_managebac_session``, a redirect off the ManageBac estate would
-        exfiltrate both.
+        exfiltrate both before any post-hoc check could run.
 
         Hosts within an allowed domain (e.g. the school subdomain and the
         shared calendar host ``managebac.com``) are permitted, since ManageBac
@@ -282,8 +325,27 @@ class ManageBacClient:
             f"(expected {expected!r})",
         )
 
-    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
-        # Enforce rate limit / delay between requests
+    def _assert_allowed_transport(self, url: str) -> None:
+        """Refuse a redirect that drops TLS, even one that stays on our own name.
+
+        ``Location: http://bj80.managebac.cn/...`` keeps the host but ships
+        ``_managebac_session`` in cleartext to anything on the path.
+        """
+        scheme = urlparse(url).scheme.lower()
+        if scheme and scheme != "https":
+            raise CommandError(
+                "insecure_redirect_blocked",
+                f"Refusing to follow redirect to non-HTTPS URL {url!r}",
+            )
+
+    @staticmethod
+    def _strip_body(kwargs: dict) -> dict:
+        """Drop the request body for a hop that turns a POST into a GET."""
+        for key in ("data", "files", "json"):
+            kwargs.pop(key, None)
+        return kwargs
+
+    def _respect_rate_limit(self) -> None:
         now = time.time()
         elapsed = now - getattr(self, "_last_request_time", 0.0)
         min_delay = getattr(self, "request_delay", 1.0)
@@ -292,6 +354,81 @@ class ManageBacClient:
             time.sleep(max(0.0, sleep_time))
         self._last_request_time = time.time()
 
+    def _follow_redirects_safely(
+        self,
+        method: str,
+        url: str,
+        response: requests.Response,
+        kwargs: dict,
+        headers: dict,
+    ) -> requests.Response:
+        """Follow redirects by hand, checking every hop **before** it is sent.
+
+        Automatic redirect-following is disabled precisely so this runs first:
+        see :meth:`_assert_same_host` for what a foreign ``Location`` would
+        otherwise leak.  Same-host redirects are followed normally, including
+        the 307/308 body replay that ManageBac relies on for form resubmission.
+        """
+        for _hop in range(_MAX_REDIRECT_HOPS):
+            if response.status_code not in _REDIRECT_STATUSES:
+                return response
+            location = (response.headers.get("Location") or "").strip()
+            if not location:
+                # A 3xx with no Location is malformed; hand it back and let
+                # raise_for_status() decide what it is.
+                return response
+            next_url = urljoin(response.url, location)
+            # Both gates run while the request still does not exist.
+            self._assert_allowed_transport(next_url)
+            self._assert_same_host(next_url)
+
+            next_method = method
+            next_kwargs = dict(kwargs)
+            next_kwargs["allow_redirects"] = False
+            if response.status_code == 303:
+                # 303 See Other always becomes a bodyless GET.
+                next_method = "GET"
+                self._strip_body(next_kwargs)
+            elif response.status_code in (301, 302) and method not in ("GET", "HEAD"):
+                # Historical clients downgrade a 301/302 after a POST to GET.
+                next_method = "GET"
+                self._strip_body(next_kwargs)
+            # 307/308 deliberately keep method *and* body — that is the whole
+            # point of "temporary/permanent redirect" versus "see other" — and
+            # it is safe here precisely because the host was just re-validated.
+
+            hop_headers = dict(headers)
+            hop_headers["Referer"] = response.url
+            status = response.status_code
+            previous_url = response.url
+            response.close()
+            self._respect_rate_limit()
+            log.debug("following %d %s -> %s", status, previous_url, next_url)
+            response = self.session.request(
+                next_method, next_url, headers=hop_headers, **next_kwargs
+            )
+
+        raise CommandError(
+            "redirect_loop",
+            f"Too many redirects (> {_MAX_REDIRECT_HOPS}) from {url!r}",
+        )
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        # Redirects are followed by _follow_redirects_safely so every hop is
+        # host-checked before the request exists.  Disabling requests' own
+        # following here is the fix, not an optimisation: with it enabled the
+        # cookie jar and (on 307/308) the body have already gone by the time any
+        # check of ours can run.
+        if kwargs.pop("allow_redirects", False):
+            log.debug(
+                "%s %s: allow_redirects ignored — redirects are validated hop by hop",
+                method,
+                url,
+            )
+        kwargs["allow_redirects"] = False
+
+        self._respect_rate_limit()
+
         headers = kwargs.pop("headers", {}) or {}
         if self._last_url and "Referer" not in headers:
             headers["Referer"] = self._last_url
@@ -299,9 +436,11 @@ class ManageBacClient:
         for attempt in range(self.retry + 1):
             try:
                 r = self.session.request(method, url, headers=headers, **kwargs)
-                # Verify the final destination stayed on our host.  This
-                # catches redirects without disabling redirect-following
-                # (login needs it to reach the dashboard).
+                r = self._follow_redirects_safely(method, url, r, kwargs, headers)
+                # Belt and braces: every hop was validated on the way out.
+                # Re-checking the final URL means a future edit here cannot
+                # silently downgrade the guard to post-hoc detection again.
+                self._assert_allowed_transport(r.url)
                 self._assert_same_host(r.url)
                 r.raise_for_status()
                 self._last_url = url
@@ -350,42 +489,97 @@ class ManageBacClient:
         if not bypass_cache:
             cached = self.cache.get(url)
             if cached is not None:
-                body, status = cached
-                soup = BeautifulSoup(body, "html.parser")
-                if "/login" in url:
-                    raise RuntimeError("Session expired or invalid — redirected to login")
-                self._capture_student_name(soup)
-                return soup
+                return self._soup_from_cached(url, cached[0])
 
         lock = self._get_url_lock(url)
         with lock:
             if not bypass_cache:
                 cached = self.cache.get(url)
                 if cached is not None:
-                    body, status = cached
-                    soup = BeautifulSoup(body, "html.parser")
-                    if "/login" in url:
-                        raise RuntimeError("Session expired or invalid — redirected to login")
-                    self._capture_student_name(soup)
-                    return soup
+                    return self._soup_from_cached(url, cached[0])
 
             try:
                 r = self._request_with_retry("GET", url)
-                if "/login" in r.url:
-                    raise RuntimeError("Session expired or invalid — redirected to login")
-                self.cache.put(url, r.text, r.status_code)
                 soup = BeautifulSoup(r.text, "html.parser")
+                # Reject before caching, so a login page is never written under
+                # a real /student/... URL to be served for a whole TTL.
+                self._reject_login_page(r.url, soup)
+                self.cache.put(url, r.text, r.status_code)
                 self._capture_student_name(soup)
                 return soup
             except Exception as e:
+                # A stale entry may paper over a *transient* transport failure.
+                # It must never paper over a dead session or a refused security
+                # policy: both are facts about the current credentials, so
+                # answering with last cycle's grades (or with cached content
+                # behind a blocked redirect) turns a hard stop into a silently
+                # wrong result.
+                if isinstance(e, _NEVER_MASK_ERRORS):
+                    raise
                 cached = self.cache.get(url, allow_stale=True)
                 if cached is not None:
                     body, status = cached
-                    log.warning("Request to %s failed (%s) — loading stale cached content", url, e)
+                    log.warning(
+                        "Request to %s failed (%s) — SERVING STALE CACHED CONTENT "
+                        "for %s (cached status %s); this data may be out of date",
+                        url,
+                        e,
+                        path,
+                        status,
+                    )
                     soup = BeautifulSoup(body, "html.parser")
                     self._capture_student_name(soup)
                     return soup
                 raise
+
+    def _soup_from_cached(self, url: str, body: str) -> BeautifulSoup:
+        """Turn a cache hit into soup, rejecting anything that is a login page."""
+        soup = BeautifulSoup(body, "html.parser")
+        self._reject_login_page(url, soup)
+        self._capture_student_name(soup)
+        return soup
+
+    # A genuine ManageBac sign-in form posts to /sessions.
+    _LOGIN_FORM_ACTION_RE = re.compile(r"/sessions?(?:[?#/]|$)")
+    _LOGIN_ID_FIELD_RE = re.compile(r"^(login|email|user_?name|user)$", re.IGNORECASE)
+
+    def _looks_like_login_page(self, soup: BeautifulSoup) -> bool:
+        """True when *soup* is ManageBac's sign-in page rather than real content.
+
+        The decision has to come from the body.  The previous check looked for
+        ``/login`` in the *requested* URL, which no real student path contains —
+        dead logic — so a login page served at 200 was parsed as an empty task
+        list and reported as a successful, empty crawl.
+        """
+        if soup.find("form", action=self._LOGIN_FORM_ACTION_RE):
+            return True
+        password = soup.find("input", attrs={"type": "password"})
+        if password is None:
+            return False
+        # A password field alone is not proof: /student/profile carries a
+        # change-password form.  Require the login/email identifier that only a
+        # sign-in form pairs with it.
+        if soup.find("input", attrs={"name": self._LOGIN_ID_FIELD_RE}):
+            return True
+        form = password.find_parent("form")
+        if form is not None and re.search(
+            r"sign[_ -]?in|log[_ -]?in",
+            " ".join(form.get("class", [])) + " " + str(form.get("id", "")),
+            re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    def _reject_login_page(self, url: str, soup: BeautifulSoup) -> None:
+        """Raise :class:`SessionExpiredError` if *soup* is a login page."""
+        if "/login" in url:
+            raise SessionExpiredError(
+                "Session expired or invalid — redirected to login"
+            )
+        if self._looks_like_login_page(soup):
+            raise SessionExpiredError(
+                f"Session expired or invalid — {url} returned the sign-in page"
+            )
 
     def _capture_student_name(self, soup: BeautifulSoup) -> None:
         if self.student_name:
@@ -1165,8 +1359,8 @@ class ManageBacClient:
                         f"{self.base}/student/events.json",
                         params={"start": start, "end": end},
                     )
-                    if "/login" in r.url:
-                        raise RuntimeError("Session expired or invalid — redirected to login")
+                    # Same dead-logic trap as _get: check the body, not the URL.
+                    self._reject_login_page(r.url, BeautifulSoup(r.text, "html.parser"))
                     self.cache.put(url, r.text, r.status_code)
                     events = r.json()
         return [
