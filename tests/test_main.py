@@ -623,7 +623,7 @@ class TestMainDaemon:
         assert data["pid_file_requested"] == str(mine)
         assert data["pid_file_fallback"] == str(tmp_path / "config.pid")
 
-    def test_daemon_status_not_running_exits_nonzero(
+    def test_daemon_status_not_running_exits_three(
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
@@ -639,8 +639,10 @@ class TestMainDaemon:
             with patch("builtins.print") as mock_print:
                 with pytest.raises(SystemExit) as exc_info:
                     main(["daemon", "status", "--format", "json"])
-                assert exc_info.value.code == 1
-        assert json.loads(mock_print.call_args[0][0])["data"]["running"] is False
+                assert exc_info.value.code == 3
+        payload = json.loads(mock_print.call_args[0][0])
+        assert payload["data"]["running"] is False
+        assert payload["ok"] is True
 
     def test_daemon_status_running_exits_zero(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))

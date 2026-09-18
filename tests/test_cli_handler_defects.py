@@ -53,7 +53,16 @@ DOWNLOAD_HOST = "https://bj80.managebac.cn"
 
 
 def _isolate_state(tmp_path, monkeypatch):
-    """Point every state path (including the response cache) at tmp_path."""
+    """Point every state path (including the response cache) at tmp_path.
+
+    ``DEFAULT_CACHE_DIR``, ``DEFAULT_SNAPSHOT_PATH``, ``DEFAULT_PID_PATH``,
+    ``DEFAULT_LOG_PATH`` and ``DEFAULT_DAEMON_PATH`` are all computed from
+    ``config_dir()`` at *module import time*, so no ``MB_CRAWLER_*`` variable
+    and no ``HOME`` override can reach them — they have to be patched in place.
+    ``daemon/__init__.py`` additionally re-binds the pid/log defaults via
+    ``from .system import ...``, giving a second independent binding that
+    ``load_daemon_config`` reads, so both are patched.
+    """
     for var in (
         "MB_CRAWLER_KEYCHAIN",
         "MB_CRAWLER_PASSWORD",
@@ -64,10 +73,47 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
     monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(tmp_path / "creds.json"))
-    # The response cache directory is resolved at import time from the user's
-    # home, so it has to be redirected or these tests would clear real data.
     monkeypatch.setattr("mb_cli.cache.DEFAULT_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr("mb_cli.__main__.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json")
+    for module in ("mb_cli.daemon.system", "mb_cli.daemon"):
+        monkeypatch.setattr(f"{module}.DEFAULT_PID_PATH", tmp_path / "daemon.pid")
+        monkeypatch.setattr(f"{module}.DEFAULT_LOG_PATH", tmp_path / "daemon.log")
+    monkeypatch.setattr("mb_cli.daemon.DEFAULT_DAEMON_PATH", tmp_path / "daemon.json")
+    monkeypatch.setattr(
+        "mb_cli.daemon.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json"
+    )
     return tmp_path
+
+
+class TestStatePathsAreIsolated:
+    """The import-time constants are the trap these tests could fall into.
+
+    ``daemon/__init__.py`` does ``from .system import DEFAULT_LOG_PATH,
+    DEFAULT_PID_PATH``, so patching only ``daemon.system`` leaves the
+    package-level name that ``load_daemon_config`` actually reads pointing at
+    the operator's real home. Both bindings have to move together.
+    """
+
+    def test_load_daemon_config_resolves_into_tmp_path(self, tmp_path, monkeypatch):
+        _isolate_state(tmp_path, monkeypatch)
+        from mb_cli.daemon import load_daemon_config
+
+        config = load_daemon_config()
+        assert config["pid_file"] == str(tmp_path / "daemon.pid")
+        assert config["log_file"] == str(tmp_path / "daemon.log")
+        assert config["snapshot_file"] != str(Path.home() / ".config" / "tahuti" / "snapshot.json")
+
+    def test_no_state_file_lands_outside_tmp_path(self, tmp_path, monkeypatch):
+        """End to end: a full `logout` must not touch the real state dir."""
+        _isolate_state(tmp_path, monkeypatch)
+        _write_state(tmp_path, "profile@example.com", "other@example.com")
+        real = Path.home() / ".config" / "tahuti"
+        before = {p for p in real.glob("*")} if real.is_dir() else set()
+        with patch("builtins.print"):
+            with pytest.raises(SystemExit):
+                main(["logout", "--format", "json"])
+        after = {p for p in real.glob("*")} if real.is_dir() else set()
+        assert after - before == set(), f"logout wrote outside tmp_path: {after - before}"
 
 
 def _capture_payload():
@@ -550,6 +596,45 @@ class TestDownloadDetailFailure:
         assert rc == 0
         assert captured["payload"]["ok"] is True
         assert captured["payload"]["data"]["downloaded_count"] == 0
+
+    def test_view_error_shaped_detail_is_not_a_success(self):
+        """`view` had the same hole as `download`, in both of its branches."""
+        from mb_cli.__main__ import cmd_view
+
+        for target, ident in (
+            (None, "1000099"),  # the id branch
+            (f"{DOWNLOAD_HOST}/student/classes/1/core_tasks/1000099", None),
+        ):
+            client = _download_client([], detail={"error": "Session expired"})
+            state = MagicMock()
+            state.active_profile = "default"
+            args = MagicMock(
+                target=target,
+                id=ident,
+                url=None,
+                subject=None,
+                pages=10,
+                refresh=False,
+                output=None,
+                format="json",
+            )
+            captured, capture = _capture_payload()
+            with (
+                patch(
+                    "mb_cli.__main__._build_client",
+                    return_value=(state, client, "student@example.com"),
+                ),
+                patch("mb_cli.__main__._authenticate_client"),
+                patch("mb_cli.__main__.load_snapshot", return_value={}),
+                patch("mb_cli.__main__.find_task_by_id", return_value=_task()),
+                patch("mb_cli.__main__.print_payload", side_effect=capture),
+            ):
+                rc = cmd_view(args)
+            assert rc == 1, f"view branch {target!r} reported success"
+            payload = captured["payload"]
+            assert payload["ok"] is False
+            assert payload["error"]["code"] == "detail_fetch_failed"
+            assert "Session expired" in payload["error"]["message"]
 
 
 # ── Defect 7 — a partial crawl marked everything unseen as deleted ──────
