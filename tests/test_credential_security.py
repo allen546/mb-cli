@@ -1353,6 +1353,14 @@ class TestCredsPathResolvesOnce:
         # Drop the fixture's redirects so the defaults (not the env vars) apply.
         for var in ("MB_CRAWLER_CREDS_PATH", "MB_CRAWLER_CONFIG", "MB_CRAWLER_SESSION"):
             monkeypatch.delenv(var, raising=False)
+        # Also drop the autouse fixture's in-place patches of the legacy names.
+        # `config_dir()` resolves dynamically, but the module-level names are
+        # real attributes once patched, and a real attribute short-circuits
+        # `__getattr__` — so leaving them patched would pin the fixture's
+        # tmp_path and defeat the assertion this test exists to make.
+        for name in ("CONFIG_DIR", "DEFAULT_CONFIG_PATH", "DEFAULT_SESSION_PATH",
+                     "DEFAULT_CREDS_PATH"):
+            monkeypatch.delattr(config, name, raising=False)
         monkeypatch.setenv("HOME", "/tmp/some-other-home")
         other = Path("/tmp/some-other-home/.config/tahuti")
         assert config.config_dir() == other
