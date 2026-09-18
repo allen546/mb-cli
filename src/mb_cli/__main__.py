@@ -1336,6 +1336,7 @@ def cmd_grades(args) -> int:
         else:
             # Gather grades for ALL classes
             all_grades = {}
+            failed: dict[str, str] = {}
             for cid, cname in seen.items():
                 try:
                     c_grades = client.get_class_grades(cid)
@@ -1343,15 +1344,20 @@ def cmd_grades(args) -> int:
                     all_grades[cid] = c_grades
                 except Exception as e:
                     log.warning("failed to fetch grades for class %s: %s", cid, e)
+                    failed[cid] = str(e)
             payload = ok(
                 "grades.all",
                 state.active_profile,
                 {
                     "classes_grades": all_grades,
+                    "failed_classes": failed,
                 },
             )
             print_payload(payload, args.output, args.format)
-            return 0
+            # Some classes failing is a usable partial run, but a run where
+            # *every* class failed returned no grades at all and must not look
+            # like one where the account simply has none.
+            return EXIT_OK if all_grades else EXIT_FAILURE
 
     grades = client.get_class_grades(class_id)
     grades["class_id"] = class_id

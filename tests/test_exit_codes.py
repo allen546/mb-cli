@@ -272,6 +272,79 @@ def test_download_detail_fetch_none_still_exits_nonzero(capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "detail_fetch_failed"
 
 
+# ── `mb grades` (all-classes aggregate) ───────────────────────────────────
+
+
+def test_grades_all_classes_when_every_class_failed_exits_nonzero(isolated_config):
+    """A partial crawl is fine; a run with *no* grades at all is not.
+
+    `grades` swallows a per-class fetch error into a log warning, so with every
+    class failing it used to emit `ok: true, classes_grades: {}` and exit 0 —
+    indistinguishable from an account that legitimately has no grades yet.
+    """
+    client = MagicMock()
+    client.crawl_all.return_value = {
+        "upcoming": [{"class_name": "Math", "link": "/student/classes/100/c/1"}],
+        "past": [],
+        "overdue": [],
+        "student_name": "X",
+        "school": "s",
+        "base_url": "u",
+        "crawled_at": "t",
+    }
+    client.get_class_grades.side_effect = RuntimeError("session expired")
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__.save_profile"),
+        patch("mb_cli.__main__.save_session"),
+    ):
+        code, payloads = _run_main(["grades", "--format", "json"])
+
+    assert code == EXIT_FAILURE
+    payload = payloads[-1]
+    # The envelope stays `ok` because the crawl itself succeeded; the failure is
+    # in the per-class detail, which the payload now names explicitly.
+    assert payload["data"]["classes_grades"] == {}
+    assert payload["data"]["failed_classes"] == {"100": "session expired"}
+
+
+def test_grades_all_classes_partial_failure_exits_zero(isolated_config):
+    """One class failing out of several is still a usable run."""
+    client = MagicMock()
+    client.crawl_all.return_value = {
+        "upcoming": [
+            {"class_name": "Math", "link": "/student/classes/100/c/1"},
+            {"class_name": "Physics", "link": "/student/classes/200/c/2"},
+        ],
+        "past": [],
+        "overdue": [],
+        "student_name": "X",
+        "school": "s",
+        "base_url": "u",
+        "crawled_at": "t",
+    }
+
+    def _grades(cid):
+        if cid == "100":
+            raise RuntimeError("boom")
+        return {"tasks": [], "categories": [], "grade_scale": {}}
+
+    client.get_class_grades.side_effect = _grades
+
+    with (
+        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("mb_cli.__main__.save_profile"),
+        patch("mb_cli.__main__.save_session"),
+    ):
+        code, payloads = _run_main(["grades", "--format", "json"])
+
+    assert code == EXIT_OK
+    payload = payloads[-1]
+    assert list(payload["data"]["classes_grades"]) == ["200"]
+    assert payload["data"]["failed_classes"] == {"100": "boom"}
+
+
 # ── `main`'s handling of failures it does not model ───────────────────────
 
 
