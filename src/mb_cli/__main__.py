@@ -134,6 +134,40 @@ def _harden_dir(path: Path) -> None:
         pass
 
 
+def _snapshot_path(state) -> Path:
+    """Return the snapshot path that belongs to *state*'s config directory.
+
+    The snapshot lives beside the config file, so ``--config`` relocates both.
+    This is deliberately *not* :data:`DEFAULT_SNAPSHOT_PATH`, which ignores
+    ``--config`` and is only a fallback for callers with no state at all.
+    """
+    return state.config_path.parent / "snapshot.json"
+
+
+def _set_submission_state(
+    snapshot_path: Path,
+    task_id: str,
+    submitted: bool,
+    client: ManageBacClient | None = None,
+) -> None:
+    """Force a task's submission state in the local snapshot and persist it.
+
+    ``submitted`` and the presence of a submit button are two views of the
+    same fact, so they are always written together — a snapshot with
+    ``status="submitted"`` but a live submit button would re-offer the upload.
+
+    *client* is forwarded so a status change invalidates the task's cached
+    detail pages, exactly as a crawl-detected change would.
+    """
+    snapshot = load_snapshot(snapshot_path)
+    task = find_task_by_id(snapshot, task_id)
+    if not task:
+        return
+    task["status"] = "submitted" if submitted else "not-submitted"
+    task["has_submit_button"] = not submitted
+    update_snapshot_with_class_tasks(snapshot_path, [task], client=client)
+
+
 def _redact_daemon_config(config: dict) -> dict:
     """Return a copy of a daemon config safe to echo into CLI/MCP output.
 
@@ -194,9 +228,8 @@ def merge_snapshot(old: dict, new: dict, client=None) -> dict:
 
                     if (grade_changed or labels_changed) and client:
                         class_link = t.get("link") or ""
-                        m = re.search(r"/student/classes/(\d+)/core_tasks/(\d+)", class_link)
-                        if m:
-                            cid, task_id = m.group(1), m.group(2)
+                        cid, task_id = parse_task_url(class_link)
+                        if cid and task_id:
                             detail_url = f"{client.base}/student/classes/{cid}/core_tasks/{task_id}"
                             hint_url = f"{client.base}/student/classes/{cid}/events/{task_id}/hint"
                             dropbox_url = f"{client.base}/student/classes/{cid}/core_tasks/{task_id}/dropbox"
@@ -350,7 +383,7 @@ def cmd_list(args) -> int:
     from .filters import filter_result_by_subject, filter_result_by_status
 
     # Load local snapshot
-    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot_path = _snapshot_path(state)
     old_snapshot = load_snapshot(snapshot_path)
 
     # Check if we can reuse the snapshot (crawled within last 15 minutes)
@@ -466,7 +499,7 @@ def cmd_view(args) -> int:
     ):
         task_id = target.split("core_tasks/")[-1].split("/")[0]
         # Search local snapshot first to populate standard fields
-        snapshot_path = state.config_path.parent / "snapshot.json"
+        snapshot_path = _snapshot_path(state)
         snapshot = load_snapshot(snapshot_path)
         task = find_task_by_id(snapshot, task_id)
 
@@ -481,7 +514,7 @@ def cmd_view(args) -> int:
             return 1
 
         # 1. Search local snapshot first
-        snapshot_path = state.config_path.parent / "snapshot.json"
+        snapshot_path = _snapshot_path(state)
         snapshot = load_snapshot(snapshot_path)
         task = find_task_by_id(snapshot, task_id)
 
@@ -797,7 +830,7 @@ def cmd_submit(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
-    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot_path = _snapshot_path(state)
 
     try:
         class_id, task_id = _resolve_task_ids(
@@ -834,22 +867,11 @@ def cmd_submit(args) -> int:
                 len(fresh_tasks),
             )
         elif existing_task:
-            existing_task["status"] = "submitted"
-            existing_task["has_submit_button"] = False
-            update_snapshot_with_class_tasks(
-                snapshot_path, [existing_task], client=client
-            )
+            _set_submission_state(snapshot_path, task_id, True, client=client)
     except Exception as exc:
         log.warning("Failed to eagerly refresh snapshot after submit: %s", exc)
         try:
-            old_snapshot = load_snapshot(snapshot_path)
-            existing_task = find_task_by_id(old_snapshot, task_id)
-            if existing_task:
-                existing_task["status"] = "submitted"
-                existing_task["has_submit_button"] = False
-                update_snapshot_with_class_tasks(
-                    snapshot_path, [existing_task], client=client
-                )
+            _set_submission_state(snapshot_path, task_id, True, client=client)
         except Exception:
             pass
 
@@ -870,7 +892,7 @@ def cmd_submissions(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
-    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot_path = _snapshot_path(state)
     pages = getattr(args, "pages", 10)
     try:
         class_id, task_id = _resolve_task_ids(
@@ -902,14 +924,7 @@ def cmd_submissions(args) -> int:
 
         # Eagerly refresh snapshot
         try:
-            old_snapshot = load_snapshot(snapshot_path)
-            existing_task = find_task_by_id(old_snapshot, task_id)
-            if existing_task:
-                existing_task["status"] = "submitted"
-                existing_task["has_submit_button"] = False
-                update_snapshot_with_class_tasks(
-                    snapshot_path, [existing_task], client=client
-                )
+            _set_submission_state(snapshot_path, task_id, True, client=client)
         except Exception:
             pass
 
@@ -935,16 +950,8 @@ def cmd_submissions(args) -> int:
 
         # Refresh snapshot: if 0 submissions remaining, mark not-submitted
         try:
-            remaining = result.get("remaining_submissions", 0)
-            if remaining == 0:
-                old_snapshot = load_snapshot(snapshot_path)
-                existing_task = find_task_by_id(old_snapshot, task_id)
-                if existing_task:
-                    existing_task["status"] = "not-submitted"
-                    existing_task["has_submit_button"] = True
-                    update_snapshot_with_class_tasks(
-                        snapshot_path, [existing_task], client=client
-                    )
+            if result.get("remaining_submissions", 0) == 0:
+                _set_submission_state(snapshot_path, task_id, False, client=client)
         except Exception:
             pass
 
@@ -1233,7 +1240,7 @@ def cmd_download(args) -> int:
     task_id = args.task_id
 
     # 1. Look up task in snapshot first
-    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot_path = _snapshot_path(state)
     snapshot = load_snapshot(snapshot_path)
 
     task = find_task_by_id(snapshot, task_id)
@@ -1330,7 +1337,7 @@ def cmd_feedback(args) -> int:
     _authenticate_client(state, client, email)
 
     target = args.task_id
-    snapshot_path = state.config_path.parent / "snapshot.json"
+    snapshot_path = _snapshot_path(state)
     try:
         class_id, task_id = _resolve_task_ids(
             client, target, getattr(args, "pages", 10), snapshot_path=snapshot_path
