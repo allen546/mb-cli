@@ -30,8 +30,14 @@ class _Args:
             setattr(self, key, value)
 
 
+# Attachment URLs must be https and on the school's own ManageBac host, so
+# every fixture URL below uses the real shape of one.
+DOWNLOAD_HOST = "https://myschool.managebac.cn"
+
+
 def _client(detail_attachments, task=None, found_task=None):
     client = MagicMock()
+    client.base = DOWNLOAD_HOST
     client.get_task_detail.return_value = {"attachments": detail_attachments}
     client.find_task_by_id.return_value = found_task
     resp = MagicMock()
@@ -77,8 +83,8 @@ def _run(tmp_path, args, client, snapshot_tasks=None):
 
 def test_download_writes_attachments_and_submissions(tmp_path):
     attachments = [
-        {"name": "res.pdf", "url": "http://x/res.pdf", "source": "description"},
-        {"name": "essay.pdf", "url": "http://x/essay.pdf", "source": "submission"},
+        {"name": "res.pdf", "url": "https://myschool.managebac.cn/res.pdf", "source": "description"},
+        {"name": "essay.pdf", "url": "https://myschool.managebac.cn/essay.pdf", "source": "submission"},
     ]
     args = _Args(tmp_path)
     rc, captured = _run(tmp_path, args, _client(attachments))
@@ -96,8 +102,8 @@ def test_download_writes_attachments_and_submissions(tmp_path):
 
 def test_download_no_submissions_skips_submission_source(tmp_path):
     attachments = [
-        {"name": "res.pdf", "url": "http://x/res.pdf", "source": "description"},
-        {"name": "essay.pdf", "url": "http://x/essay.pdf", "source": "submission"},
+        {"name": "res.pdf", "url": "https://myschool.managebac.cn/res.pdf", "source": "description"},
+        {"name": "essay.pdf", "url": "https://myschool.managebac.cn/essay.pdf", "source": "submission"},
     ]
     args = _Args(tmp_path, no_submissions=True)
     rc, captured = _run(tmp_path, args, _client(attachments))
@@ -110,8 +116,8 @@ def test_download_no_submissions_skips_submission_source(tmp_path):
 
 def test_download_no_attachments_skips_description_source(tmp_path):
     attachments = [
-        {"name": "res.pdf", "url": "http://x/res.pdf", "source": "description"},
-        {"name": "essay.pdf", "url": "http://x/essay.pdf", "source": "submission"},
+        {"name": "res.pdf", "url": "https://myschool.managebac.cn/res.pdf", "source": "description"},
+        {"name": "essay.pdf", "url": "https://myschool.managebac.cn/essay.pdf", "source": "submission"},
     ]
     args = _Args(tmp_path, no_attachments=True)
     rc, captured = _run(tmp_path, args, _client(attachments))
@@ -177,7 +183,7 @@ def test_download_falls_back_to_server_search_with_pages(tmp_path):
     ]
     server_task = {"id": "123", "title": "Math HW", "link": "http://x/123"}
     client = _client(
-        [{"name": "a.pdf", "url": "http://x/a.pdf", "source": "description"}],
+        [{"name": "a.pdf", "url": "https://myschool.managebac.cn/a.pdf", "source": "description"}],
         found_task=server_task,
     )
     args = _Args(tmp_path, pages=3)
@@ -200,7 +206,7 @@ def test_download_server_search_result_used(tmp_path):
         "link": "http://x/123",
     }
     client = _client(
-        [{"name": "a.pdf", "url": "http://x/a.pdf", "source": "description"}],
+        [{"name": "a.pdf", "url": "https://myschool.managebac.cn/a.pdf", "source": "description"}],
         found_task=server_task,
     )
     args = _Args(tmp_path)
@@ -212,8 +218,8 @@ def test_download_server_search_result_used(tmp_path):
 
 def test_download_partial_failure_exits_zero_and_lists_failures(tmp_path):
     attachments = [
-        {"name": "good.pdf", "url": "http://x/good.pdf", "source": "description"},
-        {"name": "bad.pdf", "url": "http://x/bad.pdf", "source": "description"},
+        {"name": "good.pdf", "url": "https://myschool.managebac.cn/good.pdf", "source": "description"},
+        {"name": "bad.pdf", "url": "https://myschool.managebac.cn/bad.pdf", "source": "description"},
     ]
     client = _client(attachments)
 
@@ -239,7 +245,7 @@ def test_download_partial_failure_exits_zero_and_lists_failures(tmp_path):
 
 def test_download_all_failures_exits_one(tmp_path):
     attachments = [
-        {"name": "a.pdf", "url": "http://x/a.pdf", "source": "description"}
+        {"name": "a.pdf", "url": "https://myschool.managebac.cn/a.pdf", "source": "description"}
     ]
     client = _client(attachments)
     resp = MagicMock()
@@ -265,7 +271,7 @@ def test_download_never_writes_outside_output_dir(tmp_path):
     attachments = [
         {
             "name": "../../escape.pdf",
-            "url": "http://x/escape.pdf",
+            "url": "https://myschool.managebac.cn/escape.pdf",
             "source": "description",
         }
     ]
@@ -292,7 +298,7 @@ def test_download_default_output_dir_uses_task_title_slug(tmp_path, monkeypatch)
         {"id": "123", "title": "My Math HW 3", "link": "http://x/123"}
     ]
     client = _client(
-        [{"name": "a.pdf", "url": "http://x/a.pdf", "source": "description"}]
+        [{"name": "a.pdf", "url": "https://myschool.managebac.cn/a.pdf", "source": "description"}]
     )
     args = _Args(tmp_path, output_dir=None)
 
@@ -312,8 +318,8 @@ def test_download_default_output_dir_uses_task_title_slug(tmp_path, monkeypatch)
 
 def test_download_name_collisions_are_disambiguated(tmp_path):
     attachments = [
-        {"name": "a.pdf", "url": "http://x/1.pdf", "source": "description"},
-        {"name": "a.pdf", "url": "http://x/2.pdf", "source": "submission"},
+        {"name": "a.pdf", "url": "https://myschool.managebac.cn/1.pdf", "source": "description"},
+        {"name": "a.pdf", "url": "https://myschool.managebac.cn/2.pdf", "source": "submission"},
     ]
     client = _client(attachments)
     args = _Args(tmp_path)
@@ -328,9 +334,9 @@ def test_download_name_collisions_are_disambiguated(tmp_path):
 
 def test_download_skips_entries_without_name_or_url(tmp_path):
     attachments = [
-        {"name": None, "url": "http://x/x.pdf", "source": "description"},
+        {"name": None, "url": "https://myschool.managebac.cn/x.pdf", "source": "description"},
         {"name": "y.pdf", "url": None, "source": "description"},
-        {"name": "z.pdf", "url": "http://x/z.pdf", "source": "description"},
+        {"name": "z.pdf", "url": "https://myschool.managebac.cn/z.pdf", "source": "description"},
     ]
     client = _client(attachments)
     args = _Args(tmp_path)

@@ -35,12 +35,14 @@ from __future__ import annotations
 import argparse
 import copy
 import getpass
+import hashlib
 import json
 import logging
 import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .auth import build_client
 from .client import ManageBacClient, parse_task_url
@@ -59,9 +61,9 @@ from .config import (
 from .daemon import (
     DaemonConfig,
     DaemonService,
+    DEFAULT_WEBHOOK_URL,
     ServiceManager,
     WebhookDispatcher,
-    configure_channel_send,
     configure_webhook,
     load_daemon_config,
     start_loop,
@@ -127,12 +129,19 @@ def _build_client(args, command: str) -> tuple:
     )
 
 
-def _authenticate_client(state, client, email: str) -> str:
-    """Persist auth state to disk (CLI-specific)."""
+def _authenticate_client(state, client, email: str, persist: bool = True) -> str:
+    """Persist auth state to disk (CLI-specific).
+
+    *persist=False* is the ``login --temp`` case. :func:`auth.build_client`
+    already declines to write creds.json or enable the response cache for a
+    ``remember=False`` login; writing session.json here would hand back the
+    reusable cookie the flag exists to avoid, turning a ``--temp`` login into a
+    permanent one. The profile/session are still updated in memory so the
+    command can report what it just authenticated as.
+    """
     state.profile.school = client.school
     state.profile.domain = client.domain
     state.profile.email = email or state.profile.email
-    save_profile(state)
 
     state.session.school = client.school
     state.session.domain = client.domain
@@ -140,11 +149,45 @@ def _authenticate_client(state, client, email: str) -> str:
     state.session.base_url = client.base
     state.session.cookie = client.session.cookies.get("_managebac_session")
     state.session.logged_in_at = datetime.now().isoformat()
-    save_session(state)
+    if persist:
+        save_profile(state)
+        save_session(state)
     return email or state.profile.email or ""
 
 
+def _cache_dir_for_email(email: str | None) -> Path:
+    """The response-cache directory that belongs to *email*.
+
+    ``auth.build_client`` keys the cache on the first 16 hex digits of the
+    login email's SHA-256, so this is the only directory that login ever reads
+    or writes for that account. ``logout`` must resolve the same one, or it
+    deletes a different profile's cached pages (grade data and the MNN-hub
+    JWT) while leaving the ones it meant to clear in place.
+    """
+    from .cache import DEFAULT_CACHE_DIR
+
+    if not email:
+        return DEFAULT_CACHE_DIR
+    email_hash = hashlib.sha256(email.encode()).hexdigest()[:16]
+    return DEFAULT_CACHE_DIR / email_hash
+
+
+def _login_email(state) -> str | None:
+    """Resolve the account a login acted on, in the order login uses it.
+
+    Mirrors ``build_client``'s ``email or state.profile.email or
+    state.session.email``. Inverting that order here is what let ``logout``
+    hash a *different* profile's cache directory and leave the live JWT-bearing
+    entries behind.
+    """
+    return state.profile.email or state.session.email or None
+
+
 DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
+# Fallback freshness window for reusing the local snapshot instead of
+# re-crawling. `--cache-ttl` and `defaults.cache_ttl` override it; it used to
+# be hardcoded at the `list` call site so neither of them could.
+DEFAULT_SNAPSHOT_TTL = 900
 
 
 def load_snapshot(path: Path) -> dict:
@@ -239,12 +282,17 @@ def _redact_daemon_config(config: dict) -> dict:
     return redacted
 
 
-def merge_snapshot(old: dict, new: dict, client=None) -> dict:
+def merge_snapshot(old: dict, new: dict, client=None, partial: bool = False) -> dict:
     """Merge new crawl results into the old snapshot.
 
     1. Tasks present in new crawl overwrite those in the old snapshot.
     2. Tasks present in old snapshot but missing in the new crawl are preserved,
-       and marked with "deleted_from_server": True.
+       and marked with "deleted_from_server": True — but only when the crawl
+       actually covered the whole account. *partial* marks a crawl that was
+       deliberately narrowed (``list --pages N``): tasks missing from it are
+       simply not on the pages we asked for, and inferring a deletion from that
+       would flag most of the account as deleted and persist it, hiding them
+       from every later ``list`` until a full crawl happened to reach them.
     3. If client is provided, invalidate cache for task details if grade or status changes.
     """
     merged_map = {}
@@ -294,10 +342,14 @@ def merge_snapshot(old: dict, new: dict, client=None) -> dict:
                             log.info("Task %s state changed; invalidated cached details.", task_id)
                 merged_map[tid] = t
 
-    # Mark tasks in snapshot that were NOT in the new crawl as deleted from server
-    for tid, t in merged_map.items():
-        if tid not in new_tids:
-            t["deleted_from_server"] = True
+    # Mark tasks in snapshot that were NOT in the new crawl as deleted from
+    # server — but only when this crawl saw the whole account. A `--pages`-
+    # limited crawl is silent about everything past its last page, so treating
+    # absence there as a confirmed deletion deletes the rest of the account.
+    if not partial:
+        for tid, t in merged_map.items():
+            if tid not in new_tids:
+                t["deleted_from_server"] = True
 
     # Reclassify all merged tasks into upcoming, past, overdue based on due_date and status
     reclassified = _reclassify_tasks(merged_map, now_ref=now_ref)
@@ -407,8 +459,13 @@ def update_snapshot_with_class_tasks(
 
 
 def cmd_login(args) -> int:
+    # `--temp` is threaded all the way down: `build_client` gets
+    # remember=False (no creds.json, response cache disabled) and
+    # `_authenticate_client` is told not to persist either, so a temp login
+    # leaves nothing on disk for the next command to pick up.
+    temp = bool(getattr(args, "temp", False))
     state, client, email = _build_client(args, "login")
-    email = _authenticate_client(state, client, email)
+    email = _authenticate_client(state, client, email, persist=not temp)
     payload = ok(
         "login",
         state.active_profile,
@@ -418,6 +475,8 @@ def cmd_login(args) -> int:
             "email": email,
             "base_url": client.base,
             "auth_method": "cookie" if args.cookie else "password",
+            "temp": temp,
+            "persisted": not temp,
         },
     )
     print_payload(payload, args.output, args.format)
@@ -441,7 +500,16 @@ def cmd_list(args) -> int:
     snapshot_path = _snapshot_path(state)
     old_snapshot = load_snapshot(snapshot_path)
 
-    # Check if we can reuse the snapshot (crawled within last 15 minutes)
+    # Check if we can reuse the snapshot, using the same TTL that governs the
+    # HTTP response cache. This used to be a hardcoded 900, so `--cache-ttl 30`
+    # (and `defaults.cache_ttl`) were accepted and then ignored here: five
+    # minutes after a full crawl `list` still re-rendered the stale snapshot.
+    snapshot_ttl = args.cache_ttl
+    if snapshot_ttl is None:
+        snapshot_ttl = state.profile.default_cache_ttl
+    if snapshot_ttl is None:
+        snapshot_ttl = DEFAULT_SNAPSHOT_TTL
+
     use_cached_snapshot = False
     if old_snapshot and not args.refresh:
         crawled_at_str = old_snapshot.get("crawled_at")
@@ -449,19 +517,27 @@ def cmd_list(args) -> int:
             try:
                 crawled_at = datetime.fromisoformat(crawled_at_str)
                 age = (datetime.now() - crawled_at).total_seconds()
-                if age < 900:  # 15 minutes TTL
+                if age < snapshot_ttl:
                     use_cached_snapshot = True
-                    log.info("Using cached snapshot (age: %d seconds)", int(age))
+                    log.info(
+                        "Using cached snapshot (age: %d seconds, ttl: %d)",
+                        int(age),
+                        snapshot_ttl,
+                    )
             except Exception:
                 pass
 
     if use_cached_snapshot:
         merged_result = old_snapshot
     else:
-        # Fetch fresh results
+        # Fetch fresh results. An explicit --pages narrows the crawl, so the
+        # merge must not read absence from it as a deletion.
+        partial = args.pages is not None
         new_result = client.crawl_all(max_pages=pages, fetch_details=details)
         # Merge with local snapshot and save
-        merged_result = merge_snapshot(old_snapshot, new_result, client=client)
+        merged_result = merge_snapshot(
+            old_snapshot, new_result, client=client, partial=partial
+        )
         save_snapshot(snapshot_path, merged_result)
 
     # Filter out tasks that were deleted from the server (unless --deleted is specified)
@@ -529,7 +605,11 @@ def cmd_list(args) -> int:
                 "tag_filter": args.tag,
                 "todo_filter": args.todo,
                 "completed_filter": args.completed,
-                "details": details,
+                # Truthful: a payload served from the cached snapshot was not
+                # detail-enriched by *this* run, so claiming `details: true`
+                # there told consumers a detail fetch happened when none did.
+                "details": bool(details) and not use_cached_snapshot,
+                "snapshot_source": "cache" if use_cached_snapshot else "crawl",
             },
             "summary": summary,
             "tasks": views,
@@ -589,6 +669,15 @@ def cmd_view(args) -> int:
         else:
             detail = {}
 
+    # `get_task_detail` reports a fetch failure by returning a *truthy*
+    # `{"error": ...}` dict rather than by raising, so without this check the
+    # success envelope below would nest that error inside `ok: true` and exit 0
+    # — the same hole `download` had. Both `view` branches fetch details.
+    if isinstance(detail, dict) and detail.get("error"):
+        payload = error("view", "detail_fetch_failed", str(detail["error"]))
+        print_payload(payload, args.output, args.format)
+        return EXIT_FAILURE
+
     # Merge parsed card details from detail page back into task metadata
     if detail and isinstance(detail, dict):
         for k, dest_key in (
@@ -644,15 +733,11 @@ def cmd_logout(args) -> int:
     cache_cleared = None
     if not getattr(args, "keep_cache", False):
         try:
-            import hashlib
-            from .cache import DEFAULT_CACHE_DIR, ResponseCache
-            email = state.session.email or state.profile.email
-            if email:
-                email_hash = hashlib.sha256(email.encode()).hexdigest()[:16]
-                target = DEFAULT_CACHE_DIR / email_hash
-            else:
-                target = DEFAULT_CACHE_DIR
-            cache_cleared = ResponseCache(cache_dir=target).clear()
+            from .cache import ResponseCache
+
+            cache_cleared = ResponseCache(
+                cache_dir=_cache_dir_for_email(_login_email(state))
+            ).clear()
         except Exception as e:
             log.warning("Failed to clear response cache on logout: %s", e)
 
@@ -663,8 +748,10 @@ def cmd_logout(args) -> int:
     creds_removed = False
     keychain_removed = False
     if not getattr(args, "keep_credentials", False):
+        # Same resolution login used to write them, so logout cannot end up
+        # deleting another profile's files (or none at all).
         creds_removed = clear_creds(resolve_creds_path())
-        email = state.session.email or state.profile.email
+        email = _login_email(state)
         if email:
             keychain_removed = keychain.delete(email)
 
@@ -682,6 +769,33 @@ def cmd_logout(args) -> int:
     )
     print_payload(payload, args.output, args.format)
     return 0
+
+
+def _reject_channel_delivery(args) -> None:
+    """Refuse `--channel-id`/`--recipient` instead of silently not delivering.
+
+    Channel-send delivery has no implementation anywhere: nothing invokes a
+    zeroclaw binary, and ``DaemonConfig`` has no ``delivery`` field, so
+    ``from_dict`` never reads the ``delivery.mode`` these flags write. A run
+    that asked for QQ delivery therefore fell through to
+    ``delivery.webhook_url or DEFAULT_WEBHOOK_URL`` and POSTed the alert payload
+    to ``http://127.0.0.1:42617/webhook`` with no QQ message and no error.
+
+    Failing loudly is the honest option: the caller asked for a transport that
+    does not exist, and a silent localhost POST is worse than a refusal.
+    """
+    channel_id = getattr(args, "channel_id", None)
+    recipient = getattr(args, "recipient", None)
+    if not (channel_id and recipient):
+        return
+    raise CommandError(
+        "channel_delivery_not_implemented",
+        "Channel-send delivery is not implemented: no zeroclaw binary is "
+        "invoked and daemon configs carry no channel transport, so "
+        f"--channel-id {channel_id!r} would silently fall back to the HTTP "
+        f"webhook (default {DEFAULT_WEBHOOK_URL}). Use --webhook-url to deliver "
+        "over HTTP.",
+    )
 
 
 def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
@@ -704,14 +818,10 @@ def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
         ]
         daemon_config["delivery"] = {"mode": "webhook", "webhook_url": args.webhook_url}
 
-    channel_id = getattr(args, "channel_id", None)
-    recipient = getattr(args, "recipient", None)
-    if channel_id and recipient:
-        daemon_config["delivery"] = {
-            "mode": "channel_send",
-            "channel_id": channel_id,
-            "recipient": recipient,
-        }
+    # Channel delivery is refused before it can be written: a `delivery` dict
+    # with mode "channel_send" is read by nothing, so writing it here is exactly
+    # the silent no-op this guard exists to prevent.
+    _reject_channel_delivery(args)
 
     # `run` spells this `--poll-interval`, `start` spells it `--interval`; both
     # names are accepted on both commands, but the config key is the one
@@ -736,7 +846,24 @@ def _apply_daemon_overrides(daemon_config: dict, args) -> dict:
     return daemon_config
 
 
+def _error_payload(command: str, profile: str, code: str, message: str, data=None):
+    """An ``ok:false`` payload that still carries the run's data.
+
+    ``formatters.error`` has nowhere to put the alerts/summary a failed daemon
+    cycle computed, so the choice used to be "report failure and throw the
+    evidence away" or "report success". Neither is acceptable: a shell caller
+    needs a non-zero exit *and* the payload needs the machine-readable
+    ``error.code`` alongside what actually happened.
+    """
+    payload = error(command, code, message)
+    payload["profile"] = profile
+    if data is not None:
+        payload["data"] = data
+    return payload
+
+
 def cmd_daemon_run(args) -> int:
+    _reject_channel_delivery(args)
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
@@ -768,6 +895,9 @@ def cmd_daemon_run(args) -> int:
 
 
 def cmd_daemon_start(args) -> int:
+    # Refuse before anything is spawned or configured: a detached child that
+    # died on startup would still leave the parent reporting success.
+    _reject_channel_delivery(args)
     if getattr(args, "background", False):
         mgr = ServiceManager(
             pid_path=getattr(args, "pid_file", None),
@@ -829,20 +959,54 @@ def cmd_daemon_start(args) -> int:
     _authenticate_client(state, client, email)
     daemon_config = load_daemon_config(args.daemon_config)
     _apply_daemon_overrides(daemon_config, args)
-    result = start_loop(client, daemon_config, dry_run=args.dry_run, once=args.once)
-    payload = ok(
-        "daemon.start", state.active_profile, result | {"daemon": _redact_daemon_config(daemon_config)}
-    )
+    once = bool(getattr(args, "once", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    result = start_loop(client, daemon_config, dry_run=dry_run, once=once)
+    data = result | {"daemon": _redact_daemon_config(daemon_config)}
+    if dry_run:
+        data["delivered"] = False
+        data["dry_run"] = True
+
+    # `start_loop`'s `once` branch computes alerts, logs `delivered=False`
+    # literally and returns before `DaemonService` — the only thing that owns a
+    # `WebhookDispatcher` — is ever constructed. So `daemon start --once`
+    # --webhook-url …` sent nothing while exiting 0 with `delivered: false`.
+    # A dry run is *supposed* to deliver nothing; anything else that computed
+    # alerts and delivered none has failed and must say so.
+    alerts = result.get("alerts") or []
+    undelivered = bool(alerts) and not result.get("delivered") and not dry_run
+    if undelivered:
+        payload = _error_payload(
+            "daemon.start",
+            state.active_profile,
+            "delivery_failed",
+            f"{len(alerts)} alert(s) were computed but nothing was delivered "
+            "(no webhook was dispatched). Re-run with --webhook-url, or use "
+            "`tahuti daemon run --once`, which dispatches through DaemonService.",
+            data,
+        )
+        print_payload(payload, args.output, args.format)
+        return 1
+    payload = ok("daemon.start", state.active_profile, data)
     print_payload(payload, args.output, args.format)
     return 0
 
 
 def cmd_daemon_stop(args) -> int:
-    mgr = ServiceManager(pid_path=getattr(args, "pid_file", None))
+    # The pid file the *user* named, kept separate from whatever the fallback
+    # consults below. `--pid-file` is honoured when a process really is running
+    # there; only the not-running fallback cross-wires, and it used to report
+    # the config's path as if it were the one that had been checked.
+    requested_pid_file = getattr(args, "pid_file", None)
+    mgr = ServiceManager(pid_path=requested_pid_file)
     result = mgr.stop_background()
+    result["pid_file_requested"] = requested_pid_file
     if not result.get("stopped") and result.get("reason") == "not_running":
-        # Fall back to legacy stop_daemon logic
+        # Fall back to legacy stop_daemon logic, which resolves daemon.json's
+        # pid_file — a different file from the one the user asked about.
         result = stop_daemon(getattr(args, "daemon_config", None))
+        result["pid_file_requested"] = requested_pid_file
+        result["pid_file_fallback"] = result.get("pid_file")
     payload = ok("daemon.stop", "default", result)
     print_payload(payload, args.output, args.format)
     # `stop_background` reports "there was nothing to stop" in-band
@@ -911,10 +1075,28 @@ def cmd_daemon_configure_webhook(args) -> int:
 
 
 def cmd_daemon_configure_channel(args) -> int:
-    config = configure_channel_send(args.channel_id, args.recipient, args.daemon_config)
-    payload = ok("daemon.configure-channel", "default", config)
+    """Persist channel-send delivery — refused, because it does not exist.
+
+    The old body called ``configure_channel_send``, which wrote
+    ``daemon_config["delivery"] = {"mode": "channel_send", ...}`` and reported
+    success. ``DaemonConfig`` has no ``delivery`` field and ``from_dict`` never
+    reads it, and nothing in the tree invokes a zeroclaw binary — so the config
+    it printed back was decoration, and the next ``daemon run`` POSTed the alert
+    payload to the localhost webhook default with no error. Say so and fail
+    rather than write a key nothing reads.
+    """
+    payload = error(
+        "daemon.configure-channel",
+        "channel_delivery_not_implemented",
+        "Channel-send delivery is not implemented: no zeroclaw binary is "
+        "invoked and daemon configs carry no channel transport, so "
+        f"--channel {args.channel_id!r} -> {args.recipient!r} would write a "
+        f"config key nothing reads and then fall back to the HTTP webhook "
+        f"(default {DEFAULT_WEBHOOK_URL}). Nothing was written. Use "
+        "`tahuti daemon configure-webhook URL` to deliver over HTTP.",
+    )
     print_payload(payload, args.output, args.format)
-    return 0
+    return 1
 
 
 def _resolve_task_ids(
@@ -1406,6 +1588,45 @@ def _safe_filename(name: str, fallback: str = "download") -> str:
     return base[:255]
 
 
+def _expected_download_host(client) -> str | None:
+    """The host attachment URLs are allowed to point at, or *None* if unknown.
+
+    Attachment hrefs are scraped out of ManageBac HTML, so the only host this
+    client has any business talking to is the one its own session is bound to.
+    """
+    base = getattr(client, "base", None)
+    if isinstance(base, str) and base:
+        netloc = urlparse(base).netloc
+        if netloc:
+            return netloc.lower()
+    school = getattr(client, "school", None)
+    domain = getattr(client, "domain", None)
+    if isinstance(school, str) and isinstance(domain, str) and school and domain:
+        return f"{school}.{domain}".lower()
+    return None
+
+
+def _refuse_reason_for_url(url: str, client) -> str | None:
+    """Why *url* must not be fetched, or *None* when it is acceptable.
+
+    ``_extract_attachments`` passes any absolute href through, so an
+    attacker-influenced detail page can hand ``download`` a URL on any host.
+    Fetching it would send the authenticated session cookie off-site and write
+    the response into the output directory, so the scheme and the host are both
+    checked here rather than trusted from the page.
+    """
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme != "https":
+        return "refused_insecure_scheme"
+    expected = _expected_download_host(client)
+    if not expected:
+        # Cannot tell which host is legitimate, so nothing is.
+        return "refused_unknown_host"
+    if (parsed.hostname or "").lower() != expected:
+        return "refused_off_domain_host"
+    return None
+
+
 def cmd_download(args) -> int:
     state, client, email = _build_client(args, "download")
     _authenticate_client(state, client, email)
@@ -1442,7 +1663,10 @@ def cmd_download(args) -> int:
     # under an `ok: true` envelope and exit 0.
     if not detail or (isinstance(detail, dict) and detail.get("error")):
         payload = error(
-            "download", "detail_fetch_failed", f"Failed to fetch details for task {task_id}."
+            "download",
+            "detail_fetch_failed",
+            f"Failed to fetch details for task {task_id}."
+            + (f" Detail fetch error: {detail_error}" if detail_error else ""),
         )
         print_payload(payload, args.output, args.format)
         return EXIT_FAILURE
@@ -1518,6 +1742,22 @@ def cmd_download(args) -> int:
                     "name": name,
                     "source": source_type,
                     "reason": "refused_outside_output_dir",
+                }
+            )
+            continue
+
+        # The other half of the containment check: the URL itself. A scraped
+        # href can name any host on the internet, and fetching it would carry
+        # the session cookie there and write the answer into out_dir.
+        url_problem = _refuse_reason_for_url(url, client)
+        if url_problem:
+            log.error("Refusing to fetch %r for %r: %s", url, name, url_problem)
+            failed.append(
+                {
+                    "name": name,
+                    "source": source_type,
+                    "url": url,
+                    "reason": url_problem,
                 }
             )
             continue
@@ -1807,7 +2047,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Poll interval in seconds (alias: --interval)",
     )
     daemon_run.add_argument(
-        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+        "--channel-id",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "using it with --recipient fails rather than silently falling back to "
+        "the HTTP webhook (e.g. qq, telegram)",
     )
     daemon_run.add_argument(
         "--recipient", help="Channel recipient ID (used with --channel-id)"
@@ -1843,7 +2086,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--secret", help="HMAC secret for webhook signatures"
     )
     daemon_start.add_argument(
-        "--channel-id", help="Deliver via zeroclaw channel send (e.g. qq, telegram)"
+        "--channel-id",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "using it with --recipient fails rather than silently falling back to "
+        "the HTTP webhook (e.g. qq, telegram)",
     )
     daemon_start.add_argument(
         "--recipient", help="Channel recipient ID (used with --channel-id)"
@@ -1957,7 +2203,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon_configure_ch = daemon_subparsers.add_parser(
         "configure-channel",
-        help="Persist delivery via zeroclaw channel send (no LLM call)",
+        help="NOT IMPLEMENTED: channel-send delivery has no zeroclaw transport, so "
+        "this command fails instead of writing a config key nothing reads",
     )
     daemon_configure_ch.add_argument(
         "channel_id", help="Channel name (e.g. qq, telegram)"
