@@ -10,7 +10,7 @@ reporting an issue against an older version.
 | 0.3.x   | :white_check_mark: |
 | < 0.3   | :x:                |
 
-0.3.x is the current line (`mb --version` reports `0.3.0`). Earlier lines are
+0.3.x is the current line (`tahuti --version` reports `0.3.0`). Earlier lines are
 unsupported and, because the project has not shipped a stable 1.0, may change
 or drop interfaces without notice.
 
@@ -66,7 +66,8 @@ the scope below.
 
 ### Scope
 
-In scope: the `mb_cli` Python package, the `mb` and `mb-mcp` console commands,
+In scope: the `mb_cli` Python package, the `tahuti` and `tahuti-mcp` console commands (also installed as the
+  aliases `mb` and `mb-mcp`),
 and `extras/mb-notifier/`.
 
 Out of scope: anything on ManageBac's side; denial of service by polling
@@ -101,10 +102,10 @@ By default `mb` keeps state in `~/.config/tahuti/` (override with
   atomically `os.replace`d into place, so a plaintext password is never visible
   at a permissive mode even briefly. Directories are `0700`, including the
   parents that `mkdir(parents=True)` would otherwise leave at the umask default.
-- **`mb logout` deletes the stored password.** It removes `creds.json` and any
+- **`tahuti logout` deletes the stored password.** It removes `creds.json` and any
   OS-keychain entry, in addition to clearing the session cookie and the response
   cache. Pass `--keep-credentials` if you want silent re-login preserved.
-- **`mb login --temp` writes nothing to disk.** It sends `remember_me=0` to
+- **`tahuti login --temp` writes nothing to disk.** It sends `remember_me=0` to
   ManageBac, skips saving the password, skips saving the session cookie, and
   disables the response cache — the cache holds full grade pages and the hub JWT,
   so persisting it would have quietly defeated the flag.
@@ -112,10 +113,10 @@ By default `mb` keeps state in `~/.config/tahuti/` (override with
   `creds.json`, `session.json`, or `config.json` is group- or world-readable.
   File permissions are the only barrier here, so a `0644` creds file is worth
   shouting about. Set `MB_CRAWLER_NO_PERM_WARN=1` to silence it.
-- **An optional OS keychain exists.** `mb login --keychain` (or
+- **An optional OS keychain exists.** `tahuti login --keychain` (or
   `MB_CRAWLER_KEYCHAIN=1`) stores the password in the macOS Keychain or the
   Linux Secret Service instead of `creds.json`. It adds no dependency — it
-  shells out to `security` / `secret-tool` — and is strictly opt-in. `mb logout`
+  shells out to `security` / `secret-tool` — and is strictly opt-in. `tahuti logout`
   deletes the keychain entry too.
 - Secrets passed to a background daemon go through the child process's
   **environment** (`MB_WEBHOOK_SECRET`, `MB_CRAWLER_PASSWORD`,
@@ -146,13 +147,13 @@ The keychain closes that gap only if you opt in. The honest position:
   encrypted at rest by the login keychain. Linux `secret-tool` takes the secret
   on stdin and has no such exposure. A keychain item is also not covered by your
   normal file backups.
-- **`--keep-credentials` deliberately re-opens the hole.** `mb logout` deletes
+- **`--keep-credentials` deliberately re-opens the hole.** `tahuti logout` deletes
   the password by default because that is the safer default; the flag exists for
   users who prefer silent re-login over revocation. Know which one you are
   relying on.
 - **`MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are now read as input**, not
   just exported to the daemon child — so they work for non-interactive and CI
-  use (`MB_CRAWLER_PASSWORD=... mb daemon run` needs no prompt), with an
+  use (`MB_CRAWLER_PASSWORD=... tahuti daemon run` needs no prompt), with an
   explicit `--password` / `--cookie` taking precedence. That also means a
   leaked environment variable is now directly usable as a credential, and a
   process's environment is still readable by its own user.
@@ -161,7 +162,7 @@ The keychain closes that gap only if you opt in. The honest position:
   `grade_score`, and a task URL — plus `sender` (the teacher or staff member who
   triggered it) and `body_preview` (a truncated verbatim excerpt of the ManageBac
   notification text). It does **not** contain the student's name or free-text
-  teacher feedback or rubric comments; `mb feedback` fetches those separately and
+  teacher feedback or rubric comments; `tahuti feedback` fetches those separately and
   never ships them to a webhook. Point `--webhook-url` at `https://`; an
   `http://` endpoint sends that data unencrypted and accepts forged events from
   anything that can reach the port.

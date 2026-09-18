@@ -77,7 +77,7 @@ from mb_cli import (
 from mb_cli import ManageBacClient
 
 # Initialize client using saved credentials from the CLI
-# (config.json / session.json under ~/.config/mb-crawler/, or wherever
+# (config.json / session.json under ~/.config/tahuti/, or wherever
 # MB_CRAWLER_CONFIG / MB_CRAWLER_SESSION point)
 client = ManageBacClient.from_config()
 

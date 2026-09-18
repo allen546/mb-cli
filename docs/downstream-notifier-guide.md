@@ -1,6 +1,6 @@
 # ManageBac Downstream Notifier Guide (Bark iOS)
 
-This guide documents the architecture, configuration, and operation of the standalone Bark push notification consumer (`extras/mb-notifier`) running alongside `mb-cli`.
+This guide documents the architecture, configuration, and operation of the standalone Bark push notification consumer (`extras/mb-notifier`) running alongside `tahuti`.
 
 ---
 
@@ -126,7 +126,7 @@ When you add or edit a course alias in `course_aliases.json`:
 ### 4.1 Prerequisites
 
 - Python 3.10+
-- `mb-cli` installed and authenticated
+- `tahuti` installed and authenticated
 - Bark client (either the Bark CLI binary or a Bark server URL)
 - Bark iOS app installed on target devices
 
@@ -159,24 +159,24 @@ Response:
 {"status":"ok","service":"bark_webhook_receiver"}
 ```
 
-#### Step 3: Start the `mb-cli` Daemon
+#### Step 3: Start the `tahuti` Daemon
 
 In a second terminal:
 
 ```bash
-mb daemon run --webhook-url http://127.0.0.1:42617/webhook
+tahuti daemon run --webhook-url http://127.0.0.1:42617/webhook
 ```
 
 To test the channel immediately, trigger a test ping:
 ```bash
-mb daemon test-webhook http://127.0.0.1:42617/webhook
+tahuti daemon test-webhook http://127.0.0.1:42617/webhook
 ```
 
 ---
 
 ### 4.3 24/7 Remote Deployment (Raspberry Pi / Linux Server)
 
-For continuous, reliable background notifications, run both `mb daemon` and `bark_webhook_receiver.py` on an always-on host (such as a Raspberry Pi or home server) using user-level `systemd` services.
+For continuous, reliable background notifications, run both `tahuti daemon` and `bark_webhook_receiver.py` on an always-on host (such as a Raspberry Pi or home server) using user-level `systemd` services.
 
 #### Recommended File Locations
 
@@ -224,19 +224,19 @@ StandardError=journal
 WantedBy=default.target
 ```
 
-#### Step 3: Create Systemd Unit for Crawler Daemon
+#### Step 3: Create Systemd Unit for the tahuti Daemon
 
-Create `~/.config/systemd/user/mb-daemon.service`:
+Create `~/.config/systemd/user/tahuti-daemon.service`:
 
 ```ini
 [Unit]
-Description=ManageBac Crawler Daemon
+Description=tahuti ManageBac event daemon
 After=network.target mb-webhook-bark.service
 Wants=mb-webhook-bark.service
 
 [Service]
 Type=simple
-ExecStart=/opt/mb-tools/.venv/bin/mb daemon run \
+ExecStart=/opt/mb-tools/.venv/bin/tahuti daemon run \
     --webhook-url http://127.0.0.1:42617/webhook \
     --poll-interval 1800
 Restart=always
@@ -261,14 +261,14 @@ systemctl --user daemon-reload
 
 # Enable and start services
 systemctl --user enable --now mb-webhook-bark.service
-systemctl --user enable --now mb-daemon.service
+systemctl --user enable --now tahuti-daemon.service
 ```
 
 #### Step 5: Check Service Status & Logs
 
 Check operational status:
 ```bash
-systemctl --user status mb-webhook-bark.service mb-daemon.service --no-pager
+systemctl --user status mb-webhook-bark.service tahuti-daemon.service --no-pager
 ```
 
 Inspect real-time logs:
