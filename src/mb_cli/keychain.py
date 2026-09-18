@@ -24,14 +24,25 @@ Limits worth knowing (see SECURITY.md):
   briefly visible in that short-lived child's ``argv``. The window is
   milliseconds, and the item is then encrypted at rest by the login keychain.
   Linux ``secret-tool`` takes the secret on stdin and has no such exposure.
+  Feeding ``security`` the password on stdin instead was considered and
+  rejected: with ``-w`` omitted it does not read the pipe, it prompts via
+  ``readpassphrase(3)``, which reads ``/dev/tty`` whenever a controlling
+  terminal exists. That is precisely the interactive ``tahuti login`` case, so
+  the stdin variant would appear to work under a daemon and silently prompt (or
+  hang) for a human. Removing the exposure needs a different mechanism — the
+  Security framework's ``SecItemAdd`` via :mod:`ctypes`, or ``security import``
+  with a temporary keychain — not a flag change.
 - Windows keeps the secret out of ``argv`` *and* out of the child's
   environment: it is written to ``powershell``'s stdin as raw UTF-8 bytes that
   PowerShell never parses, and a retrieved password comes back base64-encoded
   so PowerShell's output formatting cannot alter it. The flip side is that this
-  is the one path with no in-repo test coverage on a real Windows box, so
-  :func:`store` reads the item straight back and reports failure if it cannot
-  be recovered — a vault that silently dropped the password degrades to
-  ``creds.json`` instead of stranding the credential.
+  is the one path with no in-repo test coverage on a real Windows box — and,
+  more to the point, *every* path here is one child process away from a
+  "success" that persisted nothing. So :func:`store` reads the item straight
+  back on every platform and reports failure unless it comes back byte for
+  byte: callers unlink the cleartext ``creds.json`` on a ``True`` return, and a
+  locked Secret Service collection that lets ``secret-tool`` exit 0 without
+  storing must cost the user a fallback to the file, not the password itself.
 - Windows is the weakest of the three on two counts, both worth knowing before
   you opt in. ``PasswordVault`` is a WinRT type that .NET Framework projects
   and .NET Core does not, so PowerShell 7 (``pwsh``) typically cannot load it at
@@ -223,39 +234,71 @@ def _run(argv: list[str], stdin: bytes | None = None) -> subprocess.CompletedPro
     return subprocess.run(argv, input=stdin, capture_output=True, timeout=15)
 
 
+def _store_argv(
+    tool: list[str], account: str, secret: str
+) -> tuple[list[str], bytes | None]:
+    """Return the ``(argv, stdin)`` pair that writes *secret* for *account*.
+
+    macOS is the only backend that cannot take the secret on stdin — see the
+    ``security`` note in the module docstring — so there it travels as the
+    ``-w`` argument. The other two hand it over as bytes the child never has
+    to parse as either source or a command line.
+    """
+    if sys.platform == "win32":
+        return [*tool, _ps_script(_PS_STORE, account)], secret.encode("utf-8")
+    if sys.platform == "darwin":
+        # -U replaces an existing item instead of erroring on a re-login.
+        return [
+            *tool,
+            "add-generic-password",
+            "-U",
+            "-s",
+            SERVICE,
+            "-a",
+            account,
+            "-l",
+            LABEL,
+            "-w",
+            secret,
+        ], None
+    return (
+        [*tool, "store", "--label=" + LABEL, SERVICE, account],
+        secret.encode("utf-8"),
+    )
+
+
+def _lookup_argv(tool: list[str], account: str) -> list[str]:
+    if sys.platform == "win32":
+        return [*tool, _ps_script(_PS_LOOKUP, account)]
+    if sys.platform == "darwin":
+        return [*tool, "find-generic-password", "-s", SERVICE, "-a", account, "-w"]
+    return [*tool, "lookup", SERVICE, account]
+
+
+def _delete_argv(tool: list[str], account: str) -> list[str]:
+    if sys.platform == "win32":
+        return [*tool, _ps_script(_PS_DELETE, account)]
+    if sys.platform == "darwin":
+        return [*tool, "delete-generic-password", "-s", SERVICE, "-a", account]
+    return [*tool, "clear", SERVICE, account]
+
+
 def store(account: str, secret: str) -> bool:
-    """Store *secret* under *account*. Returns True on success."""
+    """Store *secret* under *account*. Returns True on success.
+
+    ``True`` means the secret came back **byte for byte**, and it means that on
+    every platform — not only on Windows. :mod:`mb_cli.auth` unlinks the
+    cleartext ``creds.json`` on a ``True`` return, so a helper that exits 0
+    without actually persisting anything would leave the user with no copy of
+    the password anywhere. Reading the item straight back turns that into a
+    ``False`` and a fallback to ``creds.json``.
+    """
     tool = _tool()
     if tool is None or not account or not secret:
         return False
+    argv, stdin = _store_argv(tool, account, secret)
     try:
-        if sys.platform == "win32":
-            proc = _run(
-                [*tool, _ps_script(_PS_STORE, account)],
-                stdin=secret.encode("utf-8"),
-            )
-        elif sys.platform == "darwin":
-            # -U replaces an existing item instead of erroring on a re-login.
-            proc = _run(
-                [
-                    *tool,
-                    "add-generic-password",
-                    "-U",
-                    "-s",
-                    SERVICE,
-                    "-a",
-                    account,
-                    "-l",
-                    LABEL,
-                    "-w",
-                    secret,
-                ]
-            )
-        else:
-            proc = _run(
-                [*tool, "store", "--label=" + LABEL, SERVICE, account],
-                stdin=secret.encode("utf-8"),
-            )
+        proc = _run(argv, stdin=stdin)
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("OS keychain store failed: %s", exc)
         return False
@@ -266,34 +309,35 @@ def store(account: str, secret: str) -> bool:
             proc.stderr.decode("utf-8", "replace").strip()[:200],
         )
         return False
-    if sys.platform == "win32" and lookup(account) != secret.strip("\n"):
-        # The vault here is reached through a child process on the one platform
-        # CI cannot exercise, and callers delete creds.json on a True return.
-        # Read the item straight back so a write that cannot be read degrades to
-        # the file instead of stranding the password. `lookup` trims a trailing
-        # newline, so compare against the same normalisation it applies.
+    if lookup(account) != secret:
+        # Every backend here is a child process, and any of them can exit 0 for
+        # a write that did not land — a locked Secret Service collection on
+        # Linux, a D-Bus hiccup, an unwritable keychain on macOS. The read-back
+        # is the only thing standing between "reported success" and "the
+        # password is gone", so it runs on all three platforms.
         log.warning(
-            "OS keychain stored the password but could not read it back — "
-            "falling back to creds.json"
+            "OS keychain reported success but the password did not come back "
+            "byte for byte — falling back to creds.json"
         )
         return False
     return True
 
 
 def lookup(account: str) -> str | None:
-    """Return the stored secret for *account*, or *None* if absent/unavailable."""
+    """Return the stored secret for *account*, or *None* if absent/unavailable.
+
+    The value is exactly what was stored. ``secret-tool`` and ``security``
+    terminate what they print with a newline the secret does not contain, and
+    precisely that one newline is removed — stripping *all* trailing newlines
+    silently corrupted any password that legitimately ended in one, which then
+    never matched in :func:`store` and could not authenticate a silent
+    re-login.
+    """
     tool = _tool()
     if tool is None or not account:
         return None
     try:
-        if sys.platform == "win32":
-            proc = _run([*tool, _ps_script(_PS_LOOKUP, account)])
-        elif sys.platform == "darwin":
-            proc = _run(
-                [*tool, "find-generic-password", "-s", SERVICE, "-a", account, "-w"]
-            )
-        else:
-            proc = _run([*tool, "lookup", SERVICE, account])
+        proc = _run(_lookup_argv(tool, account))
     except (OSError, subprocess.SubprocessError) as exc:
         log.debug("OS keychain lookup failed: %s", exc)
         return None
@@ -312,7 +356,8 @@ def lookup(account: str) -> str | None:
         except ValueError:
             log.debug("OS keychain lookup returned undecodable output")
             return None
-    secret = proc.stdout.decode("utf-8", "replace").strip("\n")
+    raw = proc.stdout.decode("utf-8", "replace")
+    secret = raw[:-1] if raw.endswith("\n") else raw
     return secret or None
 
 
@@ -322,14 +367,7 @@ def delete(account: str) -> bool:
     if tool is None or not account:
         return False
     try:
-        if sys.platform == "win32":
-            proc = _run([*tool, _ps_script(_PS_DELETE, account)])
-        elif sys.platform == "darwin":
-            proc = _run(
-                [*tool, "delete-generic-password", "-s", SERVICE, "-a", account]
-            )
-        else:
-            proc = _run([*tool, "clear", SERVICE, account])
+        proc = _run(_delete_argv(tool, account))
     except (OSError, subprocess.SubprocessError) as exc:
         log.warning("OS keychain delete failed: %s", exc)
         return False
