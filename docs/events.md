@@ -149,7 +149,25 @@ Downstream systems can consume ManageBac events via two primary channels:
     - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
     - `X-MB-Signature: sha256=<hex_hmac>` (always present; the receiver refuses
   the request if it is missing or does not match)
-- `X-MB-Timestamp: <unix seconds>` (used for replay/freshness checks)
+    - `X-MB-Timestamp: <unix seconds>` (used for replay/freshness checks, and
+      **part of the signed material** — see *Signature construction* below)
+  - **Signature construction** — **BREAKING PROTOCOL CHANGE**: the HMAC covers
+    the timestamp *and* the body, not the body alone:
+
+    ```python
+    signed_material = f"{X-MB-Timestamp}.".encode("utf-8") + request_body
+    expected = "sha256=" + hmac.new(secret, signed_material, hashlib.sha256).hexdigest()
+    ```
+
+    Previously the HMAC covered the body only, which left `X-MB-Timestamp`
+    unauthenticated: anyone who captured a single POST could replay it
+    indefinitely by rewriting that header, because the original digest still
+    validated and the receiver's freshness check passed. Receivers built against
+    the body-only construction reject **every** payload until they add the
+    timestamp to the signed material. The bundled receiver in
+    `extras/mb-notifier/` is updated in the same commit; check any receiver of
+    your own against the construction above. The `.` delimiter keeps `ts=17` +
+    `body="89ab"` from colliding with `ts=1789` + `body="ab"`.
   - Retries: Up to 3 attempts with exponential backoff (`1s`, `2s`, `4s`).
 
 #### Channel B: Python Async SDK (`ManageBacDaemon.stream()`)
@@ -468,6 +486,7 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 from typing import Any, Optional
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -519,20 +538,37 @@ class EventEnvelope(BaseModel):
     data: dict[str, Any]
 
 
+MAX_TIMESTAMP_SKEW_SECONDS = 300
+
+
 def verify_hmac_signature(
     payload_bytes: bytes,
     signature_header: Optional[str],
     secret: str,
+    timestamp_header: Optional[str] = None,
 ) -> bool:
-    """Verify HMAC-SHA256 signature in constant time."""
+    """Verify HMAC-SHA256 over "<timestamp>.<body>" in constant time.
+
+    The timestamp is signed material: without it there is no authenticated
+    freshness, and a captured payload can be replayed forever by rewriting
+    X-MB-Timestamp alone.
+    """
     if not secret:
         return True
-    if not signature_header:
+    if not signature_header or not timestamp_header:
         return False
+    signed_material = f"{timestamp_header}.".encode("utf-8") + payload_bytes
     expected = "sha256=" + hmac.new(
-        secret.encode("utf-8"), payload_bytes, hashlib.sha256
+        secret.encode("utf-8"), signed_material, hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
+    if not hmac.compare_digest(expected, signature_header):
+        return False
+    # Only once the digest matches is age worth evaluating.
+    try:
+        skew = abs(time.time() - float(timestamp_header))
+    except (TypeError, ValueError):
+        return False
+    return skew <= MAX_TIMESTAMP_SKEW_SECONDS
 
 
 @app.post("/webhook", status_code=status.HTTP_200_OK)
@@ -540,6 +576,7 @@ async def receive_webhook(
     request: Request,
     x_mb_event: Optional[str] = Header(None, alias="X-MB-Event"),
     x_mb_signature: Optional[str] = Header(None, alias="X-MB-Signature"),
+    x_mb_timestamp: Optional[str] = Header(None, alias="X-MB-Timestamp"),
 ):
     body = await request.body()
 
@@ -547,7 +584,9 @@ async def receive_webhook(
     if not WEBHOOK_SECRET:
         logger.error("Rejected webhook request: no WEBHOOK_SECRET configured")
         raise HTTPException(status_code=503, detail="Receiver not configured")
-    if not verify_hmac_signature(body, x_mb_signature, WEBHOOK_SECRET):
+    if not verify_hmac_signature(
+        body, x_mb_signature, WEBHOOK_SECRET, x_mb_timestamp
+    ):
         logger.warning("Rejected webhook request: invalid HMAC signature")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
