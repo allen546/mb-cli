@@ -6,6 +6,7 @@ import pytest
 
 from mb_cli.cache import ResponseCache
 from mb_cli.client import ManageBacClient
+from mb_cli.config import ProfileConfig
 from mb_cli.__main__ import (
     _resolve_task_ids,
     update_snapshot_with_class_tasks,
@@ -238,9 +239,18 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
     mock_state = MagicMock()
     mock_state.config_path = tmp_path / "config.json"
     mock_state.active_profile = "default"
+    # cmd_list reads the profile's defaults when the flags are absent.  Use the
+    # real dataclass so `default_view`/`default_subject` are concrete: with a
+    # bare MagicMock the view was an unspecified object and the subject a
+    # MagicMock, which only rendered because the pretty formatter stringified
+    # them.  The default output for a non-TTY stdout is JSON.
+    mock_state.profile = ProfileConfig(name="default")
 
     mock_client = MagicMock()
     mock_client.base = "https://demo-school.managebac.cn"
+    mock_client.domain = "managebac.cn"
+    mock_client.school = "demo-school"
+    mock_client.student_name = "Test Student"
     mock_client.submit_file.return_value = {
         "ok": True,
         "filename": "work.pdf",
@@ -276,6 +286,30 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
 
     # Now verify that cmd_list with --todo excludes this submitted task!
     list_args = parser.parse_args(["list", "--todo"])
+    # cmd_list re-crawls (the snapshot's crawled_at is old), so give the crawl a
+    # realistic payload: with a MagicMock return value the merged result holds
+    # MagicMocks, which only rendered because the pretty formatter stringified
+    # them.  The default output for a non-TTY stdout is JSON, which cannot.
+    mock_client.crawl_all.return_value = {
+        "student_name": "Test Student",
+        "school": "demo-school",
+        "base_url": "https://demo-school.managebac.cn",
+        "crawled_at": "2026-09-13T12:00:00",
+        "upcoming": [
+            {
+                "id": "1000021",
+                "title": "kinematics classwork1",
+                "class_name": "AP Physics 1",
+                "due_date": "Dec 13, 5:55 PM",
+                "link": "https://demo-school.managebac.cn/student/classes/1000001/core_tasks/1000099",
+                "status": "submitted",
+                "has_submit_button": False,
+                "labels": ["Formative", "Submitted"],
+            }
+        ],
+        "past": [],
+        "overdue": [],
+    }
     with (
         patch("mb_cli.__main__._build_client", return_value=(mock_state, mock_client, "user@test.com")),
         patch("mb_cli.__main__._authenticate_client"),
