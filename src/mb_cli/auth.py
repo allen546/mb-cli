@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from .cache import ResponseCache
 from .client import ManageBacClient
@@ -11,7 +10,6 @@ from . import keychain
 from .config import (
     AppState,
     clear_creds,
-    config_dir,
     load_creds,
     load_state,
     resolve_creds_path,
@@ -22,18 +20,20 @@ from .exceptions import CommandError
 
 log = logging.getLogger(__name__)
 
-_CREDS_PATH_ENV = "MB_CRAWLER_CREDS_PATH"
-_CREDS_PATH = os.environ.get(
-    _CREDS_PATH_ENV,
-    str(config_dir() / "creds.json"),
-)
-
 
 def _creds_path() -> str:
     """Resolve the creds path per-call so tests can redirect it via env.
 
     ``build_client`` and friends must never touch the developer's real saved
     password when running under pytest.
+
+    This is the *only* way any code here resolves that path — storing, reading,
+    deleting and reporting all funnel through it. It used to be captured as a
+    module-level constant at import while this function re-resolved dynamically,
+    so a caller that imported ``_CREDS_PATH`` and a caller that called
+    ``_creds_path()`` could name two different files: one would write the
+    password to ``~/.config/tahuti/creds.json`` while the other went looking for
+    it in ``~/.config/mb-crawler/creds.json`` and reported ``missing_credentials``.
     """
     return str(resolve_creds_path())
 
