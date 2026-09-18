@@ -14,6 +14,7 @@ import json
 import re
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import requests_mock as rm
@@ -822,3 +823,60 @@ class TestParseDueDateIsConsistentlyAware:
 
         dt = parse_due_date("September 15, 2026 at 10:00 AM", now_ref=datetime(2026, 9, 1))
         assert dt is not None and dt.tzinfo is not None
+
+
+# ── Routed from the exit-codes agent: get_task_detail's second failure shape ──
+
+
+class TestTaskDetailHasOneFailureShape:
+    """``get_task_detail`` must signal failure one way only: by returning ``None``.
+
+    It used to catch every exception and return ``{"error": str(e)}``, a *truthy*
+    dict.  Callers guard with ``if not detail:``, so that dict sailed straight
+    through and its lone ``"error"`` key was merged into task metadata as though
+    it were a parsed detail page — or, worse, written into a snapshot.  Every
+    caller had to bolt on a second condition to cope.  One falsy sentinel means
+    the natural guard works.
+    """
+
+    def test_failure_returns_none_not_an_error_dict(self, bare_client):
+        with patch.object(bare_client, "_get", side_effect=RuntimeError("boom")):
+            detail = bare_client.get_task_detail("/student/classes/1/core_tasks/10")
+        assert detail is None, "failure must be falsy, not a truthy error dict"
+
+    def test_failure_carries_no_error_key_into_task_metadata(self, bare_client):
+        """The dict that used to escape must not survive anywhere."""
+        with patch.object(bare_client, "_get", side_effect=RuntimeError("boom")):
+            detail = bare_client.get_task_detail("/student/classes/1/core_tasks/10")
+        assert not (isinstance(detail, dict) and detail.get("error"))
+
+    def test_auth_failure_is_still_a_single_falsy_result(self, bare_client):
+        """A dead session is a failure like any other, not a distinct shape."""
+        from mb_cli.client import SessionExpiredError
+
+        with patch.object(bare_client, "_get", side_effect=SessionExpiredError("expired")):
+            detail = bare_client.get_task_detail("/student/classes/1/core_tasks/10")
+        assert detail is None
+
+    def test_failed_detail_is_not_attached_to_a_task(self, client):
+        """crawl_all(fetch_details=True) must skip the task, not store the error."""
+        orig_get = client._get
+
+        def fail_only_hints(*args, **kwargs):
+            path = str(args[0]) if args else str(kwargs.get("path", ""))
+            if path.endswith("/hint"):
+                raise RuntimeError("boom")
+            return orig_get(*args, **kwargs)
+
+        with rm.Mocker() as m:
+            m.get(re.compile(r"view=upcoming"), text=TASKS_PAGE)
+            m.get(re.compile(r"view=past"), text="<html></html>")
+            m.get(re.compile(r"view=overdue"), text="<html></html>")
+            with patch.object(client, "_get", side_effect=fail_only_hints):
+                result = client.crawl_all(max_pages=1, fetch_details=True)
+        tasks = result["upcoming"]
+        assert tasks, "the task list itself must still be crawled"
+        assert all("detail" not in t for t in tasks), (
+            "a failed detail fetch leaked a dict onto the task"
+        )
+
