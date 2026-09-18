@@ -1359,8 +1359,8 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Profile name (default: active_profile or default)",
         )
-        subparser.add_argument("--config", help="Path to config TOML")
-        subparser.add_argument("--session-file", help="Path to session TOML")
+        subparser.add_argument("--config", help="Path to config JSON")
+        subparser.add_argument("--session-file", help="Path to session JSON")
         subparser.add_argument("--school", help="School subdomain (e.g. myschool)")
         subparser.add_argument("--domain", "-d", help="Base domain (e.g. managebac.cn)")
         subparser.add_argument("--email", "-e", help="Login email")
@@ -1509,8 +1509,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     logout = subparsers.add_parser("logout", help="Clear persisted session")
     logout.add_argument("--profile", default=None, help="Profile name")
-    logout.add_argument("--config", help="Path to config TOML")
-    logout.add_argument("--session-file", help="Path to session TOML")
+    logout.add_argument("--config", help="Path to config JSON")
+    logout.add_argument("--session-file", help="Path to session JSON")
     logout.add_argument("--all", action="store_true", help="Remove all saved sessions")
     logout.add_argument(
         "--keep-cache",

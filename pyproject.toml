@@ -24,8 +24,24 @@ dependencies = [
     "beautifulsoup4>=4.12",
 ]
 
+# Upper bound is required: mcp 2.x renamed FastMCP to MCPServer and removed
+# mcp.server.fastmcp, which mcp_server.py imports. Without <2 a fresh resolve
+# installs mcp 2.x and every `mb-mcp` invocation dies on import.
 [project.optional-dependencies]
-mcp = ["mcp>=1.20"]
+mcp = ["mcp>=1.20,<2"]
+
+# Development-only dependencies. Deliberately *not* optional-dependency
+# extras: nothing here belongs in a published runtime environment.
+# - requests-mock is imported by tests but was previously undeclared, so a
+#   plain `uv sync` could never run the suite.
+# - mcp is the [mcp] extra; pulled in here because tests/test_mcp_server.py
+#   imports it unconditionally.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "requests-mock>=1.12",
+    "mcp>=1.20,<2",
+]
 
 [project.scripts]
 mb = "mb_cli.__main__:main"
@@ -36,3 +52,44 @@ Homepage = "https://github.com/allen/mb-crawler"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# ── Packaging ────────────────────────────────────────────────────────────
+# Hatchling's sdist default is "everything git does not ignore", which once
+# shipped a 75 MB nested worktree clone from .claude/worktrees/ (76 of the
+# 152 sdist entries). The include list below pins exactly what ships so this
+# cannot regress; the excludes are belt-and-braces on top of .gitignore.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/extras",
+    "/docs",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/SECURITY.md",
+    "/pyproject.toml",
+]
+exclude = [
+    # Agent/tooling scratch space — .claude/worktrees/ holds full repo clones.
+    "/.claude",
+    "/.worktrees",
+    # Build and environment noise.
+    "/dist",
+    "/build",
+    "/.venv",
+    "*.egg-info",
+    # Internal design/planning artifacts; kept in the repo but not shipped.
+    "/docs/superpowers",
+    "/docs/deployments",
+    # Working notes, not user-facing documentation.
+    "/SPEC.md",
+    "/use_case.md",
+    # Never ship bytecode.
+    "**/__pycache__",
+    "*.pyc",
+    "*.pyo",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["/src/mb_cli"]

@@ -57,7 +57,9 @@ from mb_cli import (
 ```python
 from mb_cli import ManageBacClient
 
-# Initialize client using saved credentials from CLI (~/.config/mb-crawler/config.toml)
+# Initialize client using saved credentials from the CLI
+# (config.json / session.json under ~/.config/mb-crawler/, or wherever
+# MB_CRAWLER_CONFIG / MB_CRAWLER_SESSION point)
 client = ManageBacClient.from_config()
 
 # Fetch all upcoming coursework
