@@ -1,6 +1,6 @@
 # ManageBac Event Stream & Integration Specification
 
-This document defines the event data contract, delivery channels, standard payload schemas, and downstream integration recipes for `mb-cli`.
+This document defines the event data contract, delivery channels, standard payload schemas, and downstream integration recipes for `tahuti`.
 
 ---
 
@@ -8,7 +8,7 @@ This document defines the event data contract, delivery channels, standard paylo
 
 ### 1.1 Notification Transport: Polling, Not Push
 
-**`mb-cli` does not receive real-time push notifications from ManageBac.** It detects
+**`tahuti` does not receive real-time push notifications from ManageBac.** It detects
 changes by polling on a fixed interval and diffing the results against locally
 persisted state. This section records why, so the question does not have to be
 re-investigated.
@@ -21,7 +21,7 @@ on its `a.js-messages-and-notifications-trigger` element:
 | `data-token` | A JWT authorising requests to the ManageBac Notification Network (MNN) Hub. |
 | `data-mnn-hub-endpoint` | The **HTTPS base URL** of the MNN Hub — not a WebSocket URL. |
 
-`mb-cli` scrapes both (`ManageBacClient.get_notification_token()`) and uses the
+`tahuti` scrapes both (`ManageBacClient.get_notification_token()`) and uses the
 endpoint to build an ordinary REST client: `f"{endpoint}/api/frontend/v2"`, called
 with `Authorization: Bearer <jwt>` over plain HTTPS. Every notification read and
 mutation in this project is an HTTP `GET`/`PUT`.
@@ -94,9 +94,9 @@ the README disclaimer.
 
 ### 1.2 Unopinionated Event Producer
 
-`mb-cli` acts as an **unopinionated ManageBac Event Producer**. Its sole responsibility is to interact with ManageBac—authenticating, polling for updates, parsing coursework details, detecting deltas, and evaluating upcoming deadlines—and emitting standardized, typed facts.
+`tahuti` acts as an **unopinionated ManageBac Event Producer**. Its sole responsibility is to interact with ManageBac—authenticating, polling for updates, parsing coursework details, detecting deltas, and evaluating upcoming deadlines—and emitting standardized, typed facts.
 
-`mb-cli` intentionally contains:
+`tahuti` intentionally contains:
 - **No subjective alert heuristics**: It does not decide whether an offline task without a submission button warrants an urgent sound or silence.
 - **No device-specific push formatting**: It does not budget for notification line limits (e.g. Bark 4-line constraints).
 - **No user or school-specific aliases**: Course names are reported exactly as published on ManageBac.
@@ -145,7 +145,7 @@ Downstream systems can consume ManageBac events via two primary channels:
   - Method: `POST`
   - Headers:
     - `Content-Type: application/json; charset=utf-8`
-    - `User-Agent: mb-crawler-daemon/1.0`
+    - `User-Agent: tahuti-daemon/1.0`
     - `X-MB-Event: <event_type>` (e.g. `task_created`, `task_graded`)
     - `X-MB-Signature: sha256=<hex_hmac>` (always present; the receiver refuses
   the request if it is missing or does not match)
@@ -653,7 +653,7 @@ Directly subscribes to ManageBac events in-process without requiring HTTP webhoo
 Uses ManageBacDaemon.stream() to process events as an async iterator.
 
 Install dependencies:
-    pip install mb-cli
+    pip install tahuti
 
 Run:
     python subscriber_sync.py
@@ -769,7 +769,7 @@ class TodoistSyncService:
 
 
 async def main() -> None:
-    # 1. Initialize client using saved credentials (~/.config/mb-crawler/)
+    # 1. Initialize client using saved credentials (~/.config/tahuti/)
     client = ManageBacClient.from_config()
     logger.info("Connected to ManageBac for student: %s (%s)", client.student_name or "Configured Profile", client.subdomain)
 
@@ -845,13 +845,13 @@ Always store processed `event_id` keys in your database or cache (e.g. Redis) to
 ### 5.2 Handling Offline Tasks (`has_submit_button: false`)
 ManageBac contains both digital submission dropboxes and offline class events (such as paper quizzes, spoken presentations, or reading material).
 
-`mb-cli` faithfully reports `has_submit_button: false` for offline assignments. Downstream applications should adapt their alert rules accordingly:
+`tahuti` faithfully reports `has_submit_button: false` for offline assignments. Downstream applications should adapt their alert rules accordingly:
 - **Quizzes / Exams**: Filter on `category in ("Quiz", "Test", "Exam")` to display study reminders without prompting for a file upload.
 - **Reading / Lesson Plans**: Filter out low-priority reading assignments or silence countdown sirens.
 - **Avoid persistent sirens**: For tasks where `has_submit_button == false`, do not fire un-dismissable alarms, because the student has no action on ManageBac to resolve them.
 
 ### 5.3 Course Name Aliasing & Normalization
-ManageBac course names can be long and verbose (e.g. `"English Language Arts I (Hons) - Group 2"`). `mb-cli` intentionally preserves the raw course name.
+ManageBac course names can be long and verbose (e.g. `"English Language Arts I (Hons) - Group 2"`). `tahuti` intentionally preserves the raw course name.
 
 Consumers can implement user-friendly display aliases via a local lookup table (e.g. `course_aliases.json`):
 
