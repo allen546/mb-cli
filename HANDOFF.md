@@ -13,7 +13,20 @@ builds clean, `twine check` passes on both artifacts.
 > `windows-support`, and `worktree-finish-security-audit` (the last one is
 > preserved for reference only — it is an ancestor-less legacy clone whose
 > content is already contained in `publish-prep`; its history is also bundled
-> at `/mnt/pi-data/legacy-security-audit.bundle`).
+> at `/mnt/pi-data/tahuti-imported/legacy-security-audit.bundle`).
+>
+> Files imported from the Mac that are not part of the repository live in
+> `/mnt/pi-data/tahuti-imported/`, deliberately outside the checkout so
+> `git status` stays clean. Nothing in there is tracked or committed. It holds
+> the old `.claude/` scratch tree (with its original dotfile name), the loose
+> scratch scripts that used to sit in the repo root (`backup.txt`,
+> `course_aliases.json`, `fetch_attachments.py`, `freqs.txt`, `open_classes.py`,
+> `test_login.py` — all gitignored by name, all personal data), and
+> `legacy-security-audit.bundle`.
+>
+> Two of these hold personal data and are worth knowing about:
+> `course_aliases.json` maps your real ManageBac class names to short aliases,
+> and `backup.txt` is a grade dump. Neither should be committed or shipped.
 >
 > The Mac's original checkout at `~/Desktop/t8/mb-crawler` is unmodified and
 > still on `main` at `2254a01`. It was not touched.
@@ -118,8 +131,11 @@ the keychain entry, the session cookie, and the response cache by default.
 
 **Do not:** commit `creds.json`/`session.json` (they are gitignored, keep them
 that way), pass the password as a CLI flag, or hand it to a subagent. Note that
-`extras/mb-notifier/course_aliases.json` is personal data and stays local by
-design — it is gitignored, not shipped in the sdist.
+`course_aliases.json` (in `/mnt/pi-data/tahuti-imported/`) maps your real class
+names to short aliases and is personal data — gitignored, never committed, never
+in the sdist. If you want the notifier to use it, copy it to
+`~/.config/tahuti/course_aliases.json` and edit that, as its own header comment
+says.
 
 ---
 
