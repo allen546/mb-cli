@@ -1,4 +1,34 @@
-"""CLI entry-point for ``mb`` / ``python -m mb_cli``."""
+"""CLI entry-point for ``mb`` / ``python -m mb_cli``.
+
+Exit-code contract
+------------------
+Every ``cmd_*`` handler returns an ``int``, and ``main`` turns it straight into
+the process status (``raise SystemExit(args.func(args))``). The payload and the
+exit code must agree: a non-zero exit never leaves its failure described only
+*inside* an ``ok: true`` envelope.
+
+``0``
+    Success — the operation did what was asked.
+``1``
+    Operational failure the caller should react to: auth or network trouble, a
+    task that could not be resolved, a mutation the server rejected, a stop
+    request that stopped nothing, a download that landed no files.
+``2``
+    Usage error. Owned entirely by ``argparse`` — ``add_subparsers(required=
+    True)`` already exits 2 for a missing or unknown command — so no handler
+    returns it.
+``3``
+    "Not running". Only ``daemon status``: the query itself succeeded and its
+    answer is "there is no daemon", which a supervisor must be able to tell
+    apart from "the status call broke" (which is ``1``). Mirrors
+    ``systemctl is-active``.
+
+Client methods signal failure inconsistently — some raise, some return a bare
+``False`` (``MNNHubClient.mark_read``), and some return a *truthy*
+``{"error": ...}`` dict (``ManageBacClient.get_task_detail``). Each handler
+translates whichever it got into the contract above, so a guard written as
+``if not result:`` is not sufficient for the error-dict case.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +79,16 @@ from .formatters import error, ok, print_payload
 from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)
+
+# Exit-code contract — see the module docstring for the reasoning.
+EXIT_OK = 0
+# 1 is the catch-all operational failure. 2 is deliberately absent: argparse
+# owns it (`add_subparsers(required=True)`) and never hands a handler a chance
+# to return it.
+EXIT_FAILURE = 1
+# Only `daemon status`: "there is no daemon", as distinct from "the status call
+# itself failed" (EXIT_FAILURE).
+EXIT_NOT_RUNNING = 3
 
 
 # ── Client helpers ──────────────────────────────────────────────────────
@@ -575,6 +615,14 @@ def cmd_view(args) -> int:
         print_payload(payload, args.output, args.format)
         return 1
 
+    # `get_task_detail` reports a fetch failure by returning a *truthy*
+    # `{"error": ...}` dict rather than by raising, so without this check the
+    # success envelope below would nest that error inside `ok: true` and exit 0.
+    if isinstance(detail, dict) and detail.get("error"):
+        payload = error("view", "detail_fetch_failed", str(detail["error"]))
+        print_payload(payload, args.output, args.format)
+        return EXIT_FAILURE
+
     payload = ok(
         "view",
         state.active_profile,
@@ -797,7 +845,11 @@ def cmd_daemon_stop(args) -> int:
         result = stop_daemon(getattr(args, "daemon_config", None))
     payload = ok("daemon.stop", "default", result)
     print_payload(payload, args.output, args.format)
-    return 0
+    # `stop_background` reports "there was nothing to stop" in-band
+    # (`stopped: false, reason: not_running|pid_file_missing|...`). A caller
+    # doing stop-then-start must be able to see that the stop did not happen,
+    # or it silently supervises two daemons at once.
+    return EXIT_OK if result.get("stopped") else EXIT_FAILURE
 
 
 def cmd_daemon_status(args) -> int:
@@ -808,7 +860,11 @@ def cmd_daemon_status(args) -> int:
     res = mgr.status()
     payload = ok("daemon.status", "default", res)
     print_payload(payload, args.output, args.format)
-    return 0
+    # The status *query* succeeded either way, so the envelope stays `ok` and
+    # `data.running` is the answer. The exit code carries it too, because
+    # `systemctl is-active`-style callers need "no daemon" (3) to be distinct
+    # from "the status call itself failed" (1).
+    return EXIT_OK if res.get("running") else EXIT_NOT_RUNNING
 
 
 def cmd_daemon_test_webhook(args) -> int:
@@ -1106,6 +1162,32 @@ def cmd_submissions(args) -> int:
     return 0
 
 
+def _notification_mutation_payload(
+    state, action: str, notification_id, succeeded: bool
+) -> dict:
+    """Envelope for a ``--read``/``--unread``/``--read-all`` mutation.
+
+    ``hub.mark_read()`` and friends return a bare ``bool``
+    (``status_code in (200, 204)``), so a rejected mutation — expired MNN-hub
+    JWT, unknown notification id — arrives here as ``False`` with no other
+    trace. Wrapping that in ``ok(...)`` is what made the envelope claim
+    ``"ok": true`` over a ``false`` outcome while the process exited 0, so the
+    envelope now follows the boolean and ``cmd_notifications`` reads the exit
+    status back out of it.
+    """
+    if succeeded:
+        return ok(
+            "notifications.mutate",
+            state.active_profile,
+            {"action": action, "notification_id": notification_id, "ok": True},
+        )
+    return error(
+        "notifications.mutate",
+        f"{action}_failed",
+        f"Notification mutation {action!r} was rejected by the MNN hub.",
+    )
+
+
 def cmd_notifications(args) -> int:
     state, client, email = _build_client(args, "notifications")
     _authenticate_client(state, client, email)
@@ -1116,46 +1198,25 @@ def cmd_notifications(args) -> int:
     hub = MNNHubClient(hub_endpoint, token)
 
     if args.read is not None:
-        ok_ = hub.mark_read(args.read)
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "read",
-                "notification_id": args.read,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "read", args.read, hub.mark_read(args.read)
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     if args.unread is not None:
-        ok_ = hub.mark_unread(args.unread)
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "unread",
-                "notification_id": args.unread,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "unread", args.unread, hub.mark_unread(args.unread)
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     if args.read_all:
-        ok_ = hub.mark_all_read()
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "read_all",
-                "notification_id": None,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "read_all", None, hub.mark_all_read()
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     stats = hub.stats()
     result = hub.list(
@@ -1275,6 +1336,7 @@ def cmd_grades(args) -> int:
         else:
             # Gather grades for ALL classes
             all_grades = {}
+            failed: dict[str, str] = {}
             for cid, cname in seen.items():
                 try:
                     c_grades = client.get_class_grades(cid)
@@ -1282,15 +1344,20 @@ def cmd_grades(args) -> int:
                     all_grades[cid] = c_grades
                 except Exception as e:
                     log.warning("failed to fetch grades for class %s: %s", cid, e)
+                    failed[cid] = str(e)
             payload = ok(
                 "grades.all",
                 state.active_profile,
                 {
                     "classes_grades": all_grades,
+                    "failed_classes": failed,
                 },
             )
             print_payload(payload, args.output, args.format)
-            return 0
+            # Some classes failing is a usable partial run, but a run where
+            # *every* class failed returned no grades at all and must not look
+            # like one where the account simply has none.
+            return EXIT_OK if all_grades else EXIT_FAILURE
 
     grades = client.get_class_grades(class_id)
     grades["class_id"] = class_id
@@ -1370,12 +1437,15 @@ def cmd_download(args) -> int:
     # 2. Fetch task details
     log.info("Fetching details for task %s...", task_id)
     detail = client.get_task_detail(link, from_hint=False)
-    if not detail:
+    # A fetch failure comes back as a *truthy* `{"error": ...}` dict, which
+    # `not detail` alone never sees — the run would report `downloaded_count: 0`
+    # under an `ok: true` envelope and exit 0.
+    if not detail or (isinstance(detail, dict) and detail.get("error")):
         payload = error(
             "download", "detail_fetch_failed", f"Failed to fetch details for task {task_id}."
         )
         print_payload(payload, args.output, args.format)
-        return 1
+        return EXIT_FAILURE
 
     # 3. Determine output directory
     if args.output_dir:
@@ -2069,9 +2139,24 @@ def main(argv: list[str] | None = None) -> None:
     # so say so loudly if something outside `mb` loosened them.
     warn_on_weak_permissions()
     try:
+        # The handler's return value is the exit status, and `SystemExit(None)`
+        # would be a silent 0 — so every handler must return an int. All 22 do;
+        # `tests/test_exit_codes.py` covers the dispatch itself.
         raise SystemExit(args.func(args))
     except CommandError as exc:
         payload = error(args.command, exc.code, exc.message)
+        print_payload(payload, args.output, getattr(args, "format", None))
+        raise SystemExit(1)
+    except Exception as exc:
+        # Anything else (RuntimeError from the client, a socket error, a bug)
+        # used to reach the user as a raw traceback, which neither a shell
+        # caller nor a `--format json` consumer can act on. Emit the same
+        # machine-readable envelope CommandError produces and keep exit 1.
+        # SystemExit is a BaseException, so it is not caught here.
+        log.exception("Unexpected failure in command %s", args.command)
+        payload = error(
+            args.command, "internal_error", f"{type(exc).__name__}: {exc}"
+        )
         print_payload(payload, args.output, getattr(args, "format", None))
         raise SystemExit(1)
 

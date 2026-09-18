@@ -8,11 +8,30 @@ import requests_mock
 from mb_cli.__main__ import main
 
 
-def test_cli_daemon_status(tmp_path: Path):
-    with patch("builtins.print"):
-        with pytest.raises(SystemExit) as exc_info:
-            main(["daemon", "status", "--format", "json"])
-        assert exc_info.value.code == 0
+def test_cli_daemon_status_not_running_exits_three(tmp_path):
+    """`daemon status` succeeded, and its answer is "no daemon": exit 3.
+
+    This test previously ran against the real default pid file and asserted
+    ``code == 0``, so it passed for the wrong reason and silently ignored
+    whether a daemon was actually there. It is now pinned in both directions.
+    """
+    status = {"running": False, "pid": None, "pid_file": "x", "log_file": "y"}
+    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+        MockMgr.return_value.status.return_value = status
+        with patch("builtins.print"):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["daemon", "status", "--format", "json"])
+            assert exc_info.value.code == 3
+
+
+def test_cli_daemon_status_running_exits_zero(tmp_path):
+    status = {"running": True, "pid": 4242, "pid_file": "x", "log_file": "y"}
+    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+        MockMgr.return_value.status.return_value = status
+        with patch("builtins.print"):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["daemon", "status", "--format", "json"])
+            assert exc_info.value.code == 0
 
 
 def test_cli_daemon_test_webhook():
