@@ -1146,6 +1146,32 @@ def cmd_submissions(args) -> int:
     return 0
 
 
+def _notification_mutation_payload(
+    state, action: str, notification_id, succeeded: bool
+) -> dict:
+    """Envelope for a ``--read``/``--unread``/``--read-all`` mutation.
+
+    ``hub.mark_read()`` and friends return a bare ``bool``
+    (``status_code in (200, 204)``), so a rejected mutation — expired MNN-hub
+    JWT, unknown notification id — arrives here as ``False`` with no other
+    trace. Wrapping that in ``ok(...)`` is what made the envelope claim
+    ``"ok": true`` over a ``false`` outcome while the process exited 0, so the
+    envelope now follows the boolean and ``cmd_notifications`` reads the exit
+    status back out of it.
+    """
+    if succeeded:
+        return ok(
+            "notifications.mutate",
+            state.active_profile,
+            {"action": action, "notification_id": notification_id, "ok": True},
+        )
+    return error(
+        "notifications.mutate",
+        f"{action}_failed",
+        f"Notification mutation {action!r} was rejected by the MNN hub.",
+    )
+
+
 def cmd_notifications(args) -> int:
     state, client, email = _build_client(args, "notifications")
     _authenticate_client(state, client, email)
@@ -1156,46 +1182,25 @@ def cmd_notifications(args) -> int:
     hub = MNNHubClient(hub_endpoint, token)
 
     if args.read is not None:
-        ok_ = hub.mark_read(args.read)
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "read",
-                "notification_id": args.read,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "read", args.read, hub.mark_read(args.read)
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     if args.unread is not None:
-        ok_ = hub.mark_unread(args.unread)
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "unread",
-                "notification_id": args.unread,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "unread", args.unread, hub.mark_unread(args.unread)
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     if args.read_all:
-        ok_ = hub.mark_all_read()
-        payload = ok(
-            "notifications.mutate",
-            state.active_profile,
-            {
-                "action": "read_all",
-                "notification_id": None,
-                "ok": ok_,
-            },
+        payload = _notification_mutation_payload(
+            state, "read_all", None, hub.mark_all_read()
         )
         print_payload(payload, args.output, args.format)
-        return 0
+        return EXIT_OK if payload["ok"] else EXIT_FAILURE
 
     stats = hub.stats()
     result = hub.list(
