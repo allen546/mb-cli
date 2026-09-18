@@ -7,6 +7,7 @@ filesystem side effects and the structured payload.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -278,9 +279,11 @@ def test_download_never_writes_outside_output_dir(tmp_path):
     # Sanitized to its basename and written inside the output directory.
     assert (tmp_path / "out" / "escape.pdf").exists()
     assert captured["payload"]["data"]["downloaded"][0]["name"] == "../../escape.pdf"
-    assert captured["payload"]["data"]["downloaded"][0]["path"].endswith(
-        "out/escape.pdf"
-    )
+    # Compare path *components*, not a separator-delimited string: on Windows
+    # the separator is "\", so `endswith("out/escape.pdf")` fails there even
+    # though the traversal was correctly contained.
+    reported = Path(captured["payload"]["data"]["downloaded"][0]["path"])
+    assert reported.parts[-2:] == ("out", "escape.pdf")
 
 
 def test_download_default_output_dir_uses_task_title_slug(tmp_path, monkeypatch):
