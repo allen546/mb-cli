@@ -137,6 +137,10 @@ def test_cmd_download(tmp_path):
         output_dir = str(tmp_path / "custom_out")
         no_submissions = False
         no_attachments = False
+        # Every flag `add_common_auth_flags` puts on the real namespace.
+        pages = 10
+        output = None
+        format = None
 
     args = Args()
 
@@ -158,7 +162,7 @@ def test_cmd_download(tmp_path):
         "past": [],
         "overdue": []
     }))
-    
+
     # Detail response mock
     client.get_task_detail.return_value = {
         "attachments": [
@@ -181,18 +185,31 @@ def test_cmd_download(tmp_path):
     mock_resp.iter_content.return_value = [b"chunk1", b"chunk2"]
     client.session.get.return_value.__enter__.return_value = mock_resp
 
+    captured: dict = {}
     with patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")), \
-         patch("mb_cli.__main__._authenticate_client"):
-        
+         patch("mb_cli.__main__._authenticate_client"), \
+         patch("mb_cli.__main__.print_payload", side_effect=lambda p, o, f: captured.update(payload=p, output=o, fmt=f)):
+
         rc = cmd_download(args)
         assert rc == 0
-        
+
         # Verify output files
         out_dir = tmp_path / "custom_out"
         assert (out_dir / "res.pdf").exists()
         assert (out_dir / "res.pdf").read_bytes() == b"chunk1chunk2"
         assert (out_dir / "essay.pdf").exists()
         assert (out_dir / "essay.pdf").read_bytes() == b"chunk1chunk2"
+
+        # `mb download` used to write files and say nothing on stdout, so
+        # `--format json` and `--output` had nothing to act on.
+        assert captured["payload"]["ok"] is True
+        assert captured["payload"]["command"] == "download"
+        assert captured["payload"]["data"]["downloaded_count"] == 2
+        assert captured["payload"]["data"]["failed_count"] == 0
+        assert sorted(d["name"] for d in captured["payload"]["data"]["downloaded"]) == [
+            "essay.pdf",
+            "res.pdf",
+        ]
 
 
 def test_tag_logic():
