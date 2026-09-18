@@ -1,5 +1,6 @@
 """Tests for daemon CLI commands."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
@@ -8,11 +9,47 @@ import requests_mock
 from mb_cli.__main__ import main
 
 
-def test_cli_daemon_status(tmp_path: Path):
-    with patch("builtins.print"):
-        with pytest.raises(SystemExit) as exc_info:
-            main(["daemon", "status", "--format", "json"])
-        assert exc_info.value.code == 0
+def test_cli_daemon_status(tmp_path: Path, monkeypatch):
+    """`daemon status` is a predicate for scripts, so "not running" exits non-0.
+
+    REPLACED: this test asserted ``code == 0`` with no pid file present — i.e.
+    it asserted the very thing that was broken, that reporting a dead daemon
+    looked like success to a shell caller.
+    """
+    monkeypatch.setenv(
+        "MB_CRAWLER_CONFIG", str(tmp_path / "config.json")
+    )
+    monkeypatch.setenv(
+        "MB_CRAWLER_SESSION", str(tmp_path / "session.json")
+    )
+    with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+        mock_mgr_cls.return_value.status.return_value = {
+            "running": False,
+            "pid": None,
+            "pid_file": str(tmp_path / "daemon.pid"),
+            "log_file": str(tmp_path / "daemon.log"),
+        }
+        with patch("builtins.print") as mock_print:
+            with pytest.raises(SystemExit) as exc_info:
+                main(["daemon", "status", "--format", "json"])
+            assert exc_info.value.code == 1
+    assert json.loads(mock_print.call_args[0][0])["data"]["running"] is False
+
+
+def test_cli_daemon_status_running_exits_zero(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+    with patch("mb_cli.__main__.ServiceManager") as mock_mgr_cls:
+        mock_mgr_cls.return_value.status.return_value = {
+            "running": True,
+            "pid": 999,
+            "pid_file": str(tmp_path / "daemon.pid"),
+            "log_file": str(tmp_path / "daemon.log"),
+        }
+        with patch("builtins.print"):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["daemon", "status", "--format", "json"])
+            assert exc_info.value.code == 0
 
 
 def test_cli_daemon_test_webhook():
