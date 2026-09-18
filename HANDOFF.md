@@ -1,0 +1,314 @@
+# Handoff: `tahuti` — ManageBac toolkit
+
+**Date:** 2026-09-19
+**Branch:** `publish-prep` (20 commits ahead of the pre-work HEAD `2254a01`)
+**State:** 679 tests passing, builds clean, `twine check` passes on both artifacts.
+**Nothing has been pushed, published, or released.**
+
+This document is for whoever continues the work — agent or human. Read
+§1 before touching anything; §6 lists what is deliberately unfinished.
+
+---
+
+## 1. Read this first
+
+### Identity decisions (settled — do not re-litigate without cause)
+
+| Thing | Value | Why |
+|---|---|---|
+| PyPI / project name | `tahuti` | `mb-cli` was already taken on PyPI by an unrelated project |
+| Console commands | `tahuti`, `tahuti-mcp` | Primary; consistent with the package name |
+| Command aliases | `mb`, `mb-mcp` | Same entry points; kept so existing habits don't break |
+| Python import path | `mb_cli` (**unchanged**) | Renaming it would break callers for zero benefit. Deliberate. |
+| State directory | `~/.config/tahuti/` | Renamed from `mb-crawler`. No legacy fallback — there are no users yet. |
+| Env vars | `MB_CRAWLER_*` (**unchanged**) | Renaming would break working setups; not part of command identity |
+| Service labels | `com.tahuti.daemon`, `tahuti-daemon.service` | Renamed with the project |
+| License | MIT, © 2026 Allen Sun | Consistent across `LICENSE`, `pyproject.toml`, wheel metadata |
+
+`tahuti` is the Egyptian Ḏḥwtj, "He Who is Like the Ibis" — the scribe who
+records, the arbiter who weighs, the messenger who carries word between
+parties. That maps onto what the event engine actually does. The Greek name
+`Thoth` is taken on PyPI; the Egyptian original was free on PyPI, npm and
+conda-forge, with no meaningful GitHub collision.
+
+This copy of the repository is running on a **Raspberry Pi (aarch64 Linux,
+Python 3.13.5)**, checked out on branch **`publish-prep`**. `uv` is **not**
+installed yet — install it first, it makes everything below work:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### How to run the tests
+
+```bash
+cd ~/tahuti                       # or /mnt/pi-data/tahuti
+uv sync --group dev               # creates .venv, installs pytest/requests-mock/mcp
+uv run pytest -q -p no:cacheprovider
+```
+
+`PYTHONPATH=src` is only needed if you bypass `uv` and run the interpreter
+directly — without it you can silently test some other checkout's code instead
+of this one. Confirm with `uv run python -c "import mb_cli; print(mb_cli.__file__)"`:
+it must resolve **inside this directory**.
+
+**On the originating Mac, `uv run` and `uv sync` are broken** by a pre-existing
+Rosetta/`cryptography` source-build error (the local Rust toolchain lacks the
+`x86_64-apple-darwin` target). That is a Mac problem, not a project problem — do
+not let it send you rewriting build config. `uv lock` and `uv build` do work
+there. On this Linux box a normal `uv sync` is expected to work; if it does not,
+fall back to `python3 -m venv .venv && .venv/bin/pip install -e '.[mcp]' pytest
+requests-mock` and run `PYTHONPATH=src .venv/bin/python -m pytest -q -p no:cacheprovider`.
+
+---
+
+## 2. Release gates — four separate gates, not one
+
+This is the most important operational fact in this document.
+
+| Gate | Unverified Windows code blocks it? |
+|---|---|
+| **Push to GitHub** | **No** — land it, let it be reviewed |
+| **CI** | **Yes** — a Windows job would run unexercised code |
+| **GitHub Releases** | **Yes** — that is a shipped artifact |
+| **PyPI** | **Yes** — irreversible; names and versions are never reusable |
+
+The asymmetry is deliberate. Code can reach `main` while still needing
+verification; what must not happen is a *shipped* artifact containing a path
+nobody has executed.
+
+### Pre-release verification gate (owner-specified, three platforms)
+
+1. **macOS** — this machine. Already covered by the test suite.
+2. **Linux** — the next agent runs on a persistent Linux server and should
+   exercise the daemon end-to-end there (systemd install, not just launchd).
+3. **Windows laptop** — manual verification available. Specifically:
+   - `tahuti login --keychain` → store → `tahuti logout` → confirm the
+     Credential Locker entry is gone
+   - silent re-login from the keychain (the daemon path)
+   - `daemon install` — **currently unsupported on Windows** (§6)
+
+---
+
+## 3. What was done
+
+### 3.1 Rename `mb-cli` → `tahuti`
+Package name, description, keywords (`managebac` kept first for PyPI search
+discoverability, since PyPI indexes summary + keywords and not just the name),
+Python 3.10–3.14 classifiers, real `[project.urls]` (the old
+`github.com/allen/mb-crawler` was a dead link). `uv.lock` regenerated.
+
+### 3.2 Security
+- `tahuti logout` now **deletes the stored password** by default
+  (`--keep-credentials` opts back in). Previously it left `creds.json` behind.
+- New `src/mb_cli/keychain.py` — opt-in OS keychain, **stdlib only, no new
+  dependencies**: macOS `security`, Linux `secret-tool`, Windows
+  `powershell.exe` + WinRT `PasswordVault`.
+- Weak-permission warnings on startup for loose config files.
+- `MB_CRAWLER_PASSWORD` / `MB_CRAWLER_COOKIE` were **write-only** (exported to
+  the daemon child, never read back). Now genuinely read.
+- `SECURITY.md` rewritten; several of its claims were factually wrong and were
+  corrected against source (see §5).
+
+### 3.3 Interface
+Two genuine defects, both of which the owner's instinct about a "mostly
+invalid interface" was pointing at:
+- `mb download` called `print_payload(args.output, args.format)` on four error
+  paths while its parser defined neither flag → `AttributeError` instead of a
+  clean JSON error payload. Fixed.
+- **`daemon start --dry-run` POSTed real webhooks.** The flag was only
+  consulted on the `once` path, so the documented safety switch did nothing in
+  loop mode. Fixed — it now reaches `DaemonService`, which owns the dispatcher.
+- Hardcoded `active_windows` silently gated polling outside three windows;
+  now empty means "no gating", active hours are opt-in.
+- `tahuti --version` added (previously argparse-errored).
+- **A bug this work introduced and then caught:** the rename commit updated the
+  process-guard list in `daemon/__init__.py` but missed the duplicate in
+  `daemon/system.py`, which still matched `"mb-cli"`. Since the daemon spawns
+  `python -m mb_cli daemon run`, `daemon stop` could refuse to stop its own
+  daemon. Both lists now match; `mb_cli` is retained deliberately.
+
+### 3.4 Cleanup
+Extracted the ~8-site `state.config_path.parent / "snapshot.json"` repetition
+into `_snapshot_path()`, added missing return annotations, fixed a
+`render_pretty` helper shadowing the `error()` payload helper.
+
+### 3.5 Transport truth
+**The MNN hub is a polled REST API, not a push or WebSocket channel.** This was
+verified, not assumed: no WebSocket was ever attempted in any of the 183
+commits (`git log --all -S'wss://' -S'ws://' -S'websocket'` returns nothing),
+and both `mnn-hub.prod.faria.com` and `.cn` resolve via DNS — so the
+constraint is *protocol*, not availability. `SPEC.md:39` had claimed
+"WebSocket server URL" speculatively from the root commit and was never
+validated; the code and its 2026-09-02 design spec always said REST.
+
+Docs were corrected to match: README retitled "Event Engine", `library.md` and
+`events.md` no longer claim real-time push, and `events.md` gained a
+"Notification Transport: Polling, Not Push" section plus four guard tests
+pinning it. **This matters for positioning** — the event engine is polling, and
+should never be described as push.
+
+### 3.6 Docs
+ASCII box-drawing diagrams → mermaid in all user-facing docs. Email removed
+from `SECURITY.md` entirely; GitHub Private Vulnerability Reporting is the sole
+channel. Full rename sweep so no doc references a command or path that no
+longer exists.
+
+---
+
+## 4. Competitive position (from a 25-project survey)
+
+The ManageBac ecosystem is ~129 GitHub repos, ~50 student-facing, ~25 real.
+**The official ManageBac API is admin-only** — students cannot get a key — so
+every project here is a scraper, which is why none exceeds ~20 tools.
+
+**Genuinely exclusive:** the typed event/webhook engine. Nobody else has typed
+`MBEvent`s, HMAC-SHA256 signing, exponential backoff, active-hours scheduling,
+stealth jitter, or launchd/systemd install. The nearest competitor is a
+**daily 18:00 cron**. This is the only defensible claim the project has.
+
+**Refuted differentiators:** the MCP server is *fourth* place — four ManageBac
+MCP servers exist and two have GPA and grade weights we lack. Dual `.com`/`.cn`
+support is weaker than advertised (rivals get `.cn` free by taking any base
+URL); the real edge is the per-domain MNN hub mapping and the `ALLOWED_DOMAINS`
+guard that stops the cookie and password being POSTed to an attacker-chosen host.
+
+**Cheapest high-value gaps:** class-file download (we already parse attachments
+at `client.py:529`), GPA rollup, subscribable `.ics`. Parent portal + multi-child
+is the largest untapped audience but needs a second auth surface.
+
+---
+
+## 5. Known issues and open items
+
+### Blocking a release
+1. **Enable GitHub Private Vulnerability Reporting** (repo Settings → Code
+   security and analysis). Until then `SECURITY.md`'s only reporting channel
+   404s — and there is no email fallback by design.
+2. **Three-platform verification** (§2).
+3. **`daemon install` does not work on Windows.** `system.py` handles only
+   Darwin (launchd) and Linux (systemd); anything else returns "Unsupported
+   platform". Needs Task Scheduler (`schtasks`).
+4. **`_is_tahuti_process` shells out to `ps`**, which does not exist on Windows.
+   The failure is benign but wrong: `stop_background(verify_process=True)`
+   would report "not a tahuti process" and refuse to stop. Needs a
+   `wmic`/`tasklist` path.
+
+### Non-blocking, worth doing
+- `docs/library.md` should get the same polling-not-push treatment as
+  `events.md` if any "real-time" phrasing crept back in during merges.
+- The service-label rename is **not migrated**: someone who ran
+  `mb daemon install` before the rename still has `mb-daemon.service` loaded,
+  and the new `uninstall` looks only for the new name → reports
+  `service_file_missing`. Irrelevant with zero users; fix only if that changes.
+- `count_grade_frequencies` / `count-grade-freq` has no consumer but itself.
+  Either the seed of a GPA feature or dead weight.
+- `docs/superpowers/` holds 9 internal design artifacts, several stale
+  (`Draft`/`In Review`, some describing a pre-refactor tree). Kept in the repo
+  deliberately, excluded from the sdist. Several still use ASCII diagrams —
+  left as historical record.
+- `daemon/webhook.py` (the HMAC/retry path — security-critical) has only 2
+  tests. Thinnest coverage in the repo.
+- `mb download` has tests now, but `daemon/system.py` and `daemon/state.py` are
+  still thin (2 and 1 tests respectively).
+
+### Credential-handling limits (documented in `SECURITY.md`)
+Default remains cleartext `creds.json` at 0600 — the keychain is **opt-in**
+(`--keychain` / `MB_CRAWLER_KEYCHAIN=1`), because flipping the default would
+break headless CI. On Windows the Credential Locker **roams entries to the
+Microsoft account by default**, with no flag to disable it, and `PasswordVault`
+needs Windows PowerShell 5.1 (PowerShell 7 cannot load the WinRT type).
+
+---
+
+## 6. What was deliberately NOT done
+
+- **No push, no publish, no release, no `gh` mutating calls.** Nothing has left
+  the machine. The repo rename is **not** done — see §7.
+- **No import-path rename** (`mb_cli` stays), no env-var rename, no flag renames.
+- **`--interval` vs `--poll-interval`** asymmetry documented rather than
+  unified — renaming a flag breaks users.
+- **No `keyring` / `pywin32` / `pythonnet`.** The whole point of `keychain.py`
+  is shelling out to helpers already on the OS.
+- **`mcp` is bounded `>=1.20,<2`.** This is load-bearing: mcp 2.x removed
+  `mcp.server.fastmcp`, which `mcp_server.py` imports, so an unbounded
+  constraint ships a `tahuti-mcp` that dies on import. `uv.lock` had pinned
+  1.27.2 and masked it locally.
+- **No Windows `CredReadW`/`CredWriteW` via `ctypes`** — technically the
+  strongest option (no child process, back to XP) but ~60 lines of struct
+  layout that cannot be exercised without a Windows box. Recorded in the
+  `keychain.py` docstring as the better alternative once hardware is available.
+- **No migration code** for pre-rename state paths or service labels.
+
+---
+
+## 7. Repository state as transferred
+
+The work was done in git worktrees on the Mac so parallel agents would not
+collide. **Those worktrees were not copied here** — only this branch, with its
+full history, is present. This is the single source of truth; nothing is lost,
+because every branch was merged in first:
+
+| Branch | Status |
+|---|---|
+| `publish-prep` | **checked out here** — 20 commits ahead of `2254a01` |
+| `docs-fixes`, `cli-rename`, `windows-support` | merged into `publish-prep`, still present as refs |
+| `main` | still at `2254a01` on the Mac; the work has **not** reached it |
+
+The Mac's checkout at `~/Desktop/t8/mb-crawler` is unmodified and still on
+`main`. It was not touched. `git remote` still points at
+`github.com/allen546/mb-cli`, which has **not** been renamed.
+
+**Not copied here on purpose:** `.venv` (64 MB, and it is macOS/Rosetta-built —
+useless and possibly harmful on aarch64), `.claude/` (75 MB, agent scratch
+including nested worktree clones), `.worktrees/`, and `dist/` (stale
+`mb_cli-0.2.x`–`0.3.0` artifacts from *before* the rename — do not upload those).
+Rebuild with `uv build`; it correctly produces `tahuti-0.3.0.{tar.gz,whl}`.
+
+### Remaining repo-level steps (owner's call, all currently held)
+
+1. **GitHub repo rename** — `allen546/mb-cli` → `allen546/tahuti`:
+   ```bash
+   gh repo rename tahuti --repo allen546/mb-cli
+   ```
+   GitHub redirects the old URL automatically, **but** `git remote` in any
+   existing clone does not update itself — reset it after renaming. Do this
+   before pushing, so history lands under the right name.
+2. **Push `publish-prep`**, then merge to `main`.
+3. **Enable private vulnerability reporting**, then publish to **TestPyPI
+   first**, install from there to verify, before the real PyPI upload.
+4. `gh` is not installed on this host; install it if you need repo operations.
+
+The Mac folder was *not* renamed to `tahuti/` — that step is moot here, since
+this checkout already lives at `/mnt/pi-data/tahuti`.
+
+---
+
+## 8. Commit history on `publish-prep`
+
+```
+8c9f897 docs: document Windows keychain support and its limits
+327b62c docs: finish the rename sweep the CLI change flagged
+4737aad chore: regenerate uv.lock for the tahuti rename
+dc4a576 feat(cli): make tahuti the primary command, keep mb/mb-mcp as aliases
+1043a1b feat(keychain): add Windows Credential Locker support
+b62b638 docs(security): drop the email fallback entirely
+d8ef08f docs: make the docs truthful about transport and naming
+7259ef9 fix(daemon): make --dry-run and active-hours behave as documented
+13e07b5 security: close the credential-handling gap and make SECURITY.md truthful
+bdf29ea fix(cli): repair interface defects found by audit and tidy the tree
+bb6e701 refactor: stop render_pretty shadowing the error() payload helper
+34d25be refactor: add missing return annotations to six helpers
+bb9e80a refactor: extract snapshot-path and submission-state helpers in the CLI
+5d1ec52 docs: correct the notification transport — MNN hub is REST, not WebSocket
+aa09bc6 refactor: drop unused imports and dead local variables
+d279cb6 refactor: drop the pre-rename config dir fallback
+c2c65f0 feat: rename package to tahuti
+```
+
+Plus the earlier publish-readiness work already on the branch from
+`2254a01`: sdist hygiene (a 75 MB nested worktree clone was shipping — the
+sdist went from 153 entries to 71), `CHANGELOG.md`, `SECURITY.md`, GitHub
+Actions CI, and the `[dependency-groups] dev` table declaring pytest,
+requests-mock and mcp (none of which were declared, so a plain `uv sync`
+could never have run the suite).
