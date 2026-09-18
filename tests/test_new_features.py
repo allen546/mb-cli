@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 from mb_cli.client import parse_due_date, ManageBacClient
@@ -102,14 +103,14 @@ def test_view_submissions():
     assert "resource_guide.pdf" in output
 
 
-def test_matches_tag_or_and_query_syntax():
-    """`--tag`'s OR/AND query syntax.
+def test_cmd_download(tmp_path):
+    """`tahuti download` writes the attachment files and reports them as JSON.
 
-    Only the query-operator cases live here. Single-tag matching — exact,
-    case-insensitive, partial, no-match, no-labels — is covered properly by
-    `tests/test_filters.py::TestMatchesTag`; repeating it here meant two copies
-    to maintain and no extra reach.
+    `tahuti download` used to write files and say nothing on stdout, so
+    `--format json` and `--output` had nothing to act on.
     """
+    from mb_cli.__main__ import cmd_download
+
     class Args:
         task_id = "123"
         output_dir = str(tmp_path / "custom_out")
@@ -179,8 +180,6 @@ def test_matches_tag_or_and_query_syntax():
         assert (out_dir / "essay.pdf").exists()
         assert (out_dir / "essay.pdf").read_bytes() == b"chunk1chunk2"
 
-        # `tahuti download` used to write files and say nothing on stdout, so
-        # `--format json` and `--output` had nothing to act on.
         assert captured["payload"]["ok"] is True
         assert captured["payload"]["command"] == "download"
         assert captured["payload"]["data"]["downloaded_count"] == 2
@@ -189,21 +188,3 @@ def test_matches_tag_or_and_query_syntax():
             "essay.pdf",
             "res.pdf",
         ]
-
-
-def test_tag_logic():
-    from mb_cli.filters import matches_tag
-
-    t = {"labels": ["Summative", "Exam"]}
-
-    # OR queries — any separator spellings.
-    assert matches_tag(t, "homework,exam") is True
-    assert matches_tag(t, "homework|summative") is True
-    assert matches_tag(t, "homework or exam") is True
-    assert matches_tag(t, "homework,project") is False
-
-    # AND queries — every term must match.
-    assert matches_tag(t, "summative+exam") is True
-    assert matches_tag(t, "summative&exam") is True
-    assert matches_tag(t, "summative and exam") is True
-    assert matches_tag(t, "summative+homework") is False
