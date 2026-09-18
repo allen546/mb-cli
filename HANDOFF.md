@@ -1,12 +1,25 @@
 # Handoff: `tahuti` — ManageBac toolkit
 
 **Date:** 2026-09-19
-**Branch:** `publish-prep` (20 commits ahead of the pre-work HEAD `2254a01`)
-**State:** 679 tests passing, builds clean, `twine check` passes on both artifacts.
-**Nothing has been pushed, published, or released.**
+**Branch:** `publish-prep` (21 commits ahead of the pre-work HEAD `2254a01`)
+**State:** 679 tests passing on **both** macOS (arm64) and Linux (aarch64),
+builds clean, `twine check` passes on both artifacts.
+**Nothing has been pushed to GitHub, published, or released.**
+
+> **This copy now lives on a Raspberry Pi** at `/mnt/pi-data/tahuti` (Linux
+> 6.18 aarch64, Python 3.13.5, `uv` 0.12.16 installed). `origin` still points at
+> the un-renamed `github.com/allen546/mb-cli`. Branches present locally:
+> `publish-prep` (checked out), `main`, `docs-fixes`, `cli-rename`,
+> `windows-support`, and `worktree-finish-security-audit` (the last one is
+> preserved for reference only — it is an ancestor-less legacy clone whose
+> content is already contained in `publish-prep`; its history is also bundled
+> at `/mnt/pi-data/legacy-security-audit.bundle`).
+>
+> The Mac's original checkout at `~/Desktop/t8/mb-crawler` is unmodified and
+> still on `main` at `2254a01`. It was not touched.
 
 This document is for whoever continues the work — agent or human. Read
-§1 before touching anything; §6 lists what is deliberately unfinished.
+§1 before touching anything; §7 lists what is deliberately unfinished.
 
 ---
 
@@ -32,11 +45,11 @@ parties. That maps onto what the event engine actually does. The Greek name
 conda-forge, with no meaningful GitHub collision.
 
 This copy of the repository is running on a **Raspberry Pi (aarch64 Linux,
-Python 3.13.5)**, checked out on branch **`publish-prep`**. `uv` is **not**
-installed yet — install it first, it makes everything below work:
+Python 3.13.5)**, checked out on branch **`publish-prep`**. `uv` 0.12.16 is
+already installed at `~/.local/bin/uv` — if your `PATH` does not include it:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### How to run the tests
@@ -62,7 +75,55 @@ requests-mock` and run `PYTHONPATH=src .venv/bin/python -m pytest -q -p no:cache
 
 ---
 
-## 2. Release gates — four separate gates, not one
+## 2. Running end-to-end tests without exposing credentials
+
+An agent must **never** be given the ManageBac password, and must never be the
+one to type it. Enter it yourself, by hand, in a terminal you control. Three
+options, best first:
+
+**1. Keychain (recommended).** Login once yourself; afterwards `tahuti` and the
+daemon both read the OS keychain, so nothing is on disk and no env var exists
+for a process table to leak:
+
+```bash
+cd /mnt/pi-data/tahuti
+uv run tahuti login --keychain     # you type the password at the prompt
+```
+
+On this host that is the Linux Secret Service via `secret-tool`. It needs a
+running secret service — on a headless Pi, `gnome-keyring-daemon --unlock` may
+have to be started in your session first. If it is unavailable, `login`
+**falls back to `creds.json` at 0600 and warns** rather than silently losing the
+credential; that fallback is intentional.
+
+**2. Environment variable, entered by you, in the same shell invocation.** Fine
+for one command, but a leaked env var is directly usable as a credential, and a
+process's environment is readable by its own user:
+
+```bash
+read -rs MB_CRAWLER_PASSWORD && export MB_CRAWLER_PASSWORD
+# paste, press Enter, then:
+uv run tahuti list
+```
+Note `read -rs` keeps the secret out of your shell history — unlike
+`tahuti login --password hunter2`, which lands in `~/.zsh_history`.
+
+**3. Nothing at all.** `tahuti login --temp` writes nothing to disk
+(`remember_me=0`), skips saving the session cookie, and disables the response
+cache. Best when you only need a single session and care most about leaving no
+trace.
+
+Clean up afterwards with `uv run tahuti logout`, which deletes `creds.json`,
+the keychain entry, the session cookie, and the response cache by default.
+
+**Do not:** commit `creds.json`/`session.json` (they are gitignored, keep them
+that way), pass the password as a CLI flag, or hand it to a subagent. Note that
+`extras/mb-notifier/course_aliases.json` is personal data and stays local by
+design — it is gitignored, not shipped in the sdist.
+
+---
+
+## 3. Release gates — four separate gates, not one
 
 This is the most important operational fact in this document.
 
@@ -79,26 +140,28 @@ nobody has executed.
 
 ### Pre-release verification gate (owner-specified, three platforms)
 
-1. **macOS** — this machine. Already covered by the test suite.
-2. **Linux** — the next agent runs on a persistent Linux server and should
-   exercise the daemon end-to-end there (systemd install, not just launchd).
+1. **macOS** — the originating Mac. Full suite green there.
+2. **Linux** — **done for the unit suite**: 679/679 pass on this Pi. Still
+   outstanding is the daemon end-to-end (systemd install, not just launchd) —
+   the unit tests cover launchd and systemd *file generation*, but no real
+   service has been installed and started here yet.
 3. **Windows laptop** — manual verification available. Specifically:
    - `tahuti login --keychain` → store → `tahuti logout` → confirm the
      Credential Locker entry is gone
    - silent re-login from the keychain (the daemon path)
-   - `daemon install` — **currently unsupported on Windows** (§6)
+   - `daemon install` — **currently unsupported on Windows** (§7)
 
 ---
 
-## 3. What was done
+## 4. What was done
 
-### 3.1 Rename `mb-cli` → `tahuti`
+### 4.1 Rename `mb-cli` → `tahuti`
 Package name, description, keywords (`managebac` kept first for PyPI search
 discoverability, since PyPI indexes summary + keywords and not just the name),
 Python 3.10–3.14 classifiers, real `[project.urls]` (the old
 `github.com/allen/mb-crawler` was a dead link). `uv.lock` regenerated.
 
-### 3.2 Security
+### 4.2 Security
 - `tahuti logout` now **deletes the stored password** by default
   (`--keep-credentials` opts back in). Previously it left `creds.json` behind.
 - New `src/mb_cli/keychain.py` — opt-in OS keychain, **stdlib only, no new
@@ -108,9 +171,9 @@ Python 3.10–3.14 classifiers, real `[project.urls]` (the old
 - `MB_CRAWLER_PASSWORD` / `MB_CRAWLER_COOKIE` were **write-only** (exported to
   the daemon child, never read back). Now genuinely read.
 - `SECURITY.md` rewritten; several of its claims were factually wrong and were
-  corrected against source (see §5).
+  corrected against source (see §6).
 
-### 3.3 Interface
+### 4.3 Interface
 Two genuine defects, both of which the owner's instinct about a "mostly
 invalid interface" was pointing at:
 - `mb download` called `print_payload(args.output, args.format)` on four error
@@ -128,12 +191,12 @@ invalid interface" was pointing at:
   `python -m mb_cli daemon run`, `daemon stop` could refuse to stop its own
   daemon. Both lists now match; `mb_cli` is retained deliberately.
 
-### 3.4 Cleanup
+### 4.4 Cleanup
 Extracted the ~8-site `state.config_path.parent / "snapshot.json"` repetition
 into `_snapshot_path()`, added missing return annotations, fixed a
 `render_pretty` helper shadowing the `error()` payload helper.
 
-### 3.5 Transport truth
+### 4.5 Transport truth
 **The MNN hub is a polled REST API, not a push or WebSocket channel.** This was
 verified, not assumed: no WebSocket was ever attempted in any of the 183
 commits (`git log --all -S'wss://' -S'ws://' -S'websocket'` returns nothing),
@@ -148,15 +211,26 @@ Docs were corrected to match: README retitled "Event Engine", `library.md` and
 pinning it. **This matters for positioning** — the event engine is polling, and
 should never be described as push.
 
-### 3.6 Docs
+### 4.6 Docs
 ASCII box-drawing diagrams → mermaid in all user-facing docs. Email removed
 from `SECURITY.md` entirely; GitHub Private Vulnerability Reporting is the sole
 channel. Full rename sweep so no doc references a command or path that no
 longer exists.
 
+### 4.7 A platform bug the transfer itself found
+
+Running the suite on Linux for the first time immediately failed one test:
+`test_delete_reports_success` hardcoded macOS's `delete-generic-password` verb,
+but on Linux `keychain.delete()` correctly issues `secret-tool clear`. The
+*implementation* was right and the *assertion* was Darwin-only — the suite had
+only ever run on macOS, so it had been reading green. Fixed in `537c259` by
+asserting whichever verb the current platform issues. Worth remembering: this
+repo's tests were single-platform until today, so treat "green on macOS" as
+weak evidence for anything platform-dependent.
+
 ---
 
-## 4. Competitive position (from a 25-project survey)
+## 5. Competitive position (from a 25-project survey)
 
 The ManageBac ecosystem is ~129 GitHub repos, ~50 student-facing, ~25 real.
 **The official ManageBac API is admin-only** — students cannot get a key — so
@@ -179,13 +253,13 @@ is the largest untapped audience but needs a second auth surface.
 
 ---
 
-## 5. Known issues and open items
+## 6. Known issues and open items
 
 ### Blocking a release
 1. **Enable GitHub Private Vulnerability Reporting** (repo Settings → Code
    security and analysis). Until then `SECURITY.md`'s only reporting channel
    404s — and there is no email fallback by design.
-2. **Three-platform verification** (§2).
+2. **Three-platform verification** (§3).
 3. **`daemon install` does not work on Windows.** `system.py` handles only
    Darwin (launchd) and Linux (systemd); anything else returns "Unsupported
    platform". Needs Task Scheduler (`schtasks`).
@@ -221,10 +295,10 @@ needs Windows PowerShell 5.1 (PowerShell 7 cannot load the WinRT type).
 
 ---
 
-## 6. What was deliberately NOT done
+## 7. What was deliberately NOT done
 
 - **No push, no publish, no release, no `gh` mutating calls.** Nothing has left
-  the machine. The repo rename is **not** done — see §7.
+  the machine. The repo rename is **not** done — see §8.
 - **No import-path rename** (`mb_cli` stays), no env-var rename, no flag renames.
 - **`--interval` vs `--poll-interval`** asymmetry documented rather than
   unified — renaming a flag breaks users.
@@ -242,7 +316,7 @@ needs Windows PowerShell 5.1 (PowerShell 7 cannot load the WinRT type).
 
 ---
 
-## 7. Repository state as transferred
+## 8. Repository state as transferred
 
 The work was done in git worktrees on the Mac so parallel agents would not
 collide. **Those worktrees were not copied here** — only this branch, with its
@@ -284,7 +358,7 @@ this checkout already lives at `/mnt/pi-data/tahuti`.
 
 ---
 
-## 8. Commit history on `publish-prep`
+## 9. Commit history on `publish-prep`
 
 ```
 8c9f897 docs: document Windows keychain support and its limits
