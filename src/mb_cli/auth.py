@@ -17,8 +17,30 @@ from .config import (
     save_session,
 )
 from .exceptions import CommandError
+from .notifications import MNNHubClient
 
 log = logging.getLogger(__name__)
+
+
+def hub_client(
+    endpoint: str, token: str, *, verify: bool | str, timeout: float = 15.0
+) -> MNNHubClient:
+    """Build the MNN-hub client, honouring the caller's TLS decision.
+
+    The single construction point for :class:`~mb_cli.notifications.MNNHubClient`.
+    ``verify`` is keyword-only and has no default on purpose: six call sites
+    used to build the client directly and so kept ``verify=True``, which made
+    ``--no-verify-tls`` apply to ManageBac and not to the hub. A user who
+    explicitly accepted a self-signed or internal CA for the school host got a
+    certificate error from the hub instead, with nothing in the message saying
+    why. A call site that forgets the argument now fails with ``TypeError``
+    rather than silently reverting to the stricter policy.
+
+    Pass ``client.session.verify`` from an already-built
+    :class:`~mb_cli.client.ManageBacClient` so the hub cannot diverge from
+    whatever TLS decision that client is using.
+    """
+    return MNNHubClient(endpoint, token, verify=verify, timeout=timeout)
 
 
 def _creds_path() -> str:
