@@ -146,6 +146,14 @@ page's stated status was read.
 
 ## 3. Current logic
 
+> **Superseded.** This section described the submission-parsing fix as it stood
+> on `worktree-code-review-cleanup` before `ee359b4`. Its classification-relevant
+> behaviour was reverted because it moved tasks between views; §2 and the code
+> agree again. It is kept because the *parse* it describes is still present and
+> still correct — it now feeds the additive `submission_status` /
+> `tile_declared_status` fields instead of `status`. Read it as "the corrected
+> parse", not "the current classifier".
+
 ### 3.1 New: canonicalisation (`task_status.py`)
 
 Two tokens exist and every producer stores one, every consumer tests one:
@@ -320,31 +328,31 @@ are `past` either way.
 
 ---
 
-## 6. The one latent divergence
+## 6. The one latent divergence — **closed, 2026-09-19**
 
-Change #5 introduced a path the original could not take. In
-`get_class_tasks` (current):
+Change #5 introduced a path the original could not take. `get_class_tasks` had:
 
 ```
 elif has_submit_btn or canonical_status == NOT_SUBMITTED:
 ```
 
-The `canonical_status` arm is **not gated on `has_submit_btn`**. For a past-due
+The `canonical_status` arm was **not gated on `has_submit_btn`**. For a past-due
 card that states `cell not-submitted` but carries *no* submit control and *no*
 `Pending` label:
 
 ```
-original:  status = "Not Submitted"  →  classify misses it  →  NONE  →  past
-current:   status = "not-submitted"  →  PENDING             →  overdue
+before the fix:  status = "Not Submitted"  →  classify misses it  →  NONE  →  past
+during the fix:  status = "not-submitted"  →  PENDING             →  overdue
 ```
 
 That is a `past` → `overdue` move on a task the page gives no way to submit —
 precisely what the frozen-classification rule forbids. **No such card exists on
-this account today**, so the risk is latent, not live. It is also in tension
-with the new helper's own docstring, which insists that a card saying nothing
+this account today**, so the risk was latent, not live. It was also in tension
+with the new helper's own docstring, which insisted that a card saying nothing
 must stay `None`.
 
-Candidate fix, if the freeze is to hold by design rather than by luck:
+The owner ruled that classification is frozen, and the candidate fix below was
+applied in `ee359b4`:
 
 ```
 elif has_submit_btn:                      task_status = "not-submitted"
@@ -352,7 +360,9 @@ else:                                     task_status = t["status"]     # raw, a
 ```
 
 This reproduces the original exactly while keeping the canonical token available
-in the parsed data for any future consumer.
+in the parsed data for any future consumer. §3 below therefore describes a
+superseded state; §2 and the current code agree again, and the A/B measurement
+in §5 now reports zero movement on every path.
 
 ---
 
@@ -455,16 +465,32 @@ Both halves move zero tasks on live markup:
 
 ## 8. Open questions
 
-1. **Approve or revert the five-task tile-path movement?** The server's own
-   overdue tab supports the new behaviour, but §7 is a change and the freeze
-   requires an explicit ruling.
-2. **Should the latent divergence in §6 be closed?** Costs nothing observable
-   today and only prevents a future unapproved movement.
-3. **What should the unbadged tasks display?** Six live tasks have no submission
+**Ruled on 2026-09-19: classification output is frozen.** The owner identified
+the frozen version as the one that ran a week of live pressure testing through
+the daemon and webhook with no complaints, and ruled that it must be restored
+before anything else changes. So questions 1 and 2 are answered *revert* and
+*close*, both landed in `ee359b4`; §3 now describes a superseded state and
+§2 matches the code again. What remains genuinely open:
+
+1. **What should the unbadged tasks display?** Six live tasks have no submission
    badge, no dropbox and no grade; they read `Complete` on both paths now.
    `Complete`, an honest `Unknown`, or `Incomplete (Todo)` is undecided.
-4. **`overdue` means "still actionable"** — the owner's proposed rule, not yet
+2. **`overdue` means "still actionable"** — the owner's proposed rule, not yet
    approved: past-due and still submittable, where a graded F stays overdue only
    if resubmittable. It must key off the `--due` variant per §7, not the
    submit-text scan.
+3. **The detail page as the source of truth.** The owner's direction: task state
+   needs grade (N/A or None), status (unsubmitted|submitted) and due date read
+   from the *detail* page, because a listing badge proves nothing unless it is
+   corroborated there. This is the route by which either open rule above could
+   be approved on real evidence rather than on listing-page inference. The
+   corrected parse already preserved in `submission_status` and
+   `tile_declared_status` is the input for it; nothing classifies on those today.
+
+Two behaviours are now frozen *and* known-wrong, pinned deliberately in
+`tests/test_submission_status_parsing.py` rather than fixed: a bare submitted
+badge is not read as submitted on the class path, and a closed-dropbox task
+displays `Complete`. Both are latent — verified live as affecting zero of the 45
+class-grades cards — and both are recorded there with a pointer to the field an
+approved rule should read instead.
 
