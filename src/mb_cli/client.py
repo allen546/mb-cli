@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import threading
@@ -55,7 +56,7 @@ class SessionExpiredError(RuntimeError):
 _NEVER_MASK_ERRORS = (CommandError, SessionExpiredError)
 
 
-def _school_display_tz() -> Any:
+def _school_display_tz(moment: Any = None) -> Any:
     """The timezone ManageBac's human-readable dates are written in.
 
     ManageBac renders school-local wall-clock times ("September 15, 2026 at
@@ -68,9 +69,71 @@ def _school_display_tz() -> Any:
     Returns an aware ``tzinfo`` rather than ``None`` so :func:`parse_due_date`
     can hand back one unambiguous type — mixing naive and aware datetimes makes
     ``sorted`` raise ``TypeError``.
+
+    *moment* selects which offset to return.  It matters because every caller
+    attaches the result with ``replace(tzinfo=...)``, which applies one fixed
+    offset: returning a DST-aware zone object would still pin the offset in
+    force at the moment the call happens.  So the offset is resolved for the
+    date being parsed, which is what "the school's clock read this at that date"
+    actually means.
     """
-    offset_seconds = time.altzone if time.daylight else time.timezone
-    return timezone(timedelta(seconds=-offset_seconds))
+    # `time.daylight` is nonzero whenever a DST *rule* is defined for the zone,
+    # not whenever DST is in effect, so the previous
+    # `time.altzone if time.daylight else time.timezone` returned the summer
+    # offset all year round: on Europe/Berlin a January due date came back as
+    # UTC+2 instead of UTC+1, putting every winter task an hour ahead of where
+    # `classify_task_view` put it and firing reminders early for the whole
+    # standard-time season.
+    #
+    # `datetime.now().astimezone().tzinfo` cannot fix this — it hands back a
+    # *fixed-offset* `timezone(+2, 'CEST')`, which pins the offset in force right
+    # now and applies it to every date. Resolving the IANA zone by name is what
+    # actually knows which offset any given moment takes.
+    zone = _local_iana_zone()
+    if zone is not None and moment is not None:
+        probe = moment.replace(tzinfo=None) if moment.tzinfo else moment
+        return probe.replace(tzinfo=zone).tzinfo
+    # No moment, or no IANA zone available (e.g. a UTC-offset-only TZ): fall back
+    # to the current fixed offset, which is right at least for dates near today.
+    now = datetime.now().astimezone()
+    offset = now.utcoffset()
+    return timezone(offset) if offset is not None else timezone.utc
+
+
+def _local_iana_zone():
+    """The local timezone as an IANA ``ZoneInfo``, or ``None``.
+
+    ``datetime.now().astimezone().tzinfo`` reports a fixed offset whose *name*
+    is the zone abbreviation ("CEST"), not the zone key, so the key is recovered
+    from the environment instead: ``TZ`` when set, otherwise the symlink
+    ``/etc/localtime`` points at.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:  # pragma: no cover - stdlib since 3.9
+        return None
+
+    key = os.environ.get("TZ", "").strip()
+    if key:
+        # POSIX allows a leading colon; glibc writes /etc/localtime's zone name
+        # there plain. `TZ=UTC` (or "UTC0", "GMT") means exactly that, so it must
+        # not fall through to the /etc/localtime symlink below.
+        name = key[1:] if key.startswith(":") else key
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            if name.upper().startswith(("UTC", "GMT")):
+                return timezone.utc
+    else:
+        # /etc/localtime -> /usr/share/zoneinfo/Europe/Berlin
+        try:
+            link = os.path.realpath("/etc/localtime")
+            marker = f"{os.sep}zoneinfo{os.sep}"
+            if marker in link:
+                return ZoneInfo(link.split(marker, 1)[1])
+        except Exception:
+            pass
+    return None
 
 
 def _validate_school_domain(school: str, domain: str) -> tuple[str, str]:
@@ -133,7 +196,9 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
                 # An ISO string with an offset keeps it; one without gets the
                 # school-display timezone rather than staying naive.
                 if parsed_iso.tzinfo is None:
-                    parsed_iso = parsed_iso.replace(tzinfo=_school_display_tz())
+                    parsed_iso = parsed_iso.replace(
+                        tzinfo=_school_display_tz(parsed_iso)
+                    )
                 return parsed_iso
             except (ValueError, TypeError):
                 pass
@@ -153,23 +218,24 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
             "%Y-%m-%d",
         ):
             try:
-                return datetime.strptime(cleaned_no_at, fmt).replace(
-                    tzinfo=_school_display_tz()
-                )
+                parsed = datetime.strptime(cleaned_no_at, fmt)
+                # The offset has to be resolved for *this* date: a DST-aware zone
+                # object would pin whichever offset is in force at call time.
+                return parsed.replace(tzinfo=_school_display_tz(parsed))
             except ValueError:
                 continue
 
         # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
         if ref.tzinfo is None:
-            ref = ref.replace(tzinfo=_school_display_tz())
+            ref = ref.replace(tzinfo=_school_display_tz(ref))
         current_year = ref.year
 
         dt = None
         for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
                 parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
-                dt = parsed.replace(tzinfo=_school_display_tz())
+                dt = parsed.replace(tzinfo=_school_display_tz(parsed))
                 break
             except ValueError:
                 continue

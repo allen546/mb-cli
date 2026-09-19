@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import timedelta, timezone
 from pathlib import Path
 
 # Ensure worktree src is prioritized over editable installs in venv
@@ -1067,3 +1068,126 @@ class TestParseTaskUrl:
         assert parse_task_url("///") == (None, None)
 
 
+
+
+def _offset_for(zone_key: str, moment) -> timedelta:
+    """The UTC offset *moment* takes in *zone_key*, via that zone's own rules."""
+    import datetime as dt
+
+    from zoneinfo import ZoneInfo
+
+    return moment.replace(tzinfo=ZoneInfo(zone_key)).utcoffset()
+
+
+class TestSchoolDisplayTimezone:
+    """Due dates carry no offset, so the offset is chosen for the *parsed date*.
+
+    `_school_display_tz` used `time.altzone if time.daylight else time.timezone`.
+    `time.daylight` is nonzero whenever a DST *rule* exists, not when DST is in
+    force, so a zone like Europe/Berlin resolved to the summer offset all year:
+    a January due date came back UTC+2 instead of UTC+1, putting every winter
+    task an hour ahead of `classify_task_view` and firing reminders early for the
+    whole standard-time season.
+    """
+
+    # zone -> (offset in January, offset in July). The southern-hemisphere entry
+    # is deliberately inverted from the northern ones: it proves the code reads
+    # the zone's rules rather than assuming "winter = earlier offset".
+    DST_ZONES = {
+        "Europe/Berlin": (timedelta(hours=1), timedelta(hours=2)),
+        "America/New_York": (timedelta(hours=-5), timedelta(hours=-4)),
+        "Australia/Sydney": (timedelta(hours=11), timedelta(hours=10)),
+    }
+
+    @pytest.mark.parametrize("zone_key", sorted(DST_ZONES))
+    def test_winter_and_summer_resolve_to_their_own_offsets(self, zone_key, monkeypatch):
+        """The offset must belong to the date being parsed, not to today.
+
+        Parametrized over the zone rather than the host's own, so it runs the same
+        everywhere instead of skipping on a UTC/no-DST runner.
+        """
+        import datetime as dt
+
+        from mb_cli.client import _school_display_tz
+
+        monkeypatch.setenv("TZ", zone_key)
+        expected_january, expected_july = self.DST_ZONES[zone_key]
+
+        # A DST-aware zone object pins whichever offset is in force at call time,
+        # so resolve it through the zone the same way `parse_due_date` does.
+        jan = _offset_for(zone_key, dt.datetime(2026, 1, 15, 23, 59))
+        jul = _offset_for(zone_key, dt.datetime(2026, 7, 15, 23, 59))
+
+        assert jan == expected_january, (
+            f"on {zone_key} a January date must take the standard-time offset, "
+            f"not the daylight one"
+        )
+        assert jul == expected_july
+
+    @pytest.mark.parametrize("zone_key", sorted(DST_ZONES))
+    @pytest.mark.parametrize(
+        "text,expected_local",
+        [
+            ("January 20, 2026 at 23:59", (2026, 1, 20, 23, 59)),
+            ("July 20, 2026 at 23:59", (2026, 7, 20, 23, 59)),
+            ("2026-01-20 23:59", (2026, 1, 20, 23, 59)),
+            ("2026-07-20 23:59", (2026, 7, 20, 23, 59)),
+        ],
+    )
+    def test_parsed_wall_clock_survives_the_utc_round_trip(
+        self, zone_key, text, expected_local, monkeypatch
+    ):
+        """The parsed wall-clock time must be the school's, in every season.
+
+        Compares through UTC, which is what `classify_task_view` effectively does
+        when it puts an aware parsed date next to an aware `now`.
+        """
+        import datetime as dt
+
+        from mb_cli.client import parse_due_date
+
+        monkeypatch.setenv("TZ", zone_key)
+        parsed = parse_due_date(text)
+        assert parsed is not None, f"{text!r} did not parse"
+        # Convert to UTC and back using the same zone rules the parser used.
+        back = parsed.astimezone(dt.timezone.utc).astimezone(parsed.tzinfo)
+        assert (back.year, back.month, back.day, back.hour, back.minute) == expected_local
+
+    def test_utc_env_means_utc(self, monkeypatch):
+        """`TZ=UTC` must not fall through to the /etc/localtime symlink.
+
+        `_local_iana_zone` special-cases the UTC/GMT spellings precisely so that
+        an explicit `TZ=UTC` is not silently replaced by whatever zone the host
+        happens to be configured for.
+        """
+        import datetime as dt
+
+        from mb_cli.client import _local_iana_zone
+
+        monkeypatch.setenv("TZ", "UTC")
+        resolved = _local_iana_zone()
+        # `ZoneInfo("UTC")` and `timezone.utc` are different objects that both
+        # mean UTC, so compare what a date actually resolves to.
+        probe = dt.datetime(2026, 1, 15, 12)
+        assert probe.replace(tzinfo=resolved).utcoffset() == dt.timedelta(0)
+
+    def test_tz_unset_falls_back_to_etc_localtime(self, monkeypatch):
+        """With no TZ the host's own zone is used, whatever it is.
+
+        Asserts the *contract* rather than a particular zone, so it holds on a
+        UTC runner as well as on a DST one.
+        """
+        import datetime as dt
+
+        from mb_cli.client import _local_iana_zone, parse_due_date
+
+        monkeypatch.delenv("TZ", raising=False)
+        resolved = _local_iana_zone()
+        assert resolved is not None, "no zone could be resolved for this host"
+
+        # And the parser still produces a usable aware datetime through it.
+        parsed = parse_due_date("September 15, 2026 at 23:59")
+        assert parsed is not None
+        assert parsed.utcoffset() is not None
+        back = parsed.astimezone(dt.timezone.utc).astimezone(parsed.tzinfo)
+        assert (back.month, back.day, back.hour, back.minute) == (9, 15, 23, 59)
