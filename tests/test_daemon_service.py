@@ -1,5 +1,6 @@
 """Tests for main daemon service orchestration."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 from mb_cli.daemon.events import DaemonConfig, MBEvent, WebhookConfig
@@ -375,3 +376,121 @@ def test_active_windows_round_trip_through_the_config():
     assert DaemonConfig.from_dict({}).active_windows == []
     assert DaemonConfig.from_dict({"active_windows": None}).active_windows == []
     assert DaemonConfig.from_dict({"active_windows": ["nonsense"]}).active_windows == []
+
+
+# ── `--dry-run` must not persist dedup state ────────────────────────────────
+
+
+def test_dry_run_does_not_persist_the_notifications_it_handled(tmp_path: Path):
+    """A dry run must not consume the notifications it only previewed.
+
+    `dry_run` used to reach the dispatcher and nothing else, so
+    `run_check_cycle` still called `mark_notification_processed` followed by
+    `state_manager.save()`. Marking a notification processed is precisely what
+    makes it invisible to the *next* run, so one dry run silently swallowed the
+    real delivery of every notification it looked at.
+    """
+    state_path = tmp_path / "state.json"
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=DaemonStateManager(state_path),
+        provider=MockProvider(
+            [
+                MBEvent(
+                    event="task_created",
+                    data={"notification_id": 5150, "title": "Real assignment"},
+                )
+            ]
+        ),
+        dry_run=True,
+    )
+    # The alert is still computed and dispatched in-memory — a dry run's whole
+    # job is to show that work.
+    service.dispatcher.dispatch = MagicMock(return_value=[])
+    res = service.run_check_cycle()
+    assert res["new_notifications"] == 1
+
+    # In-memory dedup works for the length of the run, so one cycle cannot
+    # process the same notification twice...
+    assert service.state_manager.is_notification_processed(5150)
+    # ...but nothing reached disk.
+    assert not state_path.exists(), "a dry run must not write daemon state"
+
+    # The payoff: a real run over the same notification still delivers it.
+    real = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=DaemonStateManager(state_path),
+        provider=MockProvider(
+            [
+                MBEvent(
+                    event="task_created",
+                    data={"notification_id": 5150, "title": "Real assignment"},
+                )
+            ]
+        ),
+        dry_run=False,
+    )
+    delivered = MagicMock(return_value=[{"success": True, "retryable": False}])
+    real.dispatcher.dispatch = delivered
+    assert real.run_check_cycle()["new_notifications"] == 1
+    delivered.assert_called_once()
+    assert 5150 in json.loads(state_path.read_text())["processed_notification_ids"]
+
+
+def test_dry_run_silences_an_injected_state_manager_too(tmp_path: Path):
+    """The guarantee cannot depend on who built the manager.
+
+    `start_loop` injects its own `DaemonStateManager`, so gating only the
+    default-constructed one would leave the daemon's real entry point exposed.
+    """
+    injected = DaemonStateManager(tmp_path / "state.json")
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=injected,
+        provider=MockProvider(
+            [MBEvent(event="task_created", data={"notification_id": 6, "title": "T"})]
+        ),
+        dry_run=True,
+    )
+    service.dispatcher.dispatch = MagicMock(return_value=[])
+    service.run_check_cycle()
+
+    assert injected.persist is False
+    assert not (tmp_path / "state.json").exists()
+    # Dedup within the single dry run is unaffected.
+    assert injected.is_notification_processed(6)
+
+
+def test_real_run_still_persists_state(tmp_path: Path):
+    """Control: without `dry_run`, state must still reach disk, or the daemon
+    would re-deliver every notification on every poll."""
+    state_path = tmp_path / "state.json"
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    manager = DaemonStateManager(state_path)
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=manager,
+        provider=MockProvider(
+            [MBEvent(event="task_created", data={"notification_id": 7, "title": "T"})]
+        ),
+        dry_run=False,
+    )
+    service.dispatcher.dispatch = MagicMock(
+        return_value=[{"success": True, "retryable": False}]
+    )
+    service.run_check_cycle()
+
+    assert manager.persist is True
+    assert 7 in json.loads(state_path.read_text())["processed_notification_ids"]

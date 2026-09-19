@@ -48,7 +48,22 @@ class DaemonService:
     ):
         self.client = client
         self.config = config or DaemonConfig()
-        self.state_manager = state_manager or DaemonStateManager()
+        # A dry run must not persist *anything*, not just webhooks. Two separate
+        # side effects make it observable: the dispatcher POSTing, and the state
+        # manager recording that a notification was handled. The second is the
+        # dangerous one — `mark_notification_processed` followed by `save()` is
+        # what makes a notification invisible to the *next* run, so a dry run
+        # that persisted it would silently swallow the real delivery it was only
+        # meant to preview. Suppressing only the POST left that hole open.
+        self.dry_run = dry_run
+        # Also cleared on an injected manager, so the guarantee holds whatever
+        # the caller built: `persist` is what `save()` consults, and nothing else
+        # in the daemon writes to that file.
+        if state_manager is not None:
+            state_manager.persist = not dry_run
+        self.state_manager = state_manager or DaemonStateManager(
+            persist=not self.dry_run
+        )
         self.auth_refresh_fn = auth_refresh_fn
         self.provider = provider or MNNHubProvider(
             self.client, auth_refresh_fn=self.auth_refresh_fn
@@ -59,13 +74,13 @@ class DaemonService:
             self.config.reminders,
             submission_checker=self._check_is_task_submitted_or_graded,
         )
-        # `--dry-run` has to reach the dispatcher: the loop only computes what it
-        # *would* POST, so a dry run that still POSTed would be worse than no
-        # flag at all. An empty webhook list makes `dispatch` a no-op that still
-        # reports success, which is exactly the dry-run contract.
-        self.dry_run = dry_run
+        # `--dry-run` has to reach the dispatcher too: the loop only computes
+        # what it *would* POST, so a dry run that still POSTed would be worse
+        # than no flag at all. An empty webhook list makes `dispatch` a no-op
+        # that still reports success, which is the other half of the dry-run
+        # contract.
         self.dispatcher = WebhookDispatcher(
-            webhooks=[] if dry_run else self.config.webhooks,
+            webhooks=[] if self.dry_run else self.config.webhooks,
             verify_tls=self.config.verify_tls,
         )
         self.on_start: Callable[[DaemonService], None] = on_start or (

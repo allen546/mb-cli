@@ -44,7 +44,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-from .auth import build_client, hub_client
+from .auth import build_client, hub_client, session_email
 from .client import ManageBacClient, parse_task_url
 from . import __version__
 from . import keychain
@@ -173,14 +173,23 @@ def _cache_dir_for_email(email: str | None) -> Path:
 
 
 def _login_email(state) -> str | None:
-    """Resolve the account a login acted on, in the order login uses it.
+    """Resolve the account a login acted on, so ``logout`` can undo it.
 
-    Mirrors ``build_client``'s ``email or state.profile.email or
-    state.session.email``. Inverting that order here is what let ``logout``
-    hash a *different* profile's cache directory and leave the live JWT-bearing
-    entries behind.
+    Delegates to ``auth.session_email`` rather than restating the precedence
+    rule. The rule has to live in exactly one place because two things are keyed
+    by it — the response-cache directory is a hash of it, and the OS-keychain
+    item is filed under it. When ``build_client`` preferred an explicit
+    ``--email``, then the profile's, then the session's, while this read the
+    session's first, a profile whose two fields disagreed made ``logout`` delete
+    a *different* profile's hash directory and leave the JWT-bearing entries in
+    place, while still reporting success.
+
+    ``logout`` passes no override (its subparser defines no ``--email``), which
+    is why delegating is safe: the two agree on ``profile.email or
+    session.email``. Returns ``None`` rather than ``""`` for the neither-set
+    case, which is what the `if email:` guards below were written against.
     """
-    return state.profile.email or state.session.email or None
+    return session_email(state) or None
 
 
 DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
@@ -703,14 +712,6 @@ def cmd_view(args) -> int:
         )
         print_payload(payload, args.output, args.format)
         return 1
-
-    # `get_task_detail` reports a fetch failure by returning a *truthy*
-    # `{"error": ...}` dict rather than by raising, so without this check the
-    # success envelope below would nest that error inside `ok: true` and exit 0.
-    if isinstance(detail, dict) and detail.get("error"):
-        payload = error("view", "detail_fetch_failed", str(detail["error"]))
-        print_payload(payload, args.output, args.format)
-        return EXIT_FAILURE
 
     payload = ok(
         "view",
@@ -2139,7 +2140,11 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_run.add_argument(
         "--dry-run",
         action="store_true",
-        help="Do not POST webhook, only compute alerts",
+        help=(
+            "Compute alerts but deliver nothing and change no state file: no "
+            "webhook POST, and the snapshot and dedup state are left exactly as "
+            "they were so the next real run still sees every alert"
+        ),
     )
     daemon_run.add_argument("--once", action="store_true", help="Run one cycle and exit")
     daemon_run.set_defaults(func=cmd_daemon_run)
@@ -2185,7 +2190,11 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_start.add_argument(
         "--dry-run",
         action="store_true",
-        help="Do not POST webhook, only compute alerts",
+        help=(
+            "Compute alerts but deliver nothing and change no state file: no "
+            "webhook POST, and the snapshot and dedup state are left exactly as "
+            "they were so the next real run still sees every alert"
+        ),
     )
     daemon_start.add_argument(
         "--once", action="store_true", help="Run one cycle and exit"
