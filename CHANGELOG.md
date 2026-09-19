@@ -24,13 +24,32 @@ Findings from the 2026-09-19 full-codebase review.
   notification state there. All four now go through
   `_validated_hub_endpoint`, which accepts the value only when it is https,
   carries no userinfo or port, and names a known Faria hub.
+- **`submit` refuses tahuti's own state files.** Both the `submit_file` MCP tool
+  and `tahuti submit` now reject any path resolving inside tahuti's own config
+  or response-cache directory — `creds.json`, `session.json`, `config.json`,
+  `daemon_state.json`, the task `snapshot.json`, and every cached response —
+  following symlinks, so a link pointing at one of them is refused by its
+  target. Those files hold the ManageBac password, the session cookie, cached
+  grade pages and the MNN-hub JWT, and the upload target is a dropbox a teacher
+  reads, so a confused tool call had a direct route to exfiltrating them. Scope
+  is deliberately narrow: only tahuti's own directories are checked, and files
+  elsewhere on the system are left to their file permissions.
 
 ### Fixed
 - **The daemon state path no longer freezes `$HOME` at import.**
   `DEFAULT_STATE_PATH` was `config_dir() / "daemon_state.json"` evaluated when
   the module was first imported, so a process whose environment changed wrote
   state to the old directory while every other path followed the new one. It is
-  now resolved per access.
+  now resolved per access, with `default_state_path()` as the resolver the
+  containment check and tests call.
+- **`view_task` resolves a bare task id instead of concatenating it onto the
+  base URL.** The MCP tool computed the resolved id but then passed the *raw*
+  argument to `get_task_detail`, so the documented primary input — a bare
+  numeric id like `"1000099"` — matched no task URL pattern and produced
+  `https://myschool.managebac.cn1000099`. It now resolves through the local
+  snapshot and then a crawl fallback bounded by the previously unused `pages`
+  argument, and surfaces a failed detail fetch as an error rather than nesting
+  it inside a success envelope.
 - **Due dates resolve the timezone offset from the zone's own DST rules.**
   `_school_display_tz` used `time.altzone if time.daylight`, but `time.daylight`
   is nonzero whenever a DST *rule* is defined, not when DST is in effect — so on

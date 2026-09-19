@@ -16,22 +16,29 @@ from ..config import config_dir
 
 log = logging.getLogger(__name__)
 
+def default_state_path() -> Path:
+    """The daemon state file, resolved per call.
+
+    See :func:`mb_cli.cache.default_cache_dir`. Anything that must follow a
+    redirected ``$HOME`` — the submit containment check, tests — calls this
+    rather than reading :data:`DEFAULT_STATE_PATH`.
+    """
+    return config_dir() / "daemon_state.json"
+
 
 class _LazyPath:
     """A module-level path attribute that resolves when read, not when imported.
 
     `config_dir()` re-reads `$HOME` on every call (see its docstring). A plain
-    `DEFAULT_STATE_PATH = config_dir() / "..."` captures the value once, at
+    `DEFAULT_STATE_PATH = default_state_path()` captures the value once, at
     import time, so a process whose environment changes afterwards — or a test
     that redirects `HOME` — writes state to one directory while everything else
     reads from another. Subclassing `Path` cannot defer that, so this proxies
     every attribute access to a freshly resolved value.
     """
 
-    _filename = "daemon_state.json"
-
     def _resolve(self) -> Path:
-        return config_dir() / self._filename
+        return default_state_path()
 
     def __getattr__(self, name: str):
         return getattr(self._resolve(), name)

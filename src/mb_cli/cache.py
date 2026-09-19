@@ -11,7 +11,19 @@ from pathlib import Path
 
 from .config import config_dir
 
-DEFAULT_CACHE_DIR = config_dir() / "cache"
+def default_cache_dir() -> Path:
+    """The response-cache root, resolved per call.
+
+    A module-level constant freezes whatever ``$HOME`` was when this module was
+    first imported, which is the bug :func:`mb_cli.config.config_dir` documents;
+    :data:`DEFAULT_CACHE_DIR` below is a snapshot of this for callers that
+    cannot be handed a live path.  Anything that must follow a redirected home
+    (the submit containment check, tests) calls this instead.
+    """
+    return config_dir() / "cache"
+
+
+DEFAULT_CACHE_DIR = default_cache_dir()
 DEFAULT_TTL = 900  # 15 minutes
 
 
