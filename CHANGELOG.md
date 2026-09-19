@@ -11,6 +11,16 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 ## [Unreleased]
 
 ### Fixed
+- **Ctrl-C no longer prints a traceback.** `KeyboardInterrupt` is a
+  `BaseException`, so the `except Exception` clause that converts unexpected
+  errors into a machine-readable payload never caught it: a Ctrl-C at the
+  `ManageBac password:` prompt unrolled the whole stack onto the terminal for
+  what is a deliberate cancel, not a failure. It now exits `130` (128 + SIGINT)
+  with no traceback, so a shell can tell a cancellation from a break.
+- **A closed pipe is no longer an error.** `tahuti list | head` closes stdout
+  early, after which Python reported the dead pipe a second time at interpreter
+  shutdown as a confusing error beside output that had already succeeded. It now
+  exits `0`.
 - **`school_timezone` now actually works.** It never did. `parse_due_date`
   attached the *host's* zone to every naive due date, so `due_dt.tzinfo` was
   never `None` and the scheduler's school-zone branch could never run — the
@@ -19,7 +29,7 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
   16 hours late, silently. `parse_due_date` takes an optional `school_tz`, so
   the school's reading is applied while the input is still a bare wall-clock
   time; an input carrying its own offset keeps it. The suite is now
-  host-timezone independent — 1425 passing under UTC, Asia/Shanghai,
+  host-timezone independent — the full suite passing under UTC, Asia/Shanghai,
   America/New_York, Australia/Sydney and Europe/Berlin — where before, this
   only passed when the host happened to be UTC+8, which is why CI was red on
   every Python version while it looked fine locally in Beijing.

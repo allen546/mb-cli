@@ -22,6 +22,10 @@ exit code must agree: a non-zero exit never leaves its failure described only
     answer is "there is no daemon", which a supervisor must be able to tell
     apart from "the status call broke" (which is ``1``). Mirrors
     ``systemctl is-active``.
+``130``
+    Interrupted — the user pressed Ctrl-C. Reported rather than dumped as a
+    traceback so a caller can distinguish "someone cancelled this" from "this
+    broke". No handler returns it; only ``main`` does.
 
 Client methods signal failure inconsistently — some raise, some return a bare
 ``False`` (``MNNHubClient.mark_read``), and some return a *truthy*
@@ -100,6 +104,9 @@ EXIT_FAILURE = 1
 # Only `daemon status`: "there is no daemon", as distinct from "the status call
 # itself failed" (EXIT_FAILURE).
 EXIT_NOT_RUNNING = 3
+# Ctrl-C. 128 + SIGINT, so a shell sees the same status it would from any other
+# interrupted process and can tell a cancellation from a failure.
+EXIT_INTERRUPTED = 130
 
 
 # ── Client helpers ──────────────────────────────────────────────────────
@@ -2682,6 +2689,32 @@ def main(argv: list[str] | None = None) -> None:
         # would be a silent 0 — so every handler must return an int. All 22 do;
         # `tests/test_exit_codes.py` covers the dispatch itself.
         raise SystemExit(args.func(args))
+    except KeyboardInterrupt:
+        # A Ctrl-C at the `ManageBac password:` prompt — or during any long
+        # poll — reached the user as a raw traceback, which reads like a crash
+        # and hides the fact that nothing went wrong. Exit the conventional
+        # 130 (128 + SIGINT) instead, so a shell can tell an interrupt from a
+        # failure. Deliberately not folded into the `Exception` clause below:
+        # KeyboardInterrupt is a BaseException, and treating a deliberate
+        # cancel as an internal error would print a JSON error envelope for a
+        # user who simply changed their mind.
+        print(file=sys.stderr)
+        raise SystemExit(EXIT_INTERRUPTED)
+    except BrokenPipeError:
+        # `tahuti list | head` closes stdout early, and Python then reports the
+        # dead pipe a second time at interpreter shutdown as a confusing error
+        # after the real work already succeeded. Point fd 1 at devnull so that
+        # shutdown flush has somewhere to go, then exit 0 — the output the
+        # consumer did ask for was already delivered.
+        #
+        # Rebind fd 1 directly rather than through `sys.stdout`: under a test
+        # harness's capture that stream is not ours to redirect, and dup2'ing
+        # over its descriptor breaks the capture.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+        except OSError:
+            pass
+        raise SystemExit(EXIT_OK)
     except CommandError as exc:
         payload = error(args.command, exc.code, exc.message)
         print_payload(payload, args.output, getattr(args, "format", None))
