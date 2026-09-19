@@ -49,10 +49,12 @@ from .client import ManageBacClient, parse_task_url
 from . import __version__
 from . import keychain
 from .config import (
+    SNAPSHOT_FILENAME,
     clear_creds,
     clear_session,
     config_dir,
     load_state,
+    own_state_refusal,
     resolve_creds_path,
     save_profile,
     save_session,
@@ -247,8 +249,11 @@ def _snapshot_path(state) -> Path:
     The snapshot lives beside the config file, so ``--config`` relocates both.
     This is deliberately *not* :data:`DEFAULT_SNAPSHOT_PATH`, which ignores
     ``--config`` and is only a fallback for callers with no state at all.
+
+    The filename comes from :data:`mb_cli.config.SNAPSHOT_FILENAME` because the
+    submit containment check has to derive the very same path to refuse it.
     """
-    return state.config_path.parent / "snapshot.json"
+    return state.config_path.parent / SNAPSHOT_FILENAME
 
 
 def _set_submission_state(
@@ -1140,9 +1145,6 @@ def _resolve_task_ids(
 
 
 def cmd_submit(args) -> int:
-    state, client, email = _build_client(args, "submit")
-    _authenticate_client(state, client, email)
-
     # `--id` is the alternate spelling of the positional `target`; sibling
     # commands (`view`, `submissions`) accept both, so honour it here too.
     target = args.target or getattr(args, "id", None)
@@ -1158,6 +1160,18 @@ def cmd_submit(args) -> int:
         payload = error("submit", "missing_file", "Provide a file path to upload")
         print_payload(payload, args.output, args.format)
         return 1
+
+    # The MCP tool refuses the same files inside `_require_readable_file`; both
+    # entry points call this one helper so they cannot drift apart.  It runs
+    # before the client is built so a refused path costs no auth round-trip.
+    refusal = own_state_refusal(file_path, field="file")
+    if refusal:
+        payload = error("submit", "state_file_refused", refusal)
+        print_payload(payload, args.output, args.format)
+        return 1
+
+    state, client, email = _build_client(args, "submit")
+    _authenticate_client(state, client, email)
 
     snapshot_path = _snapshot_path(state)
 

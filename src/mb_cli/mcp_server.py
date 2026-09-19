@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .auth import build_client, hub_client
 from .client import parse_task_url
+from .config import own_state_refusal
 from .filters import InvalidViewError, normalize_view
 from .notifications import MNNHubClient, hub_for_domain
 
@@ -115,6 +116,14 @@ def _require_readable_file(value: object, field: str = "file_path") -> str:
         resolved = path.resolve()
     except (OSError, RuntimeError, ValueError) as exc:
         raise InvalidToolInput(f"{field} is not a usable path: {text[:60]!r}") from exc
+
+    # Containment runs on the *resolved* path, so a symlink into tahuti's own
+    # state is refused by its target, and before the existence check below: a
+    # path inside tahuti's own directories is a policy question, not a typo
+    # worth reporting twice.
+    refusal = own_state_refusal(resolved, field=field)
+    if refusal:
+        raise InvalidToolInput(refusal)
 
     if not resolved.exists():
         raise InvalidToolInput(f"{field} does not exist: {text[:120]!r}")
@@ -375,7 +384,8 @@ def submit_file(
 
     Args:
         task_id: Task ID or full URL (e.g. "1000026" or "https://myschool.managebac.cn/student/classes/1000001/core_tasks/1000099")
-        file_path: Local path to the file to upload
+        file_path: Local path to the file to upload (tahuti's own credential
+            and cache files are refused)
         school: School subdomain
         domain: Base domain
         cookie: Session cookie override

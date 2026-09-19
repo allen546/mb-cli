@@ -348,6 +348,110 @@ def warn_on_weak_permissions(stream=None) -> list[str]:
     return messages
 
 
+# ── Own-state containment ──────────────────────────────────────────────
+# `submit` uploads whatever readable regular file it is handed, and the MCP
+# tool wrapping it is driven by a model rather than by someone choosing a path
+# on purpose — so a confused call could ship tahuti's own credential and cache
+# material to a school dropbox that a teacher reads.  The response cache alone
+# holds full grade pages plus the MNN-hub JWT.
+#
+# Scope is deliberately narrow: only paths resolving inside tahuti's *own*
+# config and cache directories, plus its individual state files in case an env
+# var has relocated one outside them.  Files elsewhere on the system
+# (~/.ssh/id_rsa, /etc/passwd) are the operating system's business — they
+# belong to restrictive file permissions, and an attacker who already has sudo
+# has no reason to exfiltrate through tahuti.  Do not "fix" this into a general
+# sandbox: no system-directory rules, no allowlists.
+
+#: The daemon's task snapshot lives beside the *config file*, not in
+#: ``config_dir()``, because ``MB_CRAWLER_CONFIG`` can move the whole set.
+SNAPSHOT_FILENAME = "snapshot.json"
+
+
+def _as_path(value: object) -> Path | None:
+    """Coerce *value* to a :class:`~pathlib.Path`, or ``None`` if it is not path-like.
+
+    Accepts anything implementing ``__fspath__``, which is what a lazily
+    resolved path constant has to expose for the rest of the code to use it —
+    so such a proxy can be handed straight in and still be compared resolved.
+    """
+    if isinstance(value, Path):
+        return value
+    try:
+        return Path(os.fspath(value))
+    except TypeError:
+        return None
+
+
+def _resolved(path: Path | None) -> Path | None:
+    """*path* fully resolved (``~`` and symlinks), or ``None`` if unresolvable."""
+    if path is None:
+        return None
+    try:
+        return path.expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def own_state_locations() -> list[tuple[Path, str]]:
+    """Every resolved location holding tahuti's own state, with a description.
+
+    Most specific first, because the response cache sits *inside* the config
+    directory and naming the cache is the more useful refusal.  Paths are
+    resolved per call so a redirected ``$HOME`` or a monkeypatched config dir
+    is honoured — see :func:`config_dir`.
+    """
+    # Imported here, not at module scope: both modules import this one.
+    from .cache import default_cache_dir
+    from .daemon.state import default_state_path
+
+    config_file = resolve_config_path()
+    candidates = [
+        (resolve_creds_path(), "saved-password file"),
+        (resolve_session_path(), "session file"),
+        (config_file, "config file"),
+        (default_state_path(), "daemon state file"),
+        (config_file.parent / SNAPSHOT_FILENAME, "task snapshot"),
+        (default_cache_dir(), "response-cache directory"),
+        (config_dir(), "config directory"),
+    ]
+
+    locations: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for path, description in candidates:
+        resolved = _resolved(_as_path(path))
+        if resolved is None or resolved in seen:
+            continue
+        seen.add(resolved)
+        locations.append((resolved, description))
+    locations.sort(key=lambda item: len(item[0].parts), reverse=True)
+    return locations
+
+
+def own_state_refusal(value: object, field: str = "file_path") -> str | None:
+    """Refusal sentence when *value* is one of tahuti's own state files, else ``None``.
+
+    ``None`` says only "not tahuti's own state" — it says nothing about whether
+    the path is otherwise usable, and a path that will not resolve at all is
+    left to the caller's own checks rather than guessed at here.  *value* is
+    resolved before comparing, so a symlink pointing into tahuti's state is
+    refused by its target.
+    """
+    resolved = _resolved(_as_path(value))
+    if resolved is None:
+        return None
+    for location, description in own_state_locations():
+        if resolved != location and location not in resolved.parents:
+            continue
+        return (
+            f"{field} resolves to {resolved}, which is tahuti's own "
+            f"{description} — tahuti's credentials, session cookie and cached "
+            "ManageBac pages live there and are never uploaded, so pass a file "
+            "from somewhere else"
+        )
+    return None
+
+
 #: The pre-lazy names, kept importable so out-of-tree callers do not break.
 #: Each resolves on attribute access, so unlike the module-level constants they
 #: replaced they cannot go stale when ``$HOME`` changes after import.

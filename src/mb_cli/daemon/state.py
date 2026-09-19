@@ -16,7 +16,17 @@ from ..config import config_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = config_dir() / "daemon_state.json"
+def default_state_path() -> Path:
+    """The daemon state file, resolved per call.
+
+    See :func:`mb_cli.cache.default_cache_dir`: :data:`DEFAULT_STATE_PATH` is a
+    snapshot of this taken at import time, so anything that must follow a
+    redirected ``$HOME`` (the submit containment check, tests) calls this.
+    """
+    return config_dir() / "daemon_state.json"
+
+
+DEFAULT_STATE_PATH = default_state_path()
 
 
 def _ensure_parent(path: Path) -> None:

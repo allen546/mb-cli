@@ -10,7 +10,17 @@ release to carry one.
 
 ## [Unreleased]
 
-Nothing yet.
+### Security
+- **`submit` refuses tahuti's own state files.** Both the `submit_file` MCP tool
+  and `tahuti submit` now reject any path resolving inside tahuti's own config
+  or response-cache directory — `creds.json`, `session.json`, `config.json`,
+  `daemon_state.json`, the task `snapshot.json`, and every cached response —
+  following symlinks, so a link pointing at one of them is refused by its
+  target. Those files hold the ManageBac password, the session cookie, cached
+  grade pages and the MNN-hub JWT, and the upload target is a dropbox a teacher
+  reads, so a confused tool call had a direct route to exfiltrating them. Scope
+  is deliberately narrow: only tahuti's own directories are checked, and files
+  elsewhere on the system are left to their file permissions.
 
 ## [0.4.0] - 2026-09-19
 
