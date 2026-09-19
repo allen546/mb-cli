@@ -23,6 +23,7 @@ from tahuti.richtext import (
 )
 from bs4 import BeautifulSoup
 
+from tahuti import formatters
 from tahuti.formatters import render_pretty
 
 RED = "rgb(208, 0, 1)"
@@ -268,9 +269,23 @@ class TestPrettyRenderingKeepsJsonClean:
             },
         }
 
-    def test_pretty_output_colours_the_red_run(self):
+    def test_pretty_output_colours_the_red_run(self, monkeypatch):
+        # `render_pretty` asks the *real* terminal what it supports, so the
+        # depth has to be pinned here.  Without this the test passes on a
+        # developer's truecolour terminal and fails in CI, where neither
+        # $COLORTERM nor a *256color* $TERM is set — the same trap the host
+        # timezone tests were parametrised over.
+        monkeypatch.setattr(formatters, "color_depth", lambda: "truecolor")
         pretty = render_pretty(self._payload())
         assert "\x1b[38;2;208;0;1mHand in Monday." in pretty
+
+    def test_a_terminal_without_colour_gets_plain_text(self, monkeypatch):
+        """The CI environment, and any dumb terminal, must still read cleanly."""
+        monkeypatch.setattr(formatters, "color_depth", lambda: "none")
+        pretty = render_pretty(self._payload())
+        assert "\x1b" not in pretty
+        assert "Hand in Monday." in pretty
+        assert "Read the newsletter." in pretty
 
     def test_json_output_carries_no_escapes(self):
         rendered = json.dumps(self._payload(), indent=2, ensure_ascii=False)

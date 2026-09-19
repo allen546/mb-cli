@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Dates for `0.3.0` and earlier are derived from git history (those releases were
 never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
-## [Unreleased]
+## [0.4.3] - 2026-09-19
 
 ### Fixed
 - **`tahuti view` no longer shows the class's subject line as the task body.**
