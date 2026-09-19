@@ -10,7 +10,42 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
 ## [Unreleased]
 
-Nothing yet.
+Findings from the 2026-09-19 full-codebase review.
+
+### Security
+- **The scraped MNN hub endpoint is validated on every construction site.**
+  `get_notification_token()` returns `data-mnn-hub-endpoint` verbatim from
+  scraped HTML, and the token is sent as `Authorization: Bearer <jwt>`. Four
+  user-facing sites passed that value straight to the hub client — the
+  `notifications` command, all three MCP notification tools, and the daemon's
+  `MNNHubProvider._ensure_hub` — so a poisoned page, a compromised edge, or a
+  TLS-stripping MITM could choose the host that received the JWT, including a
+  cleartext `http://` one, and `mark_all_read` would additionally write
+  notification state there. All four now go through
+  `_validated_hub_endpoint`, which accepts the value only when it is https,
+  carries no userinfo or port, and names a known Faria hub.
+
+### Fixed
+- **The daemon state path no longer freezes `$HOME` at import.**
+  `DEFAULT_STATE_PATH` was `config_dir() / "daemon_state.json"` evaluated when
+  the module was first imported, so a process whose environment changed wrote
+  state to the old directory while every other path followed the new one. It is
+  now resolved per access.
+- **Due dates resolve the timezone offset from the zone's own DST rules.**
+  `_school_display_tz` used `time.altzone if time.daylight`, but `time.daylight`
+  is nonzero whenever a DST *rule* is defined, not when DST is in effect — so on
+  Europe/Berlin a January due date came back UTC+2 instead of UTC+1, misfiling
+  winter tasks in `--view overdue` and firing daemon reminders early for the
+  whole standard-time season. The offset is now computed for the date being
+  parsed, and an explicit `TZ=UTC` is honoured.
+- **A negative `--retry` no longer raises
+  `TypeError: exceptions must derive from BaseException`.**
+  `range(retry + 1)` never ran the loop body, so the retry wrapper re-raised a
+  `None` exception object.
+- **A link-less calendar event no longer aborts `tahuti calendar`.**
+  FullCalendar serializes a missing link as `"url": null`, and `dict.get("url",
+  "")` then returned `None`, so `.startswith("/")` raised `AttributeError` for
+  the entire listing.
 
 ## [0.4.0] - 2026-09-19
 
