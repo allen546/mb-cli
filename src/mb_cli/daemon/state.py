@@ -16,7 +16,48 @@ from ..config import config_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = config_dir() / "daemon_state.json"
+
+class _LazyPath:
+    """A module-level path attribute that resolves when read, not when imported.
+
+    `config_dir()` re-reads `$HOME` on every call (see its docstring). A plain
+    `DEFAULT_STATE_PATH = config_dir() / "..."` captures the value once, at
+    import time, so a process whose environment changes afterwards — or a test
+    that redirects `HOME` — writes state to one directory while everything else
+    reads from another. Subclassing `Path` cannot defer that, so this proxies
+    every attribute access to a freshly resolved value.
+    """
+
+    _filename = "daemon_state.json"
+
+    def _resolve(self) -> Path:
+        return config_dir() / self._filename
+
+    def __getattr__(self, name: str):
+        return getattr(self._resolve(), name)
+
+    def __fspath__(self) -> str:
+        return str(self._resolve())
+
+    def __truediv__(self, other):
+        return self._resolve() / other
+
+    def __str__(self) -> str:
+        return str(self._resolve())
+
+    def __repr__(self) -> str:
+        return repr(self._resolve())
+
+    def __eq__(self, other) -> bool:
+        return self._resolve() == other
+
+    def __hash__(self) -> int:
+        return hash(self._resolve())
+
+
+# Resolved on every read; assigning to this name in a test still works, since
+# `monkeypatch.setattr` replaces the module attribute outright.
+DEFAULT_STATE_PATH = _LazyPath()
 
 
 def _ensure_parent(path: Path) -> None:

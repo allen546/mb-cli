@@ -5,8 +5,8 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Release dates below are the date of the `vX.Y.Z` git tag; `0.4.0` is the first
-release to carry one.
+Dates for `0.3.0` and earlier are derived from git history (those releases were
+never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
 ## [Unreleased]
 
@@ -14,7 +14,7 @@ Nothing yet.
 
 ## [0.4.0] - 2026-09-19
 
-Contains a **breaking webhook signature change** — see `### Changed` below. Any
+Contains a **breaking webhook signature change** — see *Changed* below. Any
 deployed receiver rejects every payload until it adds `X-MB-Timestamp` to its
 signed material.
 
@@ -96,14 +96,10 @@ signed material.
   `verify_signature` now fails closed on a missing `X-MB-Timestamp` and checks
   the digest before freshness, so a restamped payload reports
   `signature_mismatch` rather than merely `stale_timestamp`.
-
-### Added
 - `CHANGELOG.md`, `SECURITY.md`, and GitHub Actions CI (`.github/workflows/ci.yml`).
 - `[dependency-groups]` `dev` group in `pyproject.toml` declaring the test
   dependencies (`pytest`, `requests-mock`, `mcp`) that the suite always needed
   but that were never declared, so a plain `uv sync` could not run the tests.
-
-### Fixed
 - **Piped output is now the documented JSON.** `resolve_format` returned `pretty`
   for any unset `--format`, with no TTY check, so `mb list | jq .` failed with a
   parse error and every JSON consumer had to remember `--format json`. It now
@@ -153,8 +149,6 @@ signed material.
   fresh resolve installed mcp 2.x, which removed `mcp.server.fastmcp` — every
   `mb-mcp` invocation died with `ModuleNotFoundError` on import, even when the
   extra was installed correctly.
-
-### Changed
 - README Installation now documents the `mcp` extra
   (`pip install "mb-cli[mcp]"`) — the documented `mb-mcp` command imports `mcp`
   unguarded and failed with `ModuleNotFoundError` on a plain install.
