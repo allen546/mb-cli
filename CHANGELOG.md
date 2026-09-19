@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Dates for `0.3.0` and earlier are derived from git history (those releases were
 never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
-## [Unreleased]
+## [0.4.2] - 2026-09-19
+
+**Breaking:** the Python import package is `tahuti`, not `mb_cli`. `pip install
+tahuti` followed by `import tahuti` now works; `import mb_cli` and
+`python -m mb_cli` no longer do. The CLI command names (`tahuti`, `mb`) and the
+`MB_CRAWLER_*` environment variables are unchanged.
 
 ### Fixed
 - **Ctrl-C no longer prints a traceback.** `KeyboardInterrupt` is a
