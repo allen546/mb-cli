@@ -454,6 +454,49 @@ def _card_status_text(card, labels: Any = None) -> str | None:
     return status
 
 
+# Wording ManageBac puts on a control that hands work in.
+_SUBMIT_CONTROL_KEYWORDS = ("submit coursework", "upload submission", "submit")
+
+# Headings, whose anchors navigate to the task rather than acting on it.
+_HEADING_NAMES = ["h1", "h2", "h3", "h4", "h5", "h6"]
+
+
+def _is_submit_control(el) -> bool:
+    """Return True if *el* is a control that hands work in.
+
+    This replaces a scan for "any ``<a>`` or ``<button>`` whose text contains
+    the word *submit*", which over-matched in three ways, each of which made a
+    task look actionable when it was not:
+
+    * Nothing was excluded, so a card's own **title link** counted.  Its text is
+      the task title, so a task really named "Submitted reading log" was offered
+      an upload it does not have — and since the class path reaches PENDING
+      through ``has_submit_btn`` *alone*, that alone moved it from ``past`` to
+      ``overdue``.  Heading anchors navigate to a task; they never act on one.
+    * It read the element's whole subtree, so a wrapping anchor inherited the
+      wording of everything nested inside it.  A control labels *itself*, so an
+      element wrapping a heading or another control is a container, not a
+      control, and its wording belongs to what it wraps.
+    * On the detail page it scanned the entire document, so site chrome and nav
+      could supply the match.  That call site passes ``main_content`` instead.
+
+    The separate ``href`` test for a ``/dropbox`` link is unaffected and still
+    covers the whole document.
+    """
+    if el.name not in ("a", "button"):
+        return False
+    if el.find_parent(_HEADING_NAMES):
+        return False
+    # A wrapper around other content is not itself a control.
+    if el.find(_HEADING_NAMES + ["a", "button"]):
+        return False
+    # A control whose label lives in a nested element (<a><span>Submit</span></a>)
+    # still counts; its whole subtree *is* the label at this point.
+    own = "".join(el.find_all(string=True, recursive=False)).strip().lower()
+    text = own or el.get_text(" ", strip=True).lower()
+    return any(kw in text for kw in _SUBMIT_CONTROL_KEYWORDS)
+
+
 def _tile_score_variant(score_div) -> str | None:
     """Return a tasks-list tile's ``f-task-score--<variant>`` modifier, if any.
 
@@ -2141,14 +2184,7 @@ class ManageBacClient:
             # Parse submit button
             dropbox_link = card.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
             has_submit_btn = bool(
-                dropbox_link
-                or card.find(
-                    lambda el: el.name in ("a", "button")
-                    and any(
-                        kw in el.get_text().lower()
-                        for kw in ("submit coursework", "upload submission", "submit")
-                    )
-                )
+                dropbox_link or card.find(lambda el: _is_submit_control(el))
             )
 
             # Parse due date
@@ -2400,17 +2436,11 @@ class ManageBacClient:
                 if raw_pt and not any(k in raw_pt.lower() for k in ["submitted", "pending", "task", "due", "not"]):
                     detail["grade_score"] = raw_pt
 
-            # Parse submit button
+            # Parse submit button.  Scoped to the page body: the document-wide
+            # scan this replaces let site chrome and nav supply the match.
             dropbox_link = soup.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
             has_submit_btn = bool(
-                dropbox_link
-                or soup.find(
-                    lambda el: el.name in ("a", "button")
-                    and any(
-                        kw in el.get_text().lower()
-                        for kw in ("upload submission", "submit coursework", "submit")
-                    )
-                )
+                dropbox_link or main_content.find(lambda el: _is_submit_control(el))
             )
             detail["has_submit_button"] = has_submit_btn
 

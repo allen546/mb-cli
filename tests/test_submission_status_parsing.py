@@ -58,7 +58,7 @@ import requests_mock as rm
 from bs4 import BeautifulSoup
 
 from mb_cli.cache import ResponseCache
-from mb_cli.client import ManageBacClient
+from mb_cli.client import ManageBacClient, _is_submit_control
 from mb_cli.task_status import (
     SUBMISSION_NOT_SUBMITTED,
     SUBMISSION_SUBMITTED,
@@ -238,6 +238,113 @@ class TestWhyTheClassifierIsExact:
     def test_a_state_free_status_is_not_invented(self):
         for raw in (None, "", "graded", "Not Assessed Yet", "Formative", "Pending", "Waiting"):
             assert get_submission_status({"status": raw}) == SubmissionStatus.NONE, raw
+
+
+# ── The submit-control scan ──────────────────────────────────────────────
+
+
+class TestSubmitControlDetection:
+    """``has_submit_btn`` is the class path's only route to PENDING, so a false
+    positive here moves a task into ``overdue``.
+
+    The scan this replaced accepted *any* ``<a>`` or ``<button>`` whose subtree
+    text contained "submit".  Nothing was excluded, so a card's own title link
+    qualified: a task named "Submitted reading log" was offered an upload it does
+    not have and landed in ``overdue`` instead of ``past``.  Pinned below.
+    """
+
+    def _soup(self, markup: str):
+        return BeautifulSoup(markup, "html.parser")
+
+    def test_a_heading_link_is_never_a_control(self):
+        """The title link's text is the task title, not an action."""
+        soup = self._soup('<h4 class="title"><a href="/t/1">Submitted reading log</a></h4>')
+        assert _is_submit_control(soup.find("a")) is False
+
+    def test_a_title_containing_submit_does_not_make_a_card_actionable(self, client):
+        """The reported defect, end to end through the real parser."""
+        tasks = _parse_cards(
+            client,
+            [_card("1000201", "Submitted reading log", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=False)],
+        )
+        task = tasks[0]
+        assert task["has_submit_button"] is False
+        assert get_submission_status(task) == SubmissionStatus.NONE
+        assert get_task_display_status(task) == "Complete"
+
+    @pytest.mark.parametrize(
+        "title",
+        ["Submitted reading log", "Submit your reflection", "Resubmission practice"],
+    )
+    def test_every_submit_flavoured_title_is_inert(self, client, title):
+        tasks = _parse_cards(
+            client, [_card("1000202", title, NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=False)]
+        )
+        assert tasks[0]["has_submit_button"] is False, title
+
+    def test_a_real_dropbox_link_is_still_detected(self, client):
+        tasks = _parse_cards(
+            client, [_card("1000203", "Essay", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=True)]
+        )
+        assert tasks[0]["has_submit_button"] is True
+
+    def test_a_submit_button_outside_a_heading_is_detected(self):
+        soup = self._soup('<button type="submit">Submit Coursework</button>')
+        assert _is_submit_control(soup.find("button")) is True
+
+    def test_an_anchor_with_a_nested_label_is_detected(self):
+        """A real control whose label lives in a child still counts."""
+        soup = self._soup('<a href="/dropbox"><span class="btn-label">Submit Coursework</span></a>')
+        assert _is_submit_control(soup.find("a")) is True
+
+    def test_upload_submission_wording_is_detected(self):
+        soup = self._soup('<a href="/x">Upload submission</a>')
+        assert _is_submit_control(soup.find("a")) is True
+
+    def test_a_wrapper_does_not_inherit_a_nested_control_wording(self):
+        """Own text nodes decide; a container around unrelated text is inert.
+
+        The old scan read the whole subtree, so an anchor wrapping a title *and*
+        a nested submit button matched on the button's wording.
+        """
+        soup = self._soup(
+            '<a href="/t/9"><h4 class="title">Essay</h4><button>Submit Coursework</button></a>'
+        )
+        anchor = soup.find("a")
+        assert _is_submit_control(anchor) is False
+        assert _is_submit_control(soup.find("button")) is True
+
+    def test_an_unrelated_control_is_inert(self):
+        for markup in ('<a href="/x">View details</a>', "<button>Cancel</button>", "<a>Download</a>"):
+            soup = self._soup(markup)
+            assert _is_submit_control(soup.find(["a", "button"])) is False, markup
+
+    def test_a_non_control_element_is_inert(self):
+        soup = self._soup('<div class="x">Submit Coursework</div>')
+        assert _is_submit_control(soup.find("div")) is False
+
+    def test_the_detail_page_scan_ignores_site_chrome(self, client):
+        """The document-wide scan let nav supply the match; it is now scoped.
+
+        A nav link reading "Submit a request" sits outside ``<main>`` and must
+        not make an unrelated task look actionable.
+        """
+        url = f"{client.base}/student/classes/{CLASS_ID}/core_tasks/1000204"
+        page = (
+            "<html><body>"
+            '<nav><a href="/support">Submit a request</a></nav>'
+            f'<main><div class="fusion-card-item">'
+            f'<h4 class="title"><a href="/student/classes/{CLASS_ID}/core_tasks/1000204">Essay</a></h4>'
+            + NOT_SUBMITTED_CELL
+            + "</div></main>"
+            "</body></html>"
+        )
+        with rm.Mocker() as m:
+            m.get(url, text=page)
+            detail = client.get_task_detail(f"/student/classes/{CLASS_ID}/core_tasks/1000204")
+
+        assert detail is not None
+        assert detail["has_submit_button"] is False
 
 
 # ── The class path reads only the state-class span and the labels ────────
