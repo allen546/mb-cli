@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, tzinfo
 import logging
 import re
 from collections.abc import Callable
+from zoneinfo import ZoneInfo
 
 from ..client import parse_due_date
 from ..task_status import is_task_submitted_or_graded
@@ -20,6 +21,37 @@ from .state import DaemonStateManager
 log = logging.getLogger(__name__)
 
 
+def resolve_school_timezone(value: object) -> tzinfo | None:
+    """Resolve a configured school timezone, or None when unset/unusable.
+
+    ManageBac renders due dates in the *school's* wall clock
+    ("September 15, 2026 at 23:59") and :func:`parse_due_date` hands them back as
+    naive datetimes, so somebody has to say which clock that was. Without this
+    the scheduler silently assumes it was the daemon host's — on a Pi in UTC
+    serving a UTC+8 school, a 23:59 deadline reads as 23:59 UTC and every
+    reminder fires about 16 hours late.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, tzinfo):
+        return value
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except Exception as exc:  # ZoneInfoNotFoundError / ValueError / bad key
+        log.warning(
+            "Ignoring unusable school timezone %r (%s) — assuming the daemon's "
+            "local clock for naive due dates",
+            value,
+            exc,
+        )
+        return None
+
+
 class DDLScheduler:
     """Evaluates task deadlines against countdown reminder thresholds."""
 
@@ -29,10 +61,12 @@ class DDLScheduler:
         reminders: list[ReminderThreshold] | None = None,
         submission_checker: Callable[[str, str], bool] | None = None,
         completion_checker: Callable[[str, str], bool] | None = None,
+        school_timezone: tzinfo | str | None = None,
     ):
         self.state_manager = state_manager
         self.submission_checker = completion_checker or submission_checker
         self.completion_checker = self.submission_checker
+        self.school_timezone = resolve_school_timezone(school_timezone)
         self.reminders = sorted(
             reminders or list(DEFAULT_REMINDER_THRESHOLDS),
             key=lambda r: r.threshold_minutes,
@@ -57,9 +91,17 @@ class DDLScheduler:
 
             # Ensure due_dt and task_now have matching tzinfo without mutating current_time
             task_now = current_time
-            if due_dt.tzinfo is None and task_now.tzinfo is not None:
-                due_dt = due_dt.replace(tzinfo=task_now.tzinfo)
-            elif due_dt.tzinfo is not None and task_now.tzinfo is None:
+            if due_dt.tzinfo is None:
+                # A naive due date is school-local wall clock. Attach the
+                # configured school zone when there is one; otherwise fall back
+                # to whatever zone `task_now` carries, which is the historical
+                # (and wrong-for-remote-schools) behaviour.
+                assumed = self.school_timezone or task_now.tzinfo
+                if assumed is not None:
+                    due_dt = due_dt.replace(tzinfo=assumed)
+                    if task_now.tzinfo is None:
+                        task_now = task_now.replace(tzinfo=assumed)
+            elif task_now.tzinfo is None:
                 task_now = task_now.replace(tzinfo=due_dt.tzinfo)
 
             minutes_left = (due_dt - task_now).total_seconds() / 60.0
