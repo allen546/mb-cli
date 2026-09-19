@@ -179,8 +179,21 @@ def test_replayed_request_with_rewritten_timestamp_is_rejected():
 
     # The replay, restamped to *now* so it is inside the freshness window: this
     # is the case the old construction could not catch.
-    for offset in (0.0, -120.0, 120.0):
-        forged = f"{time.time() + offset:.3f}"
+    #
+    # The forged timestamp must actually DIFFER from the captured one, or the
+    # test degenerates into "the genuine request still verifies" — which it
+    # should. Offsets are relative to the captured timestamp rather than to
+    # `time.time()` so they cannot collide with it: an offset of exactly 0.0
+    # against a live `time.time()` is the same millisecond string most of the
+    # time (dispatch and forgery are microseconds apart), and the assertion
+    # then failed on a fast CI runner for a correct signature.
+    captured_ts = float(req.headers["X-MB-Timestamp"])
+    for offset in (-120.0, -1.0, 1.0, 120.0):
+        forged = f"{captured_ts + offset:.3f}"
+        assert forged != req.headers["X-MB-Timestamp"], (
+            "the test must forge a *different* timestamp, not re-verify the "
+            "genuine one"
+        )
         ok, reason = receiver.verify_signature(FAKE_SECRET, captured_signature, body, forged)
         assert ok is False, "a fresh restamp of the captured payload was accepted"
         assert reason == "signature_mismatch", reason
