@@ -25,6 +25,7 @@ import pytest
 
 from tahuti.__main__ import (
     EXIT_FAILURE,
+    EXIT_INTERRUPTED,
     EXIT_NOT_RUNNING,
     EXIT_OK,
     cmd_download,
@@ -394,6 +395,53 @@ def test_command_error_maps_to_failure(isolated_config):
     assert code == EXIT_FAILURE
 
 
+
+# ── Ctrl-C and a closed pipe ───────────────────────────────────────────────
+
+
+def _run_expecting(argv, exc):
+    """Run ``main`` with *exc* raised from the handler; return the exit code."""
+    def _boom(_args):
+        raise exc
+
+    real_parser = __import__("tahuti.__main__", fromlist=["build_parser"]).build_parser
+
+    class _Parser:
+        def parse_args(self, argv=None):
+            args = real_parser().parse_args(argv)
+            args.func = _boom
+            return args
+
+    with (
+        patch("tahuti.__main__.build_parser", _Parser),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main(argv)
+    return exc_info.value.code
+
+
+def test_ctrl_c_exits_130_without_a_traceback(isolated_config, capsys):
+    """A Ctrl-C at the password prompt used to reach the user as a traceback.
+
+    `KeyboardInterrupt` is a `BaseException`, so the `except Exception` clause
+    that turns unexpected errors into a payload never caught it — the whole
+    stack unrolled onto the terminal for a user who had simply changed their
+    mind.
+    """
+    code = _run_expecting(["list"], KeyboardInterrupt())
+
+    assert code == EXIT_INTERRUPTED
+    assert "Traceback" not in capsys.readouterr().err
+    assert "internal_error" not in capsys.readouterr().err
+
+
+def test_closed_pipe_is_not_an_error(isolated_config):
+    """`tahuti list | head` closes stdout early; that is not a failure."""
+    assert _run_expecting(["list"], BrokenPipeError(32, "Broken pipe")) == EXIT_OK
+
+
 def test_exit_code_constants_are_the_documented_contract():
     """Pin the numbers the docstring promises, so a rename cannot drift."""
-    assert (EXIT_OK, EXIT_FAILURE, EXIT_NOT_RUNNING) == (0, 1, 3)
+    assert (EXIT_OK, EXIT_FAILURE, EXIT_NOT_RUNNING, EXIT_INTERRUPTED) == (
+        0, 1, 3, 130,
+    )
