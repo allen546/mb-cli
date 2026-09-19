@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "tahuti"
 version = "0.4.0"
-description = "ManageBac toolkit: typed Python SDK, CLI, MCP server & event engine"
+description = "ManageBac toolkit for students: typed Python SDK, CLI, MCP server & event engine"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
