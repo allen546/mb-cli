@@ -68,10 +68,10 @@ class TestSessionEmail:
         cache directory it clears is the one build_client populated.
         """
         # Isolate the state dirs: without this build_client falls through to
-        # `_load_creds()`, which resolves to the developer's real creds.json.
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(tmp_path / "creds.json"))
+        # `_load_creds()`, which resolves to the developer's real creds file.
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(tmp_path / "creds.json"))
 
         profile_email = "profile@example.com"
         state = _state(profile_email=profile_email, session_email_="session@example.com")
@@ -81,11 +81,16 @@ class TestSessionEmail:
             patch("mb_cli.auth._store_password") as store_password,
         ):
             client_cls.return_value.login.return_value = True
+            client_cls.return_value.session.cookies.get.return_value = "fresh_cookie"
+            client_cls.return_value.school = "myschool"
+            client_cls.return_value.domain = "managebac.com"
+            client_cls.return_value.base = "https://myschool.managebac.com"
             _, _, email = build_client(
-                school="myschool", email=profile_email, password="pw", remember=False
+                school="myschool", email=profile_email, password="pw"
             )
 
         assert email == profile_email
+        # No `--keep-credentials`: the password is not the default thing to keep.
         assert store_password.assert_not_called() is None
         import hashlib
 
@@ -225,8 +230,8 @@ def test_load_creds_missing_keys_returns_partial():
 
 class TestBuildClient:
     def test_missing_school_raises_error(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
         with pytest.raises(CommandError) as exc_info:
             build_client()
         assert exc_info.value.code == "missing_credentials"
@@ -238,8 +243,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         with patch("mb_cli.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
@@ -259,8 +264,8 @@ class TestBuildClient:
             )
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         with patch("mb_cli.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
@@ -276,8 +281,8 @@ class TestBuildClient:
             )
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(
             school="myschool",
@@ -293,6 +298,10 @@ class TestBuildClient:
     def test_password_auth(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = True
+        mock_instance.session.cookies.get.return_value = "fresh_cookie"
+        mock_instance.school = "myschool"
+        mock_instance.domain = "managebac.com"
+        mock_instance.base = "https://myschool.managebac.com"
 
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
@@ -300,8 +309,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(
             school="myschool",
@@ -317,6 +326,10 @@ class TestBuildClient:
     def test_cache_directory_namespacing(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = True
+        mock_instance.session.cookies.get.return_value = "fresh_cookie"
+        mock_instance.school = "myschool"
+        mock_instance.domain = "managebac.com"
+        mock_instance.base = "https://myschool.managebac.com"
 
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
@@ -324,8 +337,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         with patch("mb_cli.auth.ResponseCache") as MockCache:
             build_client(
@@ -349,8 +362,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         with pytest.raises(CommandError) as exc_info:
             build_client(
@@ -378,8 +391,8 @@ class TestBuildClient:
                 }
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client()
         assert client.session.cookies.get("_managebac_session") == "saved_cookie"
@@ -397,8 +410,8 @@ class TestBuildClient:
                 {"profiles": {"default": {"cookie": "old_cookie", "school": "myschool"}}}
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         with patch("mb_cli.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
@@ -414,8 +427,8 @@ class TestBuildClient:
             )
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(cookie="c")
         assert client.domain == "managebac.cn"
@@ -427,8 +440,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(cookie="c", refresh=True)
         assert client.cache.enabled is False
@@ -446,8 +459,8 @@ class TestBuildClient:
             )
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(cookie="c")
         assert client.cache.ttl == 100
@@ -459,8 +472,8 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(cookie="c", verify=False)
         assert client.session.verify is False
@@ -472,17 +485,20 @@ class TestBuildClient:
             json.dumps({"profiles": {"default": {"school": "myschool"}}})
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state, client, email = build_client(cookie="c", retry=5)
         assert client.retry == 5
 
     @patch("mb_cli.auth.save_session")
+    @patch("mb_cli.auth.save_profile")
     @patch("mb_cli.auth.ManageBacClient")
     @patch("mb_cli.auth.load_creds")
     @patch("mb_cli.auth.load_state")
-    def test_relogin_on_expired_cookie(self, mock_load_state, mock_load_creds, MockClient, mock_save_session):
+    def test_relogin_on_expired_cookie(
+        self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
+    ):
         """When saved cookie fails health check, re-login with creds from mb_config.json."""
         mock_state = MagicMock()
         mock_state.profile.school = "myschool"
@@ -507,8 +523,10 @@ class TestBuildClient:
         state, client, email = build_client(reauth=False)
 
         from pathlib import Path
+        # `creds_paths()` hands back Paths; the default profile's file is still
+        # the historical `creds.json` under the config directory.
         mock_load_creds.assert_called_once_with(
-            str(Path.home() / ".config" / "tahuti" / "creds.json")
+            Path.home() / ".config" / "tahuti" / "creds.json"
         )
         mock_client.login.assert_called_once_with(
             "allen@example.com", "pass123", remember=True
@@ -516,10 +534,13 @@ class TestBuildClient:
         mock_save_session.assert_called_once()
 
     @patch("mb_cli.auth.save_session")
+    @patch("mb_cli.auth.save_profile")
     @patch("mb_cli.auth.ManageBacClient")
     @patch("mb_cli.auth.load_creds")
     @patch("mb_cli.auth.load_state")
-    def test_relogin_on_401(self, mock_load_state, mock_load_creds, MockClient, mock_save_session):
+    def test_relogin_on_401(
+        self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
+    ):
         """When health check returns 401, re-login with creds."""
         mock_state = MagicMock()
         mock_state.profile.school = "myschool"
@@ -546,10 +567,13 @@ class TestBuildClient:
         mock_save_session.assert_called_once()
 
     @patch("mb_cli.auth.save_session")
+    @patch("mb_cli.auth.save_profile")
     @patch("mb_cli.auth.ManageBacClient")
     @patch("mb_cli.auth.load_creds")
     @patch("mb_cli.auth.load_state")
-    def test_relogin_saves_session(self, mock_load_state, mock_load_creds, MockClient, mock_save_session):
+    def test_relogin_saves_session(
+        self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
+    ):
         """After successful re-login, new cookie is persisted to session file."""
         mock_state = MagicMock()
         mock_state.profile.school = "myschool"

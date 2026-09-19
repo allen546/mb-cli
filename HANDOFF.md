@@ -47,7 +47,7 @@ This document is for whoever continues the work — agent or human. Read
 | Command aliases | `mb`, `mb-mcp` | Same entry points; kept so existing habits don't break |
 | Python import path | `mb_cli` (**unchanged**) | Renaming it would break callers for zero benefit. Deliberate. |
 | State directory | `~/.config/tahuti/` | Renamed from `mb-crawler`. No legacy fallback — there are no users yet. |
-| Env vars | `MB_CRAWLER_*` (**unchanged**) | Renaming would break working setups; not part of command identity |
+| Env vars | `MANAGEBAC_*` | Renamed from `MB_CRAWLER_*` to match the project; the old names remain as deprecated fallbacks (new wins), so nothing breaks. Not part of command identity, which is why it is safe to rename here |
 | Service labels | `com.tahuti.daemon`, `tahuti-daemon.service` | Renamed with the project |
 | License | MIT, © 2026 Allen Sun | Consistent across `LICENSE`, `pyproject.toml`, wheel metadata |
 
@@ -94,40 +94,48 @@ An agent must **never** be given the ManageBac password, and must never be the
 one to type it. Enter it yourself, by hand, in a terminal you control. Three
 options, best first:
 
-**1. Keychain (recommended).** Login once yourself; afterwards `tahuti` and the
-daemon both read the OS keychain, so nothing is on disk and no env var exists
-for a process table to leak:
+**1. Keychain (recommended).** Login once yourself with `--keep-credentials
+--keychain`; afterwards `tahuti` and the daemon both read the OS keychain, so
+nothing is on disk and no env var exists for a process table to leak:
 
 ```bash
 cd /mnt/pi-data/tahuti
-uv run tahuti login --keychain     # you type the password at the prompt
+uv run tahuti login --keep-credentials --keychain   # you type the password
 ```
+
+`--keep-credentials` is what stores a password at all; `--keychain` is only where
+it goes. Without the first flag a bare `tahuti login` saves the session cookie
+and no password, which is the safer default but means typing the password again
+once the cookie expires.
 
 On this host that is the Linux Secret Service via `secret-tool`. It needs a
 running secret service — on a headless Pi, `gnome-keyring-daemon --unlock` may
 have to be started in your session first. If it is unavailable, `login`
-**falls back to `creds.json` at 0600 and warns** rather than silently losing the
-credential; that fallback is intentional.
+**falls back to the cleartext creds file at 0600 and warns** rather than silently
+losing the credential; that fallback is intentional.
 
 **2. Environment variable, entered by you, in the same shell invocation.** Fine
 for one command, but a leaked env var is directly usable as a credential, and a
 process's environment is readable by its own user:
 
 ```bash
-read -rs MB_CRAWLER_PASSWORD && export MB_CRAWLER_PASSWORD
+read -rs MANAGEBAC_PASSWORD && export MANAGEBAC_PASSWORD
 # paste, press Enter, then:
 uv run tahuti list
 ```
 Note `read -rs` keeps the secret out of your shell history — unlike
 `tahuti login --password hunter2`, which lands in `~/.zsh_history`.
 
-**3. Nothing at all.** `tahuti login --temp` writes nothing to disk
-(`remember_me=0`), skips saving the session cookie, and disables the response
-cache. Best when you only need a single session and care most about leaving no
-trace.
+**3. Nothing at all.** Plain `tahuti login` saves the session cookie and no
+password, and `--no-remember-me` additionally leaves the cookie's lifetime to
+ManageBac's default instead of asking for a persistent one. The only cost is one
+password when that cookie expires. (This replaces `login --temp`, which is gone:
+it claimed to write nothing to disk while the silent re-login path rewrote
+`session.json` unconditionally.)
 
-Clean up afterwards with `uv run tahuti logout`, which deletes `creds.json`,
-the keychain entry, the session cookie, and the response cache by default.
+Clean up afterwards with `uv run tahuti logout`, which deletes this profile's
+creds file, the keychain entry, the session cookie, and the response cache by
+default (`--all` reaches every profile's file and the legacy global one).
 
 **Do not:** commit `creds.json`/`session.json` (they are gitignored, keep them
 that way), pass the password as a CLI flag, or hand it to a subagent. Note that
@@ -245,14 +253,36 @@ Python 3.10–3.14 classifiers, real `[project.urls]` (the old
 `github.com/allen/mb-crawler` was a dead link). `uv.lock` regenerated.
 
 ### 4.2 Security
+- **The password is opt-in now; the session is not.** One boolean (`remember`)
+  used to gate the `remember_me` field, the response cache, password storage and
+  the session write, so the only way to avoid a cleartext password was
+  `login --temp` — which also discarded the session cookie and the cache.
+  `remember` is split into `remember_me` (`--no-remember-me`), `refresh` (the
+  cache) and the new `--keep-credentials` (the password). Every successful login
+  writes `session.json`; only `--keep-credentials` writes a password, whatever
+  its source. `login --temp` is **gone**.
+- **A password from the environment is input, not a request to store it.**
+  `MANAGEBAC_PASSWORD=... tahuti list` used to end with that password in
+  `creds.json`. Only `tahuti login --keep-credentials` writes a password now.
+- **The credential file is per profile.** `creds.json` for `default`,
+  `creds.<profile>.json` otherwise. It was one global path even though profiles
+  already existed, so two accounts could not each keep a password. A profile with
+  no file of its own still reads the global one, and the first
+  `--keep-credentials` for the matching account removes the stale copy.
 - `tahuti logout` now **deletes the stored password** by default
-  (`--keep-credentials` opts back in). Previously it left `creds.json` behind.
+  (`--keep-credentials` opts back in), for the active profile's file;
+  `--all` clears every profile's plus the legacy global one.
 - New `src/mb_cli/keychain.py` — opt-in OS keychain, **stdlib only, no new
   dependencies**: macOS `security`, Linux `secret-tool`, Windows
-  `powershell.exe` + WinRT `PasswordVault`.
-- Weak-permission warnings on startup for loose config files.
-- `MB_CRAWLER_PASSWORD` / `MB_CRAWLER_COOKIE` were **write-only** (exported to
-  the daemon child, never read back). Now genuinely read.
+  `powershell.exe` + WinRT `PasswordVault`. `--keychain` now decides only
+  *where* a kept password goes, never *whether* it is kept.
+- Weak-permission warnings on startup for loose config files, now covering the
+  per-profile creds files as well.
+- `MANAGEBAC_PASSWORD` / `MANAGEBAC_COOKIE` (formerly `MB_CRAWLER_*`) were
+  **write-only** (exported to the daemon child, never read back). Now genuinely
+  read.
+- The daemon keeps no credential and warns at startup when it has none of the
+  three renewal sources, naming `tahuti login --keep-credentials`.
 - `SECURITY.md` rewritten; several of its claims were factually wrong and were
   corrected against source (see §6).
 
@@ -377,11 +407,13 @@ is the largest untapped audience but needs a second auth surface.
   still thin (2 and 1 tests respectively).
 
 ### Credential-handling limits (documented in `SECURITY.md`)
-Default remains cleartext `creds.json` at 0600 — the keychain is **opt-in**
-(`--keychain` / `MB_CRAWLER_KEYCHAIN=1`), because flipping the default would
-break headless CI. On Windows the Credential Locker **roams entries to the
-Microsoft account by default**, with no flag to disable it, and `PasswordVault`
-needs Windows PowerShell 5.1 (PowerShell 7 cannot load the WinRT type).
+Default is a cleartext creds file at 0600, now written only by
+`tahuti login --keep-credentials` — the keychain is **opt-in**
+(`--keep-credentials --keychain` / `MANAGEBAC_KEYCHAIN=1`), because flipping that
+default would break headless CI. On Windows the Credential Locker **roams
+entries to the Microsoft account by default**, with no flag to disable it, and
+`PasswordVault` needs Windows PowerShell 5.1 (PowerShell 7 cannot load the WinRT
+type).
 
 ---
 

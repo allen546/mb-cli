@@ -177,14 +177,14 @@ class TestBackgroundDaemonSecretEnv:
         extra, env = self._start(
             _parse_daemon_start("--background", "--password", "pw123")
         )
-        assert env.get("MB_CRAWLER_PASSWORD") == "pw123"
+        assert env.get("MANAGEBAC_PASSWORD") == "pw123"
         assert "pw123" not in " ".join(extra)
 
     def test_cookie_goes_via_env_not_argv(self):
         extra, env = self._start(
             _parse_daemon_start("--background", "--cookie", "cookieval")
         )
-        assert env.get("MB_CRAWLER_COOKIE") == "cookieval"
+        assert env.get("MANAGEBAC_COOKIE") == "cookieval"
         assert "cookieval" not in " ".join(extra)
 
     def test_background_start_with_credential_does_not_raise(self):

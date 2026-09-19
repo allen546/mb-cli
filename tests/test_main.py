@@ -188,8 +188,8 @@ def _mock_build_client_result(mock_client, email="a@b.com"):
 
 class TestMainLogin:
     def test_login_success(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.school = "myschool"
@@ -201,8 +201,8 @@ class TestMainLogin:
             mock_bc.return_value = _mock_build_client_result(
                 mock_client, "test@example.com"
             )
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -225,8 +225,8 @@ class TestMainLogin:
 
 class TestMainList:
     def test_list_success(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.domain = "managebac.cn"
@@ -245,8 +245,8 @@ class TestMainList:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["list", "--format", "json"])
@@ -256,8 +256,8 @@ class TestMainList:
                         assert data["ok"] is True
 
     def test_list_with_tag_filter(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.domain = "managebac.cn"
@@ -277,8 +277,8 @@ class TestMainList:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["list", "--tag", "Summative", "--format", "json"])
@@ -295,16 +295,16 @@ class TestMainList:
 
 class TestMainView:
     def test_view_with_url(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_task_detail.return_value = {"description": "Do this"}
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -318,23 +318,23 @@ class TestMainView:
                         assert exc_info.value.code == 0
 
     def test_view_missing_target(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["view", "--format", "json"])
                         assert exc_info.value.code == 1
 
     def test_view_task_not_found(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.crawl_all.return_value = {
@@ -349,8 +349,8 @@ class TestMainView:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["view", "99999", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -358,29 +358,29 @@ class TestMainView:
 
 class TestMainSubmit:
     def test_submit_missing_target(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "--format", "json"])
                     assert exc_info.value.code == 1
 
     def test_submit_missing_file(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "12345", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -388,8 +388,8 @@ class TestMainSubmit:
 
 class TestMainLogout:
     def test_logout(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         with pytest.raises(SystemExit) as exc_info:
             main(["logout", "--format", "json"])
@@ -398,16 +398,16 @@ class TestMainLogout:
 
 class TestMainCalendar:
     def test_calendar_today(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_calendar_events.return_value = []
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["calendar", "--today", "--format", "json"])
@@ -416,16 +416,16 @@ class TestMainCalendar:
 
 class TestMainTimetable:
     def test_timetable(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_timetable.return_value = {"days": [], "lessons": []}
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["timetable", "--format", "json"])
@@ -434,8 +434,8 @@ class TestMainTimetable:
 
 class TestMainGrades:
     def test_grades_list_classes(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.crawl_all.return_value = {
@@ -456,16 +456,16 @@ class TestMainGrades:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--format", "json"])
                         assert exc_info.value.code == 0
 
     def test_grades_with_class_id(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_class_grades.return_value = {
@@ -477,8 +477,8 @@ class TestMainGrades:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--class-id", "100", "--format", "json"])
@@ -487,16 +487,16 @@ class TestMainGrades:
 
 class TestMainNotifications:
     def test_notifications_list(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.stats.return_value = {"unread_messages": 2}
@@ -510,16 +510,16 @@ class TestMainNotifications:
                             assert exc_info.value.code == 0
 
     def test_notifications_read(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.mark_read.return_value = True
@@ -547,8 +547,8 @@ class TestMainDaemon:
         pinning the defect: a stop-then-start script could not tell that the
         stop never happened and would end up supervising two daemons.
         """
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         nothing_stopped = {"stopped": False, "reason": "pid_file_missing"}
         with (
@@ -567,8 +567,8 @@ class TestMainDaemon:
     def test_daemon_stop_that_stopped_a_process_exits_zero(
         self, tmp_path: Path, monkeypatch
     ):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         with (
             patch("mb_cli.__main__.ServiceManager") as MockMgr,
@@ -585,8 +585,8 @@ class TestMainDaemon:
             mock_stop.assert_not_called()
 
     def test_daemon_configure_webhook(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         with patch("mb_cli.__main__.configure_webhook") as mock_conf:
             mock_conf.return_value = {"webhook_url": "http://new:8080/hook"}
@@ -606,8 +606,8 @@ class TestMainDaemon:
 
 class TestMainCountGradeFreq:
     def test_count_grade_freq(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         mock_client = MagicMock()
         mock_client.count_grade_frequencies.return_value = {
@@ -618,8 +618,8 @@ class TestMainCountGradeFreq:
 
         with patch("mb_cli.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.__main__.save_profile"):
-                with patch("mb_cli.__main__.save_session"):
+            with patch("mb_cli.auth.save_profile"):
+                with patch("mb_cli.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["count-grade-freq", "--format", "json"])

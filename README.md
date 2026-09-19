@@ -257,8 +257,13 @@ tahuti daemon test-webhook http://127.0.0.1:8000/webhook
 ```bash
 # Authentication & Session
 tahuti login --school your-school --domain managebac.com -e student@example.com
+tahuti login --keep-credentials            # also save the password for silent renewal
+tahuti login --keep-credentials --keychain # keep it in the OS keychain, not a file
+tahuti login --no-remember-me              # omit remember_me from the login POST
 tahuti --version                       # print the installed version and exit
-tahuti logout
+tahuti logout                             # forget this profile's session + password
+tahuti logout --all                       # every profile's, plus the legacy file
+tahuti logout --keep-credentials          # keep the saved password
 
 # Tasks & Coursework
 tahuti list                             # list upcoming tasks
@@ -356,42 +361,63 @@ tahuti daemon configure-channel qq 123456789  # deliver via a zeroclaw channel i
 By default, `tahuti` stores credentials and daemon states in `~/.config/tahuti/`:
 - `config.json` — School domain, preferences, and webhook settings
 - `session.json` — Authenticated session cookies and tokens
-- `creds.json` — **Plaintext ManageBac password**, stored to allow silent re-login
+- `creds.json` / `creds.<profile>.json` — **Plaintext ManageBac password**,
+  written only by `tahuti login --keep-credentials`, so an expired cookie can be
+  renewed without a prompt. The `default` profile keeps the plain `creds.json`
+  name; every other profile gets its own file.
 - `snapshot.json` — Coursework state cache for delta detection
 - `daemon.log` / `daemon.pid` — Background daemon runtime files
 - `cache/` — Cached HTTP responses, including grade pages and the MNN hub JWT
 - `daemon_state.json` — Notification/reminder dedup state
 
 Every file holding a credential or personal data is written with `0600` and the
-directory with `0700`. On startup `tahuti` warns on stderr if `creds.json`,
+directory with `0700`. On startup `tahuti` warns on stderr if a creds file,
 `session.json`, or `config.json` is found group- or world-readable, since file
 permissions are the only barrier protecting a cleartext password. Set
-`MB_CRAWLER_NO_PERM_WARN=1` to silence it.
+`MANAGEBAC_NO_PERM_WARN=1` to silence it.
 
-> **`creds.json` holds your password in cleartext.** It is only written when a
-> password login succeeds *without* `--temp`. Use `tahuti login --temp` for a
-> one-off session that is not persisted — it writes nothing to disk at all: no
-> password, no session cookie, and no response cache (the cache holds grade
-> pages and the hub JWT, so persisting it would have quietly defeated the flag).
+> **The session is saved; the password is not, unless you ask.** Every
+> successful `tahuti login` writes `session.json` (the cookie), so you are not
+> asked for your password on every command. Nothing writes your password to disk
+> unless you pass `--keep-credentials`:
 >
-> `tahuti logout` **deletes** `creds.json` and any OS-keychain entry, as well as
-> clearing the session cookie and the response cache. Pass `--keep-credentials`
-> if you want silent re-login preserved instead.
+> | Command | `session.json` | password |
+> |---|---|---|
+> | `tahuti login` | written | not written |
+> | `tahuti login --keep-credentials` | written | written |
+> | `tahuti login --no-remember-me` | written | not written |
 >
-> To avoid the cleartext file entirely, opt into the OS keychain:
+> `--no-remember-me` only omits `remember_me` from the login POST, so the
+> cookie's lifetime is ManageBac's default rather than a requested persistent
+> one. It is a server-side setting and composes with `--keep-credentials`.
+>
+> The cost of the default is one password when the cookie expires: with no
+> stored password, a command run after that fails with `missing_credentials`
+> naming `tahuti login --keep-credentials` rather than prompting (a prompt would
+> hang a daemon or a CI job). Pass `--keep-credentials` once and later commands
+> renew the session by themselves.
+>
+> `tahuti logout` **deletes** this profile's creds file and any OS-keychain
+> entry, as well as clearing the session cookie and the response cache. Pass
+> `logout --keep-credentials` if you want silent re-login preserved instead;
+> `logout --all` clears every profile's file and the legacy global one.
+>
+> To keep the password out of the cleartext file entirely, combine `--keep-credentials`
+> with the OS keychain:
 > ```bash
-> tahuti login --keychain             # or: MB_CRAWLER_KEYCHAIN=1 tahuti login
+> tahuti login --keep-credentials --keychain   # or: MANAGEBAC_KEYCHAIN=1
 > ```
 > This stores the password in the macOS Keychain or Linux Secret Service via the
 > `security` / `secret-tool` helpers already on the system — no extra dependency,
-> and nothing is stored if you do not ask for it. If the keychain is unavailable
-> (for example a headless Linux box with no secret service), `tahuti` falls back to
-> `creds.json` with a warning rather than losing the credential. See
-> [SECURITY.md](SECURITY.md) for the limits of both backends.
+> and nothing is stored if you do not ask for it. `--keychain` decides only
+> *where* a kept password goes, never *whether* it is kept. If the keychain is
+> unavailable (for example a headless Linux box with no secret service), `tahuti`
+> falls back to the cleartext file with a warning rather than losing the
+> credential. See [SECURITY.md](SECURITY.md) for the limits of both backends.
 
 `--config <file>` and `--session-file <file>` override the default config and
-session paths, as do the environment variables `MB_CRAWLER_CONFIG`,
-`MB_CRAWLER_SESSION`, and `MB_CRAWLER_CREDS_PATH`. These come from the shared
+session paths, as do the environment variables `MANAGEBAC_CONFIG`,
+`MANAGEBAC_SESSION`, and `MANAGEBAC_CREDS_PATH`. These come from the shared
 auth-flag helper, so they exist on the task, grades, calendar, and submission
 commands — and on `daemon run` / `daemon start`, which do log in to ManageBac.
 They are **not** on the purely process-level daemon commands, which act on the
@@ -405,19 +431,34 @@ Secrets may also be supplied through the environment, which keeps them out of
 your shell history and out of `ps` output:
 - `MB_WEBHOOK_SECRET` — HMAC secret for signing webhook payloads. Preferred over
   `--secret` when both are set.
-- `MB_CRAWLER_PASSWORD` — ManageBac password.
-- `MB_CRAWLER_COOKIE` — `_managebac_session` cookie value.
-- `MB_CRAWLER_KEYCHAIN` — set to `1` to store the password in the OS keychain
-  instead of cleartext `creds.json` (equivalent to `tahuti login --keychain`).
-- `MB_CRAWLER_NO_PERM_WARN` — set to `1` to silence the loose-permission warning.
+- `MANAGEBAC_PASSWORD` — ManageBac password.
+- `MANAGEBAC_COOKIE` — `_managebac_session` cookie value.
+- `MANAGEBAC_KEYCHAIN` — set to `1` to keep a password stored by
+  `--keep-credentials` in the OS keychain instead of the cleartext creds file
+  (equivalent to `tahuti login --keychain`). Decides *where*, never *whether*.
+- `MANAGEBAC_NO_PERM_WARN` — set to `1` to silence the loose-permission warning.
 
-`MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are read back as **input** as well
+> **The old `MB_CRAWLER_*` spellings still work.** `MB_CRAWLER_CONFIG`,
+> `MB_CRAWLER_SESSION`, `MB_CRAWLER_CREDS_PATH`, `MB_CRAWLER_PASSWORD`,
+> `MB_CRAWLER_COOKIE`, `MB_CRAWLER_KEYCHAIN` and `MB_CRAWLER_NO_PERM_WARN` are
+> read as deprecated fallbacks, so an existing systemd unit, CI job or shell
+> profile keeps authenticating. The new name wins when both are set, and an
+> exported-but-empty value counts as unset either way. They are deprecated and
+> will go; move to `MANAGEBAC_*` when convenient.
+
+`MANAGEBAC_PASSWORD` and `MANAGEBAC_COOKIE` are read back as **input** as well
 as exported into the daemon child, so a non-interactive run needs no prompt:
 
 ```bash
-MB_CRAWLER_PASSWORD=... tahuti daemon run       # no prompt, secret not in argv
-MB_CRAWLER_COOKIE=... tahuti list --format json # cookie straight from the env
+MANAGEBAC_PASSWORD=... tahuti daemon run       # no prompt, secret not in argv
+MANAGEBAC_COOKIE=... tahuti list --format json # cookie straight from the env
 ```
+
+> **A password from the environment is never written to disk.** It is input for
+> this run, not a request to store it: only `tahuti login --keep-credentials`
+> writes a password, whatever the source. So `MANAGEBAC_PASSWORD=... tahuti list`
+> authenticates and leaves no `creds.json` behind — and, by the same token, does
+> not leave a renewal path behind either.
 
 An explicit `--password` / `--cookie` takes precedence over the environment, and
 an exported-but-empty value is treated as unset. `tahuti daemon start -b` still

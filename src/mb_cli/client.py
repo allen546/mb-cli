@@ -335,8 +335,15 @@ class ManageBacClient:
 
     # ── Auth ────────────────────────────────────────────────────────────
 
-    def login(self, email: str, password: str, remember: bool = True) -> bool:
-        """Authenticate with email + password.  Returns *True* on success."""
+    def login(self, email: str, password: str, remember: bool | None = True) -> bool:
+        """Authenticate with email + password.  Returns *True* on success.
+
+        *remember* is tri-state. ``None`` omits ``remember_me`` from the POST
+        body entirely, leaving the cookie lifetime to whatever the server does
+        by default — which is what ``tahuti login --no-remember-me`` asks for,
+        and is a server-side decision that touches nothing on disk. ``True`` and
+        ``False`` keep sending ``"1"`` / ``"0"`` as before.
+        """
         r = self._request_with_retry("GET", f"{self.base}/login")
         soup = BeautifulSoup(r.text, "html.parser")
         token_el = soup.find("input", {"name": "authenticity_token"})
@@ -344,16 +351,18 @@ class ManageBacClient:
             log.warning("could not find authenticity_token on login page")
             return False
 
+        form = {
+            "authenticity_token": token_el["value"],
+            "login": email,
+            "password": password,
+            "commit": "Sign in",
+        }
+        if remember is not None:
+            form["remember_me"] = "1" if remember else "0"
         r = self._request_with_retry(
             "POST",
             f"{self.base}/sessions",
-            data={
-                "authenticity_token": token_el["value"],
-                "login": email,
-                "password": password,
-                "remember_me": "1" if remember else "0",
-                "commit": "Sign in",
-            },
+            data=form,
             allow_redirects=True,
         )
 

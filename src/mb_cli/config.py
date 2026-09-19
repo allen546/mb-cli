@@ -9,15 +9,47 @@ import os
 import sys
 import tempfile
 
-CONFIG_ENV = "MB_CRAWLER_CONFIG"
-SESSION_ENV = "MB_CRAWLER_SESSION"
-CREDS_ENV = "MB_CRAWLER_CREDS_PATH"
+CONFIG_ENV = "MANAGEBAC_CONFIG"
+SESSION_ENV = "MANAGEBAC_SESSION"
+CREDS_ENV = "MANAGEBAC_CREDS_PATH"
 # Escape hatch so scripts and CI can silence the loose-permission warning.
-PERM_WARN_ENV = "MB_CRAWLER_NO_PERM_WARN"
+PERM_WARN_ENV = "MANAGEBAC_NO_PERM_WARN"
+# Credentials read as *input*, not just exported into the daemon child.
+PASSWORD_ENV = "MANAGEBAC_PASSWORD"
+COOKIE_ENV = "MANAGEBAC_COOKIE"
+
+# The pre-rename spellings. Kept as deprecated fallbacks for exactly the reason
+# the `mb` command alias survived the rename: a working setup must not break
+# because a variable changed its name. The new name wins when both are set, so
+# anyone who has already migrated is never overridden by a stale old one.
+CONFIG_ENV_LEGACY = "MB_CRAWLER_CONFIG"
+SESSION_ENV_LEGACY = "MB_CRAWLER_SESSION"
+CREDS_ENV_LEGACY = "MB_CRAWLER_CREDS_PATH"
+PERM_WARN_ENV_LEGACY = "MB_CRAWLER_NO_PERM_WARN"
+PASSWORD_ENV_LEGACY = "MB_CRAWLER_PASSWORD"
+COOKIE_ENV_LEGACY = "MB_CRAWLER_COOKIE"
 
 # Permission floor for anything this package writes that can hold a secret.
 # Any group- or other-readable bit means every local user can read the file.
 SECURE_FILE_MODE = 0o600
+
+#: The profile used when none is named. Also the one profile whose credential
+#: file keeps the plain ``creds.json`` name — see :func:`creds_filename`.
+DEFAULT_PROFILE_NAME = "default"
+
+#: The credential filename the default profile keeps, and the name of the
+#: pre-per-profile global file that :func:`legacy_creds_path` falls back to.
+LEGACY_CREDS_FILENAME = "creds.json"
+
+
+def env_value(new: str, legacy: str) -> str | None:
+    """Read *new*, falling back to the deprecated *legacy* spelling.
+
+    One helper so the rename's precedence rule is stated once instead of once
+    per variable. An empty value counts as unset, matching how every caller
+    treats these.
+    """
+    return os.environ.get(new) or os.environ.get(legacy) or None
 
 
 @dataclass
@@ -81,36 +113,135 @@ def default_session_path() -> Path:
     return config_dir() / "session.json"
 
 
-def default_creds_path() -> Path:
-    return config_dir() / "creds.json"
+# ── the saved password, keyed by profile ─────────────────────────────────
+#
+# Profiles have been in this config format since the first commit, but the
+# saved-password file was added later without profile keying, so it landed on
+# one global path. The damage was concrete: `logout` on one profile deleted the
+# password every profile was relying on, and two accounts could not both keep
+# one — the second `login` overwrote the first.
+#
+# So the file is per-profile now, with the *default* profile keeping the
+# historical `creds.json` name. That is deliberate: the single-profile install
+# is the common case, and leaving its path untouched means no migration, no
+# surprise, and no second copy of a cleartext password to reason about. The
+# suffix only appears once a second profile exists.
+
+
+def creds_filename(profile: str | None = None) -> str:
+    """The credential filename belonging to *profile*.
+
+    ``creds.json`` for the default profile (the historical name, so an existing
+    install keeps working with no migration), ``creds.<profile>.json`` for any
+    other one.
+    """
+    if not profile or profile == DEFAULT_PROFILE_NAME:
+        return LEGACY_CREDS_FILENAME
+    return f"creds.{profile}.json"
+
+
+def default_creds_path(profile: str | None = None) -> Path:
+    """The file *profile*'s saved password is written to."""
+    return config_dir() / creds_filename(profile)
+
+
+def legacy_creds_path() -> Path:
+    """The pre-per-profile global credential file.
+
+    Kept as a read-only fallback: the password file was written without profile
+    keying while profiles already existed, so a real install (the owner's
+    included) has one account's password sitting in ``creds.json`` whichever
+    profile it was saved from. Without this entry, upgrading would force a
+    re-login for that account. It is *not* a long compatibility tail — the
+    mechanism is weeks old and the fallback exists for files that are on disk
+    right now.
+    """
+    return config_dir() / LEGACY_CREDS_FILENAME
 
 
 def resolve_config_path(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    env_value = os.environ.get(CONFIG_ENV)
-    if env_value:
-        return Path(env_value).expanduser()
+    from_env = env_value(CONFIG_ENV, CONFIG_ENV_LEGACY)
+    if from_env:
+        return Path(from_env).expanduser()
     return default_config_path()
 
 
 def resolve_session_path(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
-    env_value = os.environ.get(SESSION_ENV)
-    if env_value:
-        return Path(env_value).expanduser()
+    from_env = env_value(SESSION_ENV, SESSION_ENV_LEGACY)
+    if from_env:
+        return Path(from_env).expanduser()
     return default_session_path()
 
 
-def resolve_creds_path(explicit: str | None = None) -> Path:
-    """Resolve the file holding the saved password for silent re-login."""
+def resolve_creds_path(explicit: str | None = None, profile: str | None = None) -> Path:
+    """Resolve the file holding *profile*'s saved password for silent re-login.
+
+    An explicit path, then ``MANAGEBAC_CREDS_PATH`` (deprecated:
+    ``MB_CRAWLER_CREDS_PATH``), then the profile's own file under the config
+    directory.
+    """
     if explicit:
         return Path(explicit).expanduser()
-    env_value = os.environ.get(CREDS_ENV)
-    if env_value:
-        return Path(env_value).expanduser()
-    return default_creds_path()
+    from_env = env_value(CREDS_ENV, CREDS_ENV_LEGACY)
+    if from_env:
+        return Path(from_env).expanduser()
+    return default_creds_path(profile)
+
+
+def creds_paths(profile: str | None = None) -> list[Path]:
+    """Every file *profile*'s saved password may live in, best first.
+
+    Normally just the profile's own file. The pre-per-profile global
+    ``creds.json`` is appended **only when the profile's own file does not
+    exist**, which is the case where this profile would read it: the password
+    file was written without profile keying while profiles already existed, so
+    one account's password sits in ``creds.json`` no matter which profile saved
+    it, and an upgrade must not force a re-login for it.
+
+    Callers that *delete* (``logout``) clear every path returned, because
+    leaving the fallback behind would keep the password on disk after the user
+    asked to be logged out — and would let the very next command silently
+    re-login from it. Callers that *write* use the first entry only.
+
+    Nothing is appended when an explicit path or ``MANAGEBAC_CREDS_PATH`` names
+    one exact file, and nothing is appended for the default profile, whose own
+    file *is* ``creds.json``. A profile that already has its own file never
+    reaches for another profile's — that collision is what per-profile
+    credentials exist to remove.
+    """
+    primary = resolve_creds_path(profile=profile)
+    if primary.exists():
+        return [primary]
+    if (
+        profile
+        and profile != DEFAULT_PROFILE_NAME
+        and primary == default_creds_path(profile)
+    ):
+        legacy = legacy_creds_path()
+        if legacy != primary:
+            return [primary, legacy]
+    return [primary]
+
+
+def all_creds_paths() -> list[Path]:
+    """Every credential file on disk, for ``logout --all``.
+
+    Globbed rather than derived from the profile list, so a profile whose
+    ``config.json`` entry has since been removed still has its password
+    deleted. The pattern matches ``creds.json`` and ``creds.<profile>.json``
+    and nothing else this package writes; the dot-prefixed temp files
+    ``_write_json`` creates do not match.
+    """
+    directory = config_dir()
+    found = {p for p in directory.glob("creds*.json") if p.is_file()}
+    # An explicit path or env override can name a file outside that directory,
+    # and `--all` still has to reach it.
+    found.add(resolve_creds_path())
+    return sorted(found)
 
 
 def clear_creds(path: str | Path) -> bool:
@@ -173,7 +304,7 @@ def load_state(
         profile_name
         or session_data.get("active_profile")
         or config_data.get("active_profile")
-        or "default"
+        or DEFAULT_PROFILE_NAME
     )
 
     profile_data = config_data.get("profiles", {}).get(active_profile, {})
@@ -312,11 +443,15 @@ def insecure_state_files() -> list[Path]:
     """Every existing credential-bearing state file with looser-than-0600 modes."""
     found: list[Path] = []
     seen: set[Path] = set()
-    for candidate in (
-        resolve_creds_path(),
+    # `all_creds_paths()` rather than the single default: the password file is
+    # per-profile now, so checking only one of them would report a clean bill of
+    # health while another profile's cleartext password sat at 0644.
+    candidates = [
+        *all_creds_paths(),
         resolve_session_path(),
         resolve_config_path(),
-    ):
+    ]
+    for candidate in candidates:
         if candidate in seen:
             continue
         seen.add(candidate)
@@ -342,7 +477,7 @@ def warn_on_weak_permissions(stream=None) -> list[str]:
         f"`chmod 600 {path}`."
         for path in insecure
     ]
-    if not os.environ.get(PERM_WARN_ENV):
+    if not env_value(PERM_WARN_ENV, PERM_WARN_ENV_LEGACY):
         for message in messages:
             print(f"warning: {message}", file=stream)
     return messages

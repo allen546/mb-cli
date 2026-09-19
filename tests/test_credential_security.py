@@ -1,13 +1,17 @@
 """Tests for the credential-handling overhaul.
 
-Covers four behaviours that were previously either wrong or undocumented:
+Covers five behaviours that were previously either wrong or undocumented:
 
-1. ``tahuti logout`` now deletes the stored password (``creds.json``) by default.
-2. ``tahuti login --temp`` writes nothing to disk — no password, no session, and
-   (new) no response cache.
+1. ``tahuti logout`` deletes the stored password (``creds.json``) by default.
+2. The session/password split: the session cookie is saved on every login, the
+   password only when ``--keep-credentials`` asks for it. (The old
+   ``login --temp`` promised "writes nothing to disk" while implementing neither
+   that nor the ``remember_me`` half; the flag-pair tests now live in
+   ``tests/test_session_lifecycle.py``.)
 3. Loose file permissions on credential-bearing state files are reported.
-4. ``MB_CRAWLER_PASSWORD`` / ``MB_CRAWLER_COOKIE`` are readable, not just
-   exported, plus the optional dependency-free OS keychain backend.
+4. ``MANAGEBAC_PASSWORD`` / ``MANAGEBAC_COOKIE`` (deprecated:
+   ``MB_CRAWLER_*``) are readable, not just exported, plus the optional
+   dependency-free OS keychain backend.
 """
 
 from __future__ import annotations
@@ -35,8 +39,16 @@ from mb_cli.config import (
 )
 
 # Env vars every test here must control, so a developer's real ~/.config/tahuti
-# (and any leaked MB_CRAWLER_* from the shell) cannot influence the result.
+# (and any leaked MANAGEBAC_*/MB_CRAWLER_* from the shell) cannot influence the
+# result. Both spellings are cleared; only the current ones are set.
 _ISOLATE = (
+    "MANAGEBAC_CONFIG",
+    "MANAGEBAC_SESSION",
+    "MANAGEBAC_CREDS_PATH",
+    "MANAGEBAC_PASSWORD",
+    "MANAGEBAC_COOKIE",
+    "MANAGEBAC_KEYCHAIN",
+    "MANAGEBAC_NO_PERM_WARN",
     "MB_CRAWLER_CONFIG",
     "MB_CRAWLER_SESSION",
     "MB_CRAWLER_CREDS_PATH",
@@ -52,9 +64,9 @@ def isolated_env(tmp_path, monkeypatch):
     """Point every state path at tmp_path and clear all credential env vars."""
     for var in _ISOLATE:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
-    monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(tmp_path / "creds.json"))
+    monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
+    monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(tmp_path / "creds.json"))
     # Pretend a credential helper exists so backend-selection is deterministic
     # on any machine. Tests that need "no helper" patch _tool to None instead.
     monkeypatch.setattr(keychain, "_tool", lambda: ["/usr/bin/fake-helper"])
@@ -96,7 +108,7 @@ def _logout_argv(*extra):
 class TestLogoutDeletesCredentials:
     def test_logout_removes_creds_json(self, isolated_env, capsys):
         """The whole point: `logout` must not leave the password on disk."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         assert creds.exists()
 
@@ -107,7 +119,7 @@ class TestLogoutDeletesCredentials:
         assert not creds.exists(), "logout left creds.json (the password) on disk"
 
     def test_logout_reports_removal(self, isolated_env, capsys):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         with patch("mb_cli.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
@@ -119,7 +131,7 @@ class TestLogoutDeletesCredentials:
 
     def test_keep_credentials_preserves_password(self, isolated_env):
         """`--keep-credentials` is the documented opt-out for silent re-login."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         with patch("mb_cli.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
@@ -148,9 +160,9 @@ class TestLogoutDeletesCredentials:
         assert payload["data"]["credentials_removed"] is False
 
     def test_logout_deletes_keychain_entry(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
-        session = Path(os.environ["MB_CRAWLER_SESSION"])
+        session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         with (
             patch("mb_cli.cache.ResponseCache") as cache_cls,
@@ -161,7 +173,7 @@ class TestLogoutDeletesCredentials:
         delete.assert_called_once_with("student@example.com")
 
     def test_keep_credentials_leaves_keychain_entry(self, isolated_env):
-        session = Path(os.environ["MB_CRAWLER_SESSION"])
+        session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         with (
             patch("mb_cli.cache.ResponseCache") as cache_cls,
@@ -174,7 +186,7 @@ class TestLogoutDeletesCredentials:
         delete.assert_not_called()
 
     def test_logout_all_profiles_removes_creds(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         with patch("mb_cli.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
@@ -193,20 +205,26 @@ class TestClearCreds:
         assert clear_creds(tmp_path / "nope.json") is False
 
 
-# ── Task 2.2 — `--temp` writes nothing to disk ───────────────────────────
+# ── Task 2.2 — the password is opt-in, the session is not ────────────────
+#
+# `--temp` is gone. It promised "writes nothing to disk" while the session file
+# was still written, and it gated the password, the response cache, the
+# `remember_me` field and the session write off one boolean. The replacement is
+# two independent flags; the full matrix lives in
+# tests/test_session_lifecycle.py. What is pinned here is the part that is about
+# *credential handling*: nothing writes a password unless asked.
 
 
-class TestTempModeWritesNothing:
-    """`tahuti login --temp` must leave no reusable credential behind.
+class TestPasswordIsOptIn:
+    """A login saves the session; it does not save the password by default."""
 
-    `remember=False` already skipped saving the password; the response cache
-    and the session file were still written, which quietly defeated the flag.
-    """
-
-    def _build(self, **kwargs):
-        client = MagicMock()
+    def _build(self, client=None, **kwargs):
+        client = client or MagicMock()
         client.login.return_value = True
         client.session.cookies.get.return_value = "newcookie"
+        client.school = "myschool"
+        client.domain = "managebac.com"
+        client.base = "https://myschool.managebac.com"
         with patch("mb_cli.auth.ManageBacClient", return_value=client):
             return build_client(
                 school="myschool",
@@ -215,70 +233,48 @@ class TestTempModeWritesNothing:
                 **kwargs,
             )
 
-    def test_temp_does_not_write_creds_json(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
-        self._build(remember=False)
-        assert not creds.exists(), "--temp persisted the password"
-
-    def test_temp_sends_remember_me_zero(self, isolated_env):
-        client = MagicMock()
-        client.login.return_value = True
-        with patch("mb_cli.auth.ManageBacClient", return_value=client):
-            build_client(
-                school="myschool",
-                email="student@example.com",
-                password="s3cret",
-                remember=False,
-            )
-        assert client.login.call_args.kwargs["remember"] is False
-
-    def test_temp_disables_response_cache(self, isolated_env):
-        """The cache holds grade pages and the MNN-hub JWT — not `--temp`-safe."""
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
-            client_cls.return_value.login.return_value = True
-            build_client(
-                school="myschool",
-                email="student@example.com",
-                password="s3cret",
-                remember=False,
-            )
-        cache = client_cls.call_args.kwargs["cache"]
-        assert cache.enabled is False
-
-    def test_default_login_enables_cache(self, isolated_env):
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
-            client_cls.return_value.login.return_value = True
-            build_client(
-                school="myschool",
-                email="student@example.com",
-                password="s3cret",
-            )
-        cache = client_cls.call_args.kwargs["cache"]
-        assert cache.enabled is True
-
-    def test_temp_does_not_write_session(self, isolated_env, tmp_path):
-        session = tmp_path / "session.json"
-        # No saved session and no cookie: the creds-file branch runs, which used
-        # to persist a reusable cookie even under --temp.
-        _write_creds(tmp_path / "creds.json")
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
-            client_cls.return_value.login.return_value = True
-            build_client(school="myschool", remember=False)
-        assert not session.exists(), "--temp persisted a reusable session cookie"
-
-    def test_temp_writes_nothing_to_config_dir(self, isolated_env, tmp_path):
-        """Belt-and-braces: nothing at all lands beside the config file."""
-        before = {p.name for p in tmp_path.iterdir()}
-        self._build(remember=False)
-        after = {p.name for p in tmp_path.iterdir()}
-        assert after - before <= set(), f"--temp wrote new files: {after - before}"
-
-    def test_default_login_still_saves_password(self, isolated_env):
-        """Control: the non-temp path must keep silent re-login working."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+    def test_default_login_writes_no_password(self, isolated_env):
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         self._build()
+        assert not creds.exists(), "a password was saved without --keep-credentials"
+
+    def test_keep_credentials_writes_the_password(self, isolated_env):
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
+        self._build(keep_credentials=True)
         assert creds.exists()
         assert json.loads(creds.read_text())["password"] == "s3cret"
+
+    def test_remember_me_does_not_decide_the_password(self, isolated_env):
+        """`--no-remember-me` is a server-side cookie setting, nothing more."""
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
+        self._build(remember_me=None, keep_credentials=True)
+        assert creds.exists(), "--no-remember-me must not silently drop the password"
+
+    def test_default_login_saves_the_session(self, isolated_env, tmp_path):
+        """Control: withholding the password must not withhold the session."""
+        session = Path(os.environ["MANAGEBAC_SESSION"])
+        self._build()
+        assert session.exists()
+        saved = json.loads(session.read_text())
+        cookie = saved["profiles"]["default"]["cookie"]
+        assert cookie == "newcookie", "the session cookie was not persisted"
+
+    def test_the_response_cache_no_longer_follows_the_credential_flags(self, isolated_env):
+        """`enabled=not refresh`, and neither new flag is in that expression."""
+        with patch("mb_cli.auth.ManageBacClient") as client_cls:
+            client_cls.return_value.login.return_value = True
+            client_cls.return_value.session.cookies.get.return_value = "c"
+            client_cls.return_value.school = "myschool"
+            client_cls.return_value.domain = "managebac.com"
+            client_cls.return_value.base = "https://myschool.managebac.com"
+            build_client(
+                school="myschool",
+                email="student@example.com",
+                password="s3cret",
+                remember_me=None,
+                keep_credentials=True,
+            )
+        assert client_cls.call_args.kwargs["cache"].enabled is True
 
 
 # ── Task 2.3 — warn on weak file permissions ─────────────────────────────
@@ -305,7 +301,7 @@ class TestWeakPermissionWarning:
         assert is_too_permissive(tmp_path / "absent.json") is False
 
     def test_warns_about_world_readable_creds(self, isolated_env, tmp_path):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         os.chmod(creds, 0o644)
         messages = warn_on_weak_permissions(stream=open(os.devnull, "w"))
@@ -338,7 +334,7 @@ class TestWeakPermissionWarning:
 
     def test_warning_goes_to_stderr(self, isolated_env, capsys):
         """Must not contaminate `--format json` on stdout."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         os.chmod(creds, 0o644)
         warn_on_weak_permissions()
@@ -347,7 +343,7 @@ class TestWeakPermissionWarning:
         assert captured.out == ""
 
     def test_env_var_suppresses_output_but_not_detection(self, isolated_env, monkeypatch, capsys):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         os.chmod(creds, 0o644)
         monkeypatch.setenv("MB_CRAWLER_NO_PERM_WARN", "1")
@@ -368,10 +364,10 @@ class TestWeakPermissionWarning:
 
     def test_main_warns_on_startup(self, isolated_env, capsys):
         """The warning has to actually reach a user running a normal command."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
         os.chmod(creds, 0o644)
-        session = Path(os.environ["MB_CRAWLER_SESSION"])
+        session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         # `logout` needs no network, so it exercises main() end to end.
         with patch("mb_cli.cache.ResponseCache") as cache_cls:
@@ -1004,7 +1000,7 @@ class TestKeychainWiring:
         monkeypatch.setenv("MB_CRAWLER_KEYCHAIN", "1")
         monkeypatch.setattr(keychain.sys, "platform", platform)
         monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds, password="s3cret")  # an earlier non-keychain login
         helper = _FakeKeychain(monkeypatch, drop=True)
 
@@ -1021,7 +1017,7 @@ class TestKeychainWiring:
         monkeypatch.setenv("MB_CRAWLER_KEYCHAIN", "1")
         monkeypatch.setattr(keychain.sys, "platform", platform)
         monkeypatch.setattr(keychain, "_tool", lambda: ["/fake/helper"])
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds, password="s3cret")
         _FakeKeychain(monkeypatch)
 
@@ -1029,7 +1025,7 @@ class TestKeychainWiring:
         assert not creds.exists(), "password left in cleartext creds.json too"
 
     def test_store_prefers_keychain_and_drops_cleartext(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)  # leftover from a previous non-keychain login
         with (
             patch.object(keychain, "enabled", return_value=True),
@@ -1042,7 +1038,7 @@ class TestKeychainWiring:
 
     def test_store_falls_back_to_file_when_keychain_fails(self, isolated_env):
         """A locked keychain must not silently lose the credential."""
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         with (
             patch.object(keychain, "enabled", return_value=True),
             patch.object(keychain, "store", return_value=False),
@@ -1053,7 +1049,7 @@ class TestKeychainWiring:
         assert json.loads(creds.read_text())["password"] == "s3cret"
 
     def test_store_uses_file_when_keychain_off(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         with (
             patch.object(keychain, "enabled", return_value=False),
             patch.object(keychain, "store") as store,
@@ -1090,30 +1086,40 @@ class TestKeychainWiring:
             assert _load_creds("student@example.com") is None
 
     def test_login_keychain_flag_threads_through_build_client(self, isolated_env):
-        args = m.build_parser().parse_args(["login", "--keychain", "--temp"])
+        args = m.build_parser().parse_args(["login", "--keychain", "--keep-credentials"])
         assert args.keychain is True
+        assert args.keep_credentials is True
         with patch("mb_cli.auth.ManageBacClient") as client_cls:
             client_cls.return_value.login.return_value = True
+            client_cls.return_value.session.cookies.get.return_value = "newcookie"
+            client_cls.return_value.school = "myschool"
+            client_cls.return_value.domain = "managebac.com"
+            client_cls.return_value.base = "https://myschool.managebac.com"
             build_client(
                 school="myschool",
                 email="student@example.com",
                 password="s3cret",
-                remember=not getattr(args, "temp", False),
+                keep_credentials=getattr(args, "keep_credentials", False),
                 use_keychain=getattr(args, "keychain", None),
             )
 
     def test_keychain_enabled_login_writes_no_cleartext(self, isolated_env):
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         with (
             patch("mb_cli.auth.ManageBacClient") as client_cls,
             patch.object(keychain, "enabled", return_value=True),
             patch.object(keychain, "store", return_value=True),
         ):
             client_cls.return_value.login.return_value = True
+            client_cls.return_value.session.cookies.get.return_value = "newcookie"
+            client_cls.return_value.school = "myschool"
+            client_cls.return_value.domain = "managebac.com"
+            client_cls.return_value.base = "https://myschool.managebac.com"
             build_client(
                 school="myschool",
                 email="student@example.com",
                 password="s3cret",
+                keep_credentials=True,
                 use_keychain=True,
             )
         assert not creds.exists()
@@ -1233,7 +1239,7 @@ class TestCredentialEnvVars:
         ) as start:
             m.cmd_daemon_start(args)
         _, kwargs = start.call_args
-        assert kwargs["env"]["MB_CRAWLER_PASSWORD"] == "pw123"
+        assert kwargs["env"]["MANAGEBAC_PASSWORD"] == "pw123"
         assert "pw123" not in " ".join(kwargs["extra_args"])
 
     def test_daemon_run_child_reads_the_exported_password(self, isolated_env, monkeypatch):
@@ -1264,10 +1270,11 @@ class TestResolveCredsPath:
         assert resolve_creds_path(str(tmp_path / "x.json")) == tmp_path / "x.json"
 
     def test_env_var(self, isolated_env):
-        assert resolve_creds_path() == Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        assert resolve_creds_path() == Path(os.environ["MANAGEBAC_CREDS_PATH"])
 
     def test_default_lives_in_config_dir(self, monkeypatch):
-        monkeypatch.delenv("MB_CRAWLER_CREDS_PATH", raising=False)
+        for var in ("MANAGEBAC_CREDS_PATH", "MB_CRAWLER_CREDS_PATH"):
+            monkeypatch.delenv(var, raising=False)
         path = resolve_creds_path()
         assert path.name == "creds.json"
         assert path.parent.name == "tahuti"
@@ -1314,11 +1321,11 @@ class TestCredsPathResolvesOnce:
         first = isolated_env / "first.json"
         second = isolated_env / "second.json"
 
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(first))
         assert auth._creds_path() == str(first)
 
         # Changed *after* import — the old constant would still have said `first`.
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(second))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(second))
         assert auth._creds_path() == str(second)
 
         with patch.object(keychain, "enabled", return_value=False):
@@ -1329,13 +1336,13 @@ class TestCredsPathResolvesOnce:
 
         assert auth._load_creds()["password"] == "s3cret"
 
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(first))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(first))
         assert auth._load_creds() is None, "read and write resolved different files"
 
     def test_delete_follows_the_same_resolution(self, isolated_env, monkeypatch):
         """`_store_password` must clear the file it just replaced, not a stale one."""
         target = isolated_env / "creds.json"
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(target))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(target))
         _write_creds(target, password="old")
 
         with (
@@ -1351,7 +1358,14 @@ class TestCredsPathResolvesOnce:
         import mb_cli.config as config
 
         # Drop the fixture's redirects so the defaults (not the env vars) apply.
-        for var in ("MB_CRAWLER_CREDS_PATH", "MB_CRAWLER_CONFIG", "MB_CRAWLER_SESSION"):
+        for var in (
+            "MANAGEBAC_CREDS_PATH",
+            "MANAGEBAC_CONFIG",
+            "MANAGEBAC_SESSION",
+            "MB_CRAWLER_CREDS_PATH",
+            "MB_CRAWLER_CONFIG",
+            "MB_CRAWLER_SESSION",
+        ):
             monkeypatch.delenv(var, raising=False)
         # Also drop the autouse fixture's in-place patches of the legacy names.
         # `config_dir()` resolves dynamically, but the module-level names are

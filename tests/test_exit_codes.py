@@ -36,8 +36,8 @@ from mb_cli.__main__ import (
 @pytest.fixture()
 def isolated_config(tmp_path: Path, monkeypatch):
     """Point config/session state at tmp_path so nothing real is touched."""
-    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+    monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
     return tmp_path
 
 
@@ -85,8 +85,8 @@ class TestNotificationsMutationExitCode:
             getattr(hub, mark).return_value = mark_result
         with (
             patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
-            patch("mb_cli.__main__.save_profile"),
-            patch("mb_cli.__main__.save_session"),
+            patch("mb_cli.auth.save_profile"),
+            patch("mb_cli.auth.save_session"),
             # `cmd_notifications` builds its hub through `auth.hub_client`, not
             # `MNNHubClient` directly, so this is the seam to patch. Patching
             # the class left a real client talking to the fake `hub.example`
@@ -300,8 +300,8 @@ def test_grades_all_classes_when_every_class_failed_exits_nonzero(isolated_confi
 
     with (
         patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__.save_profile"),
-        patch("mb_cli.__main__.save_session"),
+        patch("mb_cli.auth.save_profile"),
+        patch("mb_cli.auth.save_session"),
     ):
         code, payloads = _run_main(["grades", "--format", "json"])
 
@@ -338,8 +338,8 @@ def test_grades_all_classes_partial_failure_exits_zero(isolated_config):
 
     with (
         patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__.save_profile"),
-        patch("mb_cli.__main__.save_session"),
+        patch("mb_cli.auth.save_profile"),
+        patch("mb_cli.auth.save_session"),
     ):
         code, payloads = _run_main(["grades", "--format", "json"])
 
@@ -359,8 +359,8 @@ def test_unexpected_exception_emits_payload_not_traceback(isolated_config):
 
     with (
         patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__.save_profile"),
-        patch("mb_cli.__main__.save_session"),
+        patch("mb_cli.auth.save_profile"),
+        patch("mb_cli.auth.save_session"),
     ):
         code, payloads = _run_main(["notifications", "--format", "json"])
 
@@ -384,8 +384,8 @@ def test_command_error_maps_to_failure(isolated_config):
     """`CommandError` keeps its machine-readable code and a non-zero status."""
     with (
         patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
-        patch("mb_cli.__main__.save_profile"),
-        patch("mb_cli.__main__.save_session"),
+        patch("mb_cli.auth.save_profile"),
+        patch("mb_cli.auth.save_session"),
         patch("mb_cli.__main__.hub_client") as MockHub,
     ):
         MockHub.return_value.list.side_effect = RuntimeError("hub down")
