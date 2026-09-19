@@ -799,6 +799,16 @@ def test_stop_background_leaves_a_concurrently_written_pid_file(tmp_path: Path):
 
 
 def test_naive_due_date_is_read_on_the_configured_school_clock(tmp_path: Path):
+    # CPython's `zoneinfo` is only a *reader* — it needs the IANA database from
+    # the OS or the `tzdata` package, and it is absent from macOS, Windows and
+    # plenty of Linux containers. When it is missing, `resolve_school_timezone`
+    # swallows the error and falls back to the host clock, so this test fails
+    # with a wrong schedule rather than an import error. Assert the dependency
+    # is present first so the failure names the real cause.
+    assert (
+        resolve_school_timezone("Asia/Shanghai") is not None
+    ), "no IANA timezone database available — install the `tzdata` package"
+
     state = DaemonStateManager(tmp_path / "state.json")
     # 11:59 PM == 23:59 on the school's clock.
     state.update_task(

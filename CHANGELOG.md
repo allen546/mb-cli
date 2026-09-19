@@ -10,6 +10,17 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
 ## [Unreleased]
 
+### Fixed
+- **Naive due dates are read on the school's clock again, on any host.**
+  `tzdata` was never declared, so on a host without the IANA database —
+  GitHub's Linux runners among them — `ZoneInfo("Asia/Shanghai")` raised,
+  `resolve_school_timezone` swallowed it, and the scheduler fell back to the
+  daemon host's clock. On a UTC+8 school that is the ~16-hour-late-reminder bug
+  the school timezone exists to prevent, and it failed *silently*: CI was red on
+  `main` for two pushes while the feature looked fine locally. `tzdata` is now a
+  runtime dependency, and the test asserts the database is reachable first so a
+  future regression names the cause instead of reporting `assert 0 == 1`.
+
 ### Changed
 - **The Python import package is `tahuti`.** `0.4.1` renamed the distribution,
   the CLI command and the repository but deliberately left the import path as
