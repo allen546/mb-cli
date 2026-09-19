@@ -30,20 +30,23 @@ from mb_cli.auth import build_client
 
 assert os.environ.get("MB_CRAWLER_CREDS_PATH"), "set MB_CRAWLER_CREDS_PATH=/nonexistent"
 
-HOST = "myschool.managebac.cn"
+# No host literal here on purpose: main() derives it from the live session, and
+# /extras ships inside the published sdist, so a constant here would bake one
+# school's subdomain into every download. An unresolvable session is a hard
+# error instead of a silent fallback.
 PATH = "/websocket"
 
-# The host above is a fallback only. main() prefers the host from the live
-# session, so this probe works against any school and does not bake one school's
-# subdomain into the published sdist (/extras ships — see pyproject.toml).
-FALLBACK_HOST = HOST
+#: Set by ``main()`` from the live session. Empty until then, and deliberately
+#: never a literal: an unresolved host must fail loudly rather than probe the
+#: wrong school and report a confident negative about this account.
+HOST = ""
 
 # Channel names worth trying. The JS bundle showed ProgressChannel,
 # PresentationChannel, PresenceChannel, CoreUnitChannel, Chat::RoomChannel and
 # AttendanceReportsChannel in use elsewhere in the app; notifications-specific
 # names are guesses that this probe exists to confirm or kill.
 #
-# Calibration (measured 2026-09-19 against myschool.managebac.cn):
+# Calibration (measured against a live .cn session):
 #   ProgressChannel, PresenceChannel -> confirm_subscription
 #   Chat::RoomChannel                 -> reject_subscription
 #   "ZZZDefinitelyNotARealChannelQQQ" -> silence, neither confirm nor reject
@@ -113,7 +116,8 @@ def read_frame(sock: ssl.SSLSocket, timeout: float = 8.0) -> str | None:
 def try_channel(channel: str, token: str, cookie: str, wait: float = 6.0) -> list[str]:
     key = base64.b64encode(os.urandom(16)).decode()
     req = (
-        f"GET {PATH} HTTP/1.1\r\nHost: {HOST}\r\nUpgrade: websocket\r\n"        f"Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+        f"GET {PATH} HTTP/1.1\r\nHost: {HOST}\r\nUpgrade: websocket\r\n"
+        f"Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
         f"Sec-WebSocket-Key: {key}\r\n"
         f"Cookie: _managebac_session={cookie}\r\n"
         f"Origin: https://{HOST}\r\n\r\n"
@@ -162,7 +166,13 @@ def main() -> int:
     # does not bake one subdomain into the shipped sdist.
     HOST = client.base.removeprefix("https://").removeprefix("http://").rstrip("/")
     if not HOST:
-        HOST = FALLBACK_HOST
+        # Refuse rather than fall back to a literal: probing the wrong school
+        # would produce a confident-looking negative about this account.
+        print(
+            "could not resolve a host from the live session — re-run `tahuti login`",
+            file=sys.stderr,
+        )
+        return 2
     cookie = client.session.cookies.get("_managebac_session", "")
     print(f"authenticated as {email}")
     print(f"trying ActionCable subscribe on wss://{HOST}{PATH}\n")

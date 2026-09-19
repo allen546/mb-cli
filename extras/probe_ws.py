@@ -38,7 +38,7 @@ def probe(path: str, token: str) -> str:
         "Sec-WebSocket-Version: 13\r\n"
         f"Sec-WebSocket-Key: {key}\r\n"
         f"Authorization: Bearer {token}\r\n"
-        "Origin: https://myschool.managebac.cn\r\n"
+        f"Origin: https://{HOST}\r\n"
         "\r\n"
     )
     ctx = ssl.create_default_context()

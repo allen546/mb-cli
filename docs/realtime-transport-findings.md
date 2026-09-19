@@ -1,8 +1,9 @@
 # Real-time notifications: what the transport can actually do
 
-Written 2026-09-19. Every claim below was measured against the live account
-(`myschool.managebac.cn`) with the probes in `extras/`. No password was used
-and no state was written.
+Written 2026-09-19. Every claim below was measured against a live `.cn`
+account with the probes in `extras/`. No password was used and no state was
+written. The school subdomain is deliberately not named here, since this file
+ships in the sdist.
 
 ## The question
 
@@ -25,8 +26,10 @@ graph LR
     PROBE1["probe_ws.py<br/>9 paths → 404"] -.->|no| HUB
     PROBE2["probe_actioncable.py<br/>→ 101 Switching Protocols"] -.->|yes| MB
     NOTIF["Notification data"] --> HUB
-    MB -.->|channel name unknown| NOTIF
+    MB -.->|PresenceChannel only| PRESENCE["presence events<br/>not notifications"]
 ```
+
+The ManageBac socket is real, but it carries presence — see below.
 
 ## What the MNN hub is
 
@@ -109,9 +112,9 @@ then, unprompted:
 It speaks the ActionCable protocol — the `@rails/actioncable` library is bundled
 in `student-*.js`.
 
-**The channel name is the missing piece.** Guessing produced no notification
-channel. Six plausible names (`NotificationsChannel`, `MnnHubChannel`,
-`NotificationChannel`, `MessagesAndNotificationsChannel`, `NoticesChannel`,
+**Guessing produced no notification channel.** Six plausible names
+(`NotificationsChannel`, `MnnHubChannel`, `NotificationChannel`,
+`MessagesAndNotificationsChannel`, `NoticesChannel`,
 `UnreadNotificationsChannel`) all got *silence* — no confirm, no reject.
 
 Silence is a real negative here, established by control:
@@ -130,22 +133,53 @@ exist** — not that the probe failed.
 
 The `ProgressChannel`/`PresenceChannel`/`PresentationChannel`/`CoreUnitChannel`/
 `AttendanceReportsChannel` names come from the same bundle, which tells us the
-frontend does use this socket for live updates. It just does not appear to use it
-for the notification bell, which the MNN hub module serves by fetch.
+frontend does use this socket for live updates — just not for the notification
+bell, which the MNN hub module serves by fetch. The capture below confirms
+which of those the bell actually relies on.
+
+## Settled: the socket carries presence, not notifications
+
+The missing `identifier` arrived — a DevTools WS capture from the notifications
+page, with the socket open and the bell on screen. The whole session subscribes
+to exactly one channel:
+
+```json
+{"channel":"PresenceChannel"}
+```
+
+Every frame after `welcome` is either that subscription confirming, or:
+
+```json
+{"type":"ping","message":1789787340}                        # every 3 s
+{"identifier":"{\"channel\":\"PresenceChannel\"}", …,
+ "message":{"event":"user-presence-changed","status":"online",
+            "type":"presence","user_id":13243591}}
+```
+
+So the socket is a **who-is-online channel**. It never carries a notification.
+The handshake matches the probe byte for byte — `101`, `X-AnyCable-Version:
+1.0.5-2b1cbd6`, `Sec-WebSocket-Protocol: actioncable-v1-json` — so this is
+definitely the same socket `probe_actioncable.py` was talking to, and
+`PresenceChannel` was one of its *controls*, which confirmed.
+
+That closes the loop on the earlier result. The controls made silence a real
+negative, and the browser's own behaviour agrees: with the socket open and the
+bell on screen, it still fetches `events.json`, `my_classes`,
+`tasks_and_deadlines`, `calendar` and `timetable` over XHR/fetch.
+
+**ManageBac has no push channel for notifications.** The ceiling is a fast
+conditional poll, and the design below is it. The AnyCable socket remains an
+unused capability of the host, not a thing tahuti can build on.
 
 ## What is needed to finish this
 
-One piece of browser evidence: with the notifications page open, filter the
-Network tab to **WS** and read the `subscribe` frame's `identifier`. That names
-the channel and settles whether push is reachable. Per the established
-redaction rule, capture the `identifier` only — **never the `Authorization` or
-JWT value**.
+Nothing further — the browser evidence arrived and it is negative. The `WS`
+filter showed a single `PresenceChannel` subscription and no notification
+frames. If a future release adds one, `extras/probe_actioncable.py` is the tool
+that would find it: add the name to `CHANNELS` and the controls will still
+calibrate whether silence means anything.
 
-If the bell has no WS frame at all, it is fetch-polled and the honest answer is
-that ManageBac has no push channel for notifications, and the design below is
-the ceiling.
-
-## Recommended design either way
+## Recommended design
 
 Poll `/notifications/stats` with `If-None-Match` on a short timer. Fetch
 `/notifications` in full only when the stats Etag changes.
@@ -158,7 +192,9 @@ Poll `/notifications/stats` with `If-None-Match` on a short timer. Fetch
 
 At a 5 s interval that is ~12 polls/min, 32 bytes each when idle. That is
 genuinely near-real-time for a homework tracker, it uses only endpoints already
-in the codebase, and it needs no new transport, dependency, or protocol.
+in the codebase, and it needs no new transport, dependency, or protocol. It is
+also what ManageBac's own frontend does, which makes it the supported path
+rather than a workaround.
 
 Two changes make it real:
 
@@ -170,8 +206,9 @@ Two changes make it real:
 2. **Send `If-None-Match`** with the last Etag and treat `304` as "nothing
    changed".
 
-Then the socket becomes an optional fast path if the WS frame ever turns up a
-notification channel — not a dependency.
+The AnyCable socket stays out of the picture. It carries presence, so there is
+nothing in it to build on, and treating it as a fast path would mean
+implementing ActionCable framing to receive events that are not sent.
 
 ## Probes
 
