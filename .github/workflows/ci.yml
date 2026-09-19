@@ -21,7 +21,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: true
+          enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev
@@ -39,7 +39,7 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-          cache: true
+          enable-cache: true
 
       - name: Build sdist and wheel
         run: uv build
