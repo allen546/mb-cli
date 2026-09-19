@@ -1,4 +1,4 @@
-"""Tests for mb_cli.__main__ (CLI entry-point)."""
+"""Tests for tahuti.__main__ (CLI entry-point)."""
 
 from __future__ import annotations
 
@@ -12,20 +12,20 @@ if sys.path[0] != worktree_src:
     sys.path.insert(0, worktree_src)
 
 import importlib
-import mb_cli
+import tahuti
 
-mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
-if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
-    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+tahuti_pkg_dir = str(Path(worktree_src) / "tahuti")
+if hasattr(tahuti, "__path__") and tahuti_pkg_dir not in tahuti.__path__:
+    tahuti.__path__.insert(0, tahuti_pkg_dir)
 
-if "mb_cli.__main__" in sys.modules:
-    importlib.reload(sys.modules["mb_cli.__main__"])
+if "tahuti.__main__" in sys.modules:
+    importlib.reload(sys.modules["tahuti.__main__"])
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.__main__ import build_parser, main
+from tahuti.__main__ import build_parser, main
 
 
 class TestBuildParser:
@@ -197,12 +197,12 @@ class TestMainLogin:
         mock_client.base = "https://myschool.managebac.cn"
         mock_client.session.cookies.get.return_value = "session_cookie"
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(
                 mock_client, "test@example.com"
             )
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -243,10 +243,10 @@ class TestMainList:
             "summary": {"upcoming_count": 1, "past_count": 0, "overdue_count": 0},
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["list", "--format", "json"])
@@ -275,10 +275,10 @@ class TestMainList:
             "summary": {"upcoming_count": 2, "past_count": 0, "overdue_count": 0},
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print") as mock_print:
                         with pytest.raises(SystemExit) as exc_info:
                             main(["list", "--tag", "Summative", "--format", "json"])
@@ -301,10 +301,10 @@ class TestMainView:
         mock_client = MagicMock()
         mock_client.get_task_detail.return_value = {"description": "Do this"}
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(
@@ -323,10 +323,10 @@ class TestMainView:
 
         mock_client = MagicMock()
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["view", "--format", "json"])
@@ -347,10 +347,10 @@ class TestMainView:
             "crawled_at": "t",
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["view", "99999", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -363,10 +363,10 @@ class TestMainSubmit:
 
         mock_client = MagicMock()
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -377,10 +377,10 @@ class TestMainSubmit:
 
         mock_client = MagicMock()
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with pytest.raises(SystemExit) as exc_info:
                         main(["submit", "12345", "--format", "json"])
                     assert exc_info.value.code == 1
@@ -404,10 +404,10 @@ class TestMainCalendar:
         mock_client = MagicMock()
         mock_client.get_calendar_events.return_value = []
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["calendar", "--today", "--format", "json"])
@@ -422,10 +422,10 @@ class TestMainTimetable:
         mock_client = MagicMock()
         mock_client.get_timetable.return_value = {"days": [], "lessons": []}
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["timetable", "--format", "json"])
@@ -454,10 +454,10 @@ class TestMainGrades:
             "expected_grade": None,
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--format", "json"])
@@ -475,10 +475,10 @@ class TestMainGrades:
             "expected_grade": None,
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["grades", "--class-id", "100", "--format", "json"])
@@ -493,11 +493,11 @@ class TestMainNotifications:
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
-                    with patch("mb_cli.__main__.hub_client") as MockHub:
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
+                    with patch("tahuti.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.stats.return_value = {"unread_messages": 2}
                         mock_hub.list.return_value = {
@@ -516,11 +516,11 @@ class TestMainNotifications:
         mock_client = MagicMock()
         mock_client.get_notification_token.return_value = ("ep", "tok")
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
-                    with patch("mb_cli.__main__.hub_client") as MockHub:
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
+                    with patch("tahuti.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.mark_read.return_value = True
                         with patch("builtins.print"):
@@ -552,8 +552,8 @@ class TestMainDaemon:
 
         nothing_stopped = {"stopped": False, "reason": "pid_file_missing"}
         with (
-            patch("mb_cli.__main__.ServiceManager") as MockMgr,
-            patch("mb_cli.__main__.stop_daemon", return_value=nothing_stopped),
+            patch("tahuti.__main__.ServiceManager") as MockMgr,
+            patch("tahuti.__main__.stop_daemon", return_value=nothing_stopped),
         ):
             MockMgr.return_value.stop_background.return_value = {
                 "stopped": False,
@@ -571,8 +571,8 @@ class TestMainDaemon:
         monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         with (
-            patch("mb_cli.__main__.ServiceManager") as MockMgr,
-            patch("mb_cli.__main__.stop_daemon") as mock_stop,
+            patch("tahuti.__main__.ServiceManager") as MockMgr,
+            patch("tahuti.__main__.stop_daemon") as mock_stop,
         ):
             MockMgr.return_value.stop_background.return_value = {
                 "stopped": True,
@@ -588,7 +588,7 @@ class TestMainDaemon:
         monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
         monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
-        with patch("mb_cli.__main__.configure_webhook") as mock_conf:
+        with patch("tahuti.__main__.configure_webhook") as mock_conf:
             mock_conf.return_value = {"webhook_url": "http://new:8080/hook"}
             with patch("builtins.print"):
                 with pytest.raises(SystemExit) as exc_info:
@@ -616,10 +616,10 @@ class TestMainCountGradeFreq:
             "classes": [{"id": "100", "name": "Math"}],
         }
 
-        with patch("mb_cli.__main__._build_client") as mock_bc:
+        with patch("tahuti.__main__._build_client") as mock_bc:
             mock_bc.return_value = _mock_build_client_result(mock_client)
-            with patch("mb_cli.auth.save_profile"):
-                with patch("mb_cli.auth.save_session"):
+            with patch("tahuti.auth.save_profile"):
+                with patch("tahuti.auth.save_session"):
                     with patch("builtins.print"):
                         with pytest.raises(SystemExit) as exc_info:
                             main(["count-grade-freq", "--format", "json"])
@@ -628,7 +628,7 @@ class TestMainCountGradeFreq:
 
 def test_reclassify_tasks_uses_canonical_classifier(tmp_path: Path):
     from datetime import datetime
-    from mb_cli.__main__ import _reclassify_tasks
+    from tahuti.__main__ import _reclassify_tasks
 
     now = datetime(2026, 9, 10, 12, 0, 0)
     merged_map = {

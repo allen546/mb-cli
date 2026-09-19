@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import pytest
 
-from mb_cli.task_status import (
+from tahuti.task_status import (
     GradeStatus,
     SubmissionStatus,
     align_timezones,

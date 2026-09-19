@@ -509,8 +509,8 @@ def test_receiver_and_daemon_agree_on_the_signed_material():
     """
     pytest.importorskip("requests_mock", reason="needs requests-mock")
     try:
-        from mb_cli.daemon.events import MBEvent, WebhookConfig
-        from mb_cli.daemon.webhook import WebhookDispatcher
+        from tahuti.daemon.events import MBEvent, WebhookConfig
+        from tahuti.daemon.webhook import WebhookDispatcher
     except ImportError:
         pytest.skip("tahuti is not installed; cannot cross-check the producer")
 

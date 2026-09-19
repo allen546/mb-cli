@@ -8,28 +8,28 @@ worktree_src = str(Path(__file__).resolve().parent.parent / "src")
 if sys.path[0] != worktree_src:
     sys.path.insert(0, worktree_src)
 
-import mb_cli
+import tahuti
 
-mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
-if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
-    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+tahuti_pkg_dir = str(Path(worktree_src) / "tahuti")
+if hasattr(tahuti, "__path__") and tahuti_pkg_dir not in tahuti.__path__:
+    tahuti.__path__.insert(0, tahuti_pkg_dir)
 
 try:
-    import mb_cli.daemon
-    daemon_pkg_dir = str(Path(worktree_src) / "mb_cli" / "daemon")
-    if hasattr(mb_cli.daemon, "__path__") and daemon_pkg_dir not in mb_cli.daemon.__path__:
-        mb_cli.daemon.__path__.insert(0, daemon_pkg_dir)
+    import tahuti.daemon
+    daemon_pkg_dir = str(Path(worktree_src) / "tahuti" / "daemon")
+    if hasattr(tahuti.daemon, "__path__") and daemon_pkg_dir not in tahuti.daemon.__path__:
+        tahuti.daemon.__path__.insert(0, daemon_pkg_dir)
 except ImportError:
     pass
 
-if "mb_cli.daemon.stealth" in sys.modules:
-    importlib.reload(sys.modules["mb_cli.daemon.stealth"])
+if "tahuti.daemon.stealth" in sys.modules:
+    importlib.reload(sys.modules["tahuti.daemon.stealth"])
 
 
 from unittest.mock import MagicMock
 from bs4 import BeautifulSoup
-from mb_cli.daemon.stealth import StealthTaskCrawler
-from mb_cli.daemon.events import StealthConfig
+from tahuti.daemon.stealth import StealthTaskCrawler
+from tahuti.daemon.events import StealthConfig
 
 
 def test_stealth_crawler_navigates_parent_and_parses():

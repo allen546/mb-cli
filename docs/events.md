@@ -42,7 +42,7 @@ mutation in this project is an HTTP `GET`/`PUT`.
    would be `wss://…`. The value is consumed as a REST base by
    `MNNHubClient.__init__` (`self.base = f"{endpoint}/api/frontend/v2"`), which only
    works if the scheme is `https://`.
-4. **The hardcoded fallbacks are HTTPS origins.** `mb_cli.notifications.HUB_ENDPOINTS`
+4. **The hardcoded fallbacks are HTTPS origins.** `tahuti.notifications.HUB_ENDPOINTS`
    maps `managebac.com` → `https://mnn-hub.prod.faria.com` and `managebac.cn` →
    `https://mnn-hub.prod.faria.cn`, used verbatim as the REST base. These are also
    what `hub_for_domain()` returns when the scrape yields no endpoint.
@@ -105,7 +105,7 @@ Downstream consumer applications (such as iOS push notifiers, Web Dashboards, To
 
 ```mermaid
 flowchart TD
-    subgraph producer["mb-cli — Core Event Producer"]
+    subgraph producer["tahuti — Core Event Producer"]
         A["Session auth and automated token refresh"]
         B["MNN Hub REST polling and HTML crawling"]
         C["Background deadline countdown evaluator"]
@@ -176,7 +176,7 @@ Downstream systems can consume ManageBac events via two primary channels:
 
 ```python
 import asyncio
-from mb_cli import ManageBacClient, ManageBacDaemon
+from tahuti import ManageBacClient, ManageBacDaemon
 
 async def main():
     client = ManageBacClient.from_config()
@@ -468,7 +468,7 @@ This recipe implements an HTTP server that:
 Save this file as `webhook_receiver.py`:
 
 ```python
-"""Production-ready FastAPI Webhook Receiver for mb-cli events.
+"""Production-ready FastAPI Webhook Receiver for tahuti events.
 
 Install dependencies:
     pip install fastapi uvicorn pydantic
@@ -499,7 +499,7 @@ logger = logging.getLogger("webhook_receiver")
 
 app = FastAPI(
     title="ManageBac Webhook Receiver",
-    description="Consumes events emitted by mb-cli daemon over HTTP webhooks.",
+    description="Consumes events emitted by tahuti daemon over HTTP webhooks.",
     version="1.0.0",
 )
 
@@ -510,7 +510,7 @@ WEBHOOK_SECRET: Optional[str] = os.environ.get("MB_WEBHOOK_SECRET")
 
 
 class TaskPayload(BaseModel):
-    """The 12 standard task fields emitted by mb-cli."""
+    """The 12 standard task fields emitted by tahuti."""
     task_id: Optional[int | str] = None
     class_id: Optional[int | str] = None
     class_name: Optional[str] = None
@@ -706,8 +706,8 @@ import signal
 import sys
 from typing import Any
 
-from mb_cli import ManageBacClient, ManageBacDaemon
-from mb_cli.daemon.events import MBEvent
+from tahuti import ManageBacClient, ManageBacDaemon
+from tahuti.daemon.events import MBEvent
 
 logging.basicConfig(
     level=logging.INFO,

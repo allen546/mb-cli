@@ -96,7 +96,7 @@ uv run pytest
 Use `ManageBacClient` for synchronous fetching and actions:
 
 ```python
-from mb_cli import ManageBacClient
+from tahuti import ManageBacClient
 
 # Option A: Authenticate automatically from saved local CLI credentials
 client = ManageBacClient.from_config()
@@ -139,7 +139,7 @@ Use `ManageBacDaemon.stream()` to consume ManageBac events asynchronously in you
 
 ```python
 import asyncio
-from mb_cli import ManageBacClient, ManageBacDaemon
+from tahuti import ManageBacClient, ManageBacDaemon
 
 async def main():
     # Load authenticated client
@@ -351,10 +351,12 @@ tahuti daemon configure-channel qq 123456789  # deliver via a zeroclaw channel i
 - **Interactive TTY**: Formatted tables with color highlights.
 - **Piped / Non-TTY**: Structured JSON output.
 - **Explicit Override**: Add `--format pretty` or `--format json` to any command.
-- **Environment Override**: Set `MB_CLI_FORMAT=json` or `MB_CLI_FORMAT=pretty` to
+- **Environment Override**: Set `TAHUTI_FORMAT=json` or `TAHUTI_FORMAT=pretty` to
   pin the shape for a script that runs sometimes with and sometimes without a
   terminal (cron, CI, `tee`). `--format` still wins over the environment, and the
-  environment wins over the TTY probe.
+  environment wins over the TTY probe. The pre-rename `MB_CLI_FORMAT` is still
+  read as a fallback, so an existing script does not break; if both are set,
+  `TAHUTI_FORMAT` wins.
 - **Streams**: Standard output (`stdout`) is reserved for command data; logs and progress go to standard error (`stderr`).
 
 ### Configuration Files

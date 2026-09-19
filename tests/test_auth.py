@@ -1,4 +1,4 @@
-"""Tests for mb_cli.auth."""
+"""Tests for tahuti.auth."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli import auth
-from mb_cli.auth import build_client, hub_client, session_email
-from mb_cli.client import ManageBacClient
-from mb_cli.config import AppState, ProfileConfig, SessionConfig, load_creds
-from mb_cli.exceptions import CommandError
+from tahuti import auth
+from tahuti.auth import build_client, hub_client, session_email
+from tahuti.client import ManageBacClient
+from tahuti.config import AppState, ProfileConfig, SessionConfig, load_creds
+from tahuti.exceptions import CommandError
 
 
 # ── which email identifies this profile's on-disk state ───────────────────
@@ -76,9 +76,9 @@ class TestSessionEmail:
         profile_email = "profile@example.com"
         state = _state(profile_email=profile_email, session_email_="session@example.com")
         with (
-            patch("mb_cli.auth.load_state", return_value=state),
-            patch("mb_cli.auth.ManageBacClient") as client_cls,
-            patch("mb_cli.auth._store_password") as store_password,
+            patch("tahuti.auth.load_state", return_value=state),
+            patch("tahuti.auth.ManageBacClient") as client_cls,
+            patch("tahuti.auth._store_password") as store_password,
         ):
             client_cls.return_value.login.return_value = True
             client_cls.return_value.session.cookies.get.return_value = "fresh_cookie"
@@ -125,7 +125,7 @@ class TestLoginEmailAgreesWithSessionEmail:
         ],
     )
     def test_the_two_resolvers_agree(self, profile_email, session_email_, expected):
-        from mb_cli.__main__ import _login_email
+        from tahuti.__main__ import _login_email
 
         state = _state(profile_email=profile_email, session_email_=session_email_)
         assert _login_email(state) == expected
@@ -140,7 +140,7 @@ class TestLoginEmailAgreesWithSessionEmail:
         """
         import hashlib
 
-        from mb_cli.__main__ import _cache_dir_for_email, _login_email
+        from tahuti.__main__ import _cache_dir_for_email, _login_email
 
         profile_email = "profile@example.com"
         state = _state(profile_email=profile_email, session_email_="session@example.com")
@@ -246,7 +246,7 @@ class TestBuildClient:
         monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
         monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
-        with patch("mb_cli.auth.load_creds", return_value=None):
+        with patch("tahuti.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
                 build_client(school="myschool", password=None)
         assert exc_info.value.code == "missing_credentials"
@@ -267,7 +267,7 @@ class TestBuildClient:
         monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
         monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
-        with patch("mb_cli.auth.load_creds", return_value=None):
+        with patch("tahuti.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
                 build_client(school="myschool", email="test@example.com", password=None)
         assert exc_info.value.code == "missing_credentials"
@@ -294,7 +294,7 @@ class TestBuildClient:
         assert client.session.cookies.get("_managebac_session") == "my_cookie_value"
         assert state.profile.school == "myschool"
 
-    @patch("mb_cli.auth.ManageBacClient")
+    @patch("tahuti.auth.ManageBacClient")
     def test_password_auth(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = True
@@ -322,7 +322,7 @@ class TestBuildClient:
         )
         assert email == "test@example.com"
 
-    @patch("mb_cli.auth.ManageBacClient")
+    @patch("tahuti.auth.ManageBacClient")
     def test_cache_directory_namespacing(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = True
@@ -340,7 +340,7 @@ class TestBuildClient:
         monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
         monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
-        with patch("mb_cli.auth.ResponseCache") as MockCache:
+        with patch("tahuti.auth.ResponseCache") as MockCache:
             build_client(
                 school="myschool",
                 email="user@example.com",
@@ -351,7 +351,7 @@ class TestBuildClient:
             call_args = MockCache.call_args[1]
             assert call_args["cache_dir"].name == expected_hash
 
-    @patch("mb_cli.auth.ManageBacClient")
+    @patch("tahuti.auth.ManageBacClient")
     def test_password_auth_failure(self, MockClient, tmp_path: Path, monkeypatch):
         mock_instance = MockClient.return_value
         mock_instance.login.return_value = False
@@ -373,7 +373,7 @@ class TestBuildClient:
             )
         assert exc_info.value.code == "authentication_failed"
 
-    @patch("mb_cli.auth._is_session_alive", return_value=True)
+    @patch("tahuti.auth._is_session_alive", return_value=True)
     def test_session_cookie_reuse(self, mock_alive, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
@@ -413,7 +413,7 @@ class TestBuildClient:
         monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
         monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
-        with patch("mb_cli.auth.load_creds", return_value=None):
+        with patch("tahuti.auth.load_creds", return_value=None):
             with pytest.raises(CommandError) as exc_info:
                 build_client(reauth=True, password=None)
         assert exc_info.value.code == "missing_credentials"
@@ -491,11 +491,11 @@ class TestBuildClient:
         state, client, email = build_client(cookie="c", retry=5)
         assert client.retry == 5
 
-    @patch("mb_cli.auth.save_session")
-    @patch("mb_cli.auth.save_profile")
-    @patch("mb_cli.auth.ManageBacClient")
-    @patch("mb_cli.auth.load_creds")
-    @patch("mb_cli.auth.load_state")
+    @patch("tahuti.auth.save_session")
+    @patch("tahuti.auth.save_profile")
+    @patch("tahuti.auth.ManageBacClient")
+    @patch("tahuti.auth.load_creds")
+    @patch("tahuti.auth.load_state")
     def test_relogin_on_expired_cookie(
         self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
     ):
@@ -533,11 +533,11 @@ class TestBuildClient:
         )
         mock_save_session.assert_called_once()
 
-    @patch("mb_cli.auth.save_session")
-    @patch("mb_cli.auth.save_profile")
-    @patch("mb_cli.auth.ManageBacClient")
-    @patch("mb_cli.auth.load_creds")
-    @patch("mb_cli.auth.load_state")
+    @patch("tahuti.auth.save_session")
+    @patch("tahuti.auth.save_profile")
+    @patch("tahuti.auth.ManageBacClient")
+    @patch("tahuti.auth.load_creds")
+    @patch("tahuti.auth.load_state")
     def test_relogin_on_401(
         self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
     ):
@@ -566,11 +566,11 @@ class TestBuildClient:
         )
         mock_save_session.assert_called_once()
 
-    @patch("mb_cli.auth.save_session")
-    @patch("mb_cli.auth.save_profile")
-    @patch("mb_cli.auth.ManageBacClient")
-    @patch("mb_cli.auth.load_creds")
-    @patch("mb_cli.auth.load_state")
+    @patch("tahuti.auth.save_session")
+    @patch("tahuti.auth.save_profile")
+    @patch("tahuti.auth.ManageBacClient")
+    @patch("tahuti.auth.load_creds")
+    @patch("tahuti.auth.load_state")
     def test_relogin_saves_session(
         self, mock_load_state, mock_load_creds, MockClient, mock_save_profile, mock_save_session
     ):
@@ -600,10 +600,10 @@ class TestBuildClient:
         saved_state = mock_save_session.call_args[0][0]
         assert saved_state.session.cookie == "NEW_COOKIE_VALUE"
 
-    @patch("mb_cli.auth.save_session")
-    @patch("mb_cli.auth.ManageBacClient")
-    @patch("mb_cli.auth.load_creds")
-    @patch("mb_cli.auth.load_state")
+    @patch("tahuti.auth.save_session")
+    @patch("tahuti.auth.ManageBacClient")
+    @patch("tahuti.auth.load_creds")
+    @patch("tahuti.auth.load_state")
     def test_relogin_failure_raises_error(self, mock_load_state, mock_load_creds, MockClient, mock_save_session):
         """Silent re-login raises CommandError when client.login() returns False."""
         mock_state = MagicMock()
@@ -628,10 +628,10 @@ class TestBuildClient:
             build_client(reauth=False)
         assert exc_info.value.code == "authentication_failed"
 
-    @patch("mb_cli.auth.save_session")
-    @patch("mb_cli.auth.ManageBacClient")
-    @patch("mb_cli.auth.load_creds", return_value=None)
-    @patch("mb_cli.auth.load_state")
+    @patch("tahuti.auth.save_session")
+    @patch("tahuti.auth.ManageBacClient")
+    @patch("tahuti.auth.load_creds", return_value=None)
+    @patch("tahuti.auth.load_state")
     def test_relogin_missing_creds_file_raises_error(self, mock_load_state, mock_load_creds, MockClient, mock_save_session):
         """Silent re-login raises CommandError when creds file is missing or incomplete."""
         mock_state = MagicMock()

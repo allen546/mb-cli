@@ -83,7 +83,7 @@ def signed_material(timestamp_header: str | None, payload_bytes: bytes) -> bytes
     left ``X-MB-Timestamp`` unauthenticated — anyone who captured one POST could
     replay it forever by rewriting that header, because the original digest
     still validated and the freshness check below passed. Keep this in lockstep
-    with ``signed_material`` in ``mb_cli/daemon/webhook.py``.
+    with ``signed_material`` in ``tahuti/daemon/webhook.py``.
     """
     return f"{timestamp_header or ''}.".encode("utf-8") + payload_bytes
 

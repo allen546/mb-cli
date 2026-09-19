@@ -1,4 +1,4 @@
-"""Tests for mb_cli.client."""
+"""Tests for tahuti.client."""
 
 from __future__ import annotations
 
@@ -14,14 +14,14 @@ if sys.path[0] != worktree_src:
     sys.path.insert(0, worktree_src)
 
 import importlib
-import mb_cli
+import tahuti
 
-mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
-if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
-    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+tahuti_pkg_dir = str(Path(worktree_src) / "tahuti")
+if hasattr(tahuti, "__path__") and tahuti_pkg_dir not in tahuti.__path__:
+    tahuti.__path__.insert(0, tahuti_pkg_dir)
 
-if "mb_cli.client" in sys.modules:
-    importlib.reload(sys.modules["mb_cli.client"])
+if "tahuti.client" in sys.modules:
+    importlib.reload(sys.modules["tahuti.client"])
 
 from unittest.mock import MagicMock, patch
 
@@ -29,8 +29,8 @@ import pytest
 import requests
 import requests_mock as rm
 
-from mb_cli.cache import ResponseCache
-from mb_cli.client import (
+from tahuti.cache import ResponseCache
+from tahuti.client import (
     HEADERS,
     ManageBacClient,
     _absolute_event_url,
@@ -72,7 +72,7 @@ class TestManageBacClientInit:
 
     def test_from_config_classmethod(self):
         from unittest.mock import patch
-        with patch("mb_cli.auth.build_client") as mock_build:
+        with patch("tahuti.auth.build_client") as mock_build:
             mock_client = ManageBacClient("configschool")
             mock_build.return_value = (None, mock_client, "user@school.org")
             loaded = ManageBacClient.from_config(profile="testprofile")
@@ -98,7 +98,7 @@ class TestManageBacClientInit:
             assert client.session.headers.get(key) == val
 
     @pytest.mark.xfail(
-        reason="src/mb_cli/client.py:63-66 hardcodes a macOS User-Agent on every "
+        reason="src/tahuti/client.py:63-66 hardcodes a macOS User-Agent on every "
         "platform, so on Linux/Windows the fingerprint names the wrong OS. "
         "Test-only change: the src fix belongs to whoever owns client.py. "
         "This mark reports XPASS once the UA follows sys.platform — delete it then.",
@@ -912,7 +912,7 @@ class TestRetryLogic:
                 "https://myschool.managebac.cn/student/tasks_and_deadlines",
                 text="<html>Dashboard</html>",
             )
-            with patch("mb_cli.client.time.sleep"):
+            with patch("tahuti.client.time.sleep"):
                 assert client.login("a@b.com", "pass") is True
 
     def test_retries_on_503(self, tmp_path: Path):
@@ -927,7 +927,7 @@ class TestRetryLogic:
                     {"text": "<html></html>"},
                 ],
             )
-            with patch("mb_cli.client.time.sleep"):
+            with patch("tahuti.client.time.sleep"):
                 tasks = client.get_tasks_by_view("upcoming", max_pages=1)
                 assert tasks == []
 
@@ -940,7 +940,7 @@ class TestRetryLogic:
                 "https://myschool.managebac.cn/student/tasks_and_deadlines?view=upcoming&page=1",
                 exc=ConnectionError("fail"),
             )
-            with patch("mb_cli.client.time.sleep"):
+            with patch("tahuti.client.time.sleep"):
                 with pytest.raises(ConnectionError):
                     client.get_tasks_by_view("upcoming", max_pages=1)
 
@@ -993,8 +993,8 @@ class TestClientConcurrency:
         import threading
         import time
         from unittest.mock import MagicMock, patch
-        from mb_cli.client import ManageBacClient
-        from mb_cli.cache import ResponseCache
+        from tahuti.client import ManageBacClient
+        from tahuti.cache import ResponseCache
 
         cache = ResponseCache(cache_dir=tmp_path / "cache", enabled=True, ttl=1800)
         client = ManageBacClient("myschool", domain="managebac.cn", cache=cache)
@@ -1021,7 +1021,7 @@ class TestClientConcurrency:
         threads = []
 
         def worker():
-            with patch("mb_cli.client.time.sleep"):
+            with patch("tahuti.client.time.sleep"):
                 soup = client._get("/student/tasks_and_deadlines")
                 results.append(soup)
 
@@ -1114,7 +1114,7 @@ class TestSchoolDisplayTimezone:
         """
         import datetime as dt
 
-        from mb_cli.client import _school_display_tz
+        from tahuti.client import _school_display_tz
 
         monkeypatch.setenv("TZ", zone_key)
         expected_january, expected_july = self.DST_ZONES[zone_key]
@@ -1150,7 +1150,7 @@ class TestSchoolDisplayTimezone:
         """
         import datetime as dt
 
-        from mb_cli.client import parse_due_date
+        from tahuti.client import parse_due_date
 
         monkeypatch.setenv("TZ", zone_key)
         parsed = parse_due_date(text)
@@ -1168,7 +1168,7 @@ class TestSchoolDisplayTimezone:
         """
         import datetime as dt
 
-        from mb_cli.client import _local_iana_zone
+        from tahuti.client import _local_iana_zone
 
         monkeypatch.setenv("TZ", "UTC")
         resolved = _local_iana_zone()
@@ -1185,7 +1185,7 @@ class TestSchoolDisplayTimezone:
         """
         import datetime as dt
 
-        from mb_cli.client import _local_iana_zone, parse_due_date
+        from tahuti.client import _local_iana_zone, parse_due_date
 
         monkeypatch.delenv("TZ", raising=False)
         resolved = _local_iana_zone()

@@ -1,14 +1,14 @@
 import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
-from mb_cli.client import parse_due_date, ManageBacClient
-from mb_cli.cache import ResponseCache
+from tahuti.client import parse_due_date, ManageBacClient
+from tahuti.cache import ResponseCache
 
 
 def test_parse_due_date_wrapping():
     # Mock current datetime to Dec 28, 2026
     fixed_now = datetime(2026, 12, 28, 12, 0, 0)
-    with patch("mb_cli.client.datetime") as mock_datetime:
+    with patch("tahuti.client.datetime") as mock_datetime:
         mock_datetime.now.return_value = fixed_now
         mock_datetime.strptime = datetime.strptime
 
@@ -25,7 +25,7 @@ def test_parse_due_date_wrapping():
 
     # Mock current datetime to Jan 4, 2027
     fixed_now = datetime(2027, 1, 4, 12, 0, 0)
-    with patch("mb_cli.client.datetime") as mock_datetime:
+    with patch("tahuti.client.datetime") as mock_datetime:
         mock_datetime.now.return_value = fixed_now
         mock_datetime.strptime = datetime.strptime
 
@@ -63,8 +63,8 @@ def test_stale_cache_fallback(tmp_path):
 
 
 def test_view_submissions():
-    from mb_cli.formatters import render_pretty
-    from mb_cli.formatters import ok
+    from tahuti.formatters import render_pretty
+    from tahuti.formatters import ok
 
     payload = ok(
         "view",
@@ -109,7 +109,7 @@ def test_cmd_download(tmp_path):
     `tahuti download` used to write files and say nothing on stdout, so
     `--format json` and `--output` had nothing to act on.
     """
-    from mb_cli.__main__ import cmd_download
+    from tahuti.__main__ import cmd_download
 
     class Args:
         task_id = "123"
@@ -174,9 +174,9 @@ def test_cmd_download(tmp_path):
     client.session.get.return_value = mock_resp
 
     captured: dict = {}
-    with patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")), \
-         patch("mb_cli.__main__._authenticate_client"), \
-         patch("mb_cli.__main__.print_payload", side_effect=lambda p, o, f: captured.update(payload=p, output=o, fmt=f)):
+    with patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")), \
+         patch("tahuti.__main__._authenticate_client"), \
+         patch("tahuti.__main__.print_payload", side_effect=lambda p, o, f: captured.update(payload=p, output=o, fmt=f)):
 
         rc = cmd_download(args)
         assert rc == 0

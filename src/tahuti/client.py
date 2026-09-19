@@ -191,15 +191,32 @@ HEADERS = {
 }
 
 
-def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
+def parse_due_date(
+    due_date_str: str,
+    now_ref: datetime | None = None,
+    school_tz: tzinfo | None = None,
+) -> datetime | None:
     """Parse a ManageBac due date into a **timezone-aware** datetime.
 
     Every return value carries a ``tzinfo``, so two parsed dates are always
     comparable.  See :func:`_school_display_tz` for the timezone assumption
     applied to inputs that carry no offset of their own.
 
+    *school_tz* overrides that assumption for the naive inputs — pass the
+    school's zone and "September 15, 2026 at 23:59" is read as 23:59 *there*
+    rather than on the daemon host's clock.  It has to be a parameter rather
+    than something the caller can fix up afterwards: once the host's zone has
+    been attached the fact that the input was a bare wall-clock time is gone,
+    and the school's reading cannot be recovered from the result.
+
+    Inputs that carry their own offset keep it under every *school_tz*.
+
     Returns ``None`` when *due_date_str* is empty or unparseable.
     """
+
+    def _wall_clock(naive: datetime) -> datetime:
+        return naive.replace(tzinfo=school_tz or _school_display_tz(naive))
+
     if not due_date_str:
         return None
     try:
@@ -215,9 +232,7 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
                 # An ISO string with an offset keeps it; one without gets the
                 # school-display timezone rather than staying naive.
                 if parsed_iso.tzinfo is None:
-                    parsed_iso = parsed_iso.replace(
-                        tzinfo=_school_display_tz(parsed_iso)
-                    )
+                    parsed_iso = _wall_clock(parsed_iso)
                 return parsed_iso
             except (ValueError, TypeError):
                 pass
@@ -240,21 +255,21 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
                 parsed = datetime.strptime(cleaned_no_at, fmt)
                 # The offset has to be resolved for *this* date: a DST-aware zone
                 # object would pin whichever offset is in force at call time.
-                return parsed.replace(tzinfo=_school_display_tz(parsed))
+                return _wall_clock(parsed)
             except ValueError:
                 continue
 
         # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
         if ref.tzinfo is None:
-            ref = ref.replace(tzinfo=_school_display_tz(ref))
+            ref = _wall_clock(ref)
         current_year = ref.year
 
         dt = None
         for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
                 parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
-                dt = parsed.replace(tzinfo=_school_display_tz(parsed))
+                dt = _wall_clock(parsed)
                 break
             except ValueError:
                 continue
@@ -403,8 +418,8 @@ _TILE_SCORE_VARIANT_RE = re.compile(r"f-task-score--([a-z-]+)")
 def _card_submission_status(card, labels: Any = None) -> str | None:
     """Read a class-grades card's submission state as a canonical token.
 
-    Returns :data:`~mb_cli.task_status.SUBMISSION_SUBMITTED` /
-    :data:`~mb_cli.task_status.SUBMISSION_NOT_SUBMITTED`, or ``None`` when the
+    Returns :data:`~tahuti.task_status.SUBMISSION_SUBMITTED` /
+    :data:`~tahuti.task_status.SUBMISSION_NOT_SUBMITTED`, or ``None`` when the
     card says nothing about submission.  ``None`` must stay ``None``: inventing a
     state here is exactly how a task the page never labelled came to be reported
     as unsubmitted (and, with no dropbox link to rescue it, as "Complete").
@@ -435,7 +450,7 @@ def _card_status_text(card, labels: Any = None) -> str | None:
     frozen classifier behave: the state-class span's text is stored **verbatim**
     (``"Not Submitted"`` — space, not hyphen), while a card with no span falls
     back to a label lookup that writes the **canonical token**.  Because
-    :func:`~mb_cli.task_status.get_submission_status` compares exactly, the
+    :func:`~tahuti.task_status.get_submission_status` compares exactly, the
     verbatim spelling never matches and PENDING comes from ``has_submit_btn``,
     while the label-derived token does match.
 

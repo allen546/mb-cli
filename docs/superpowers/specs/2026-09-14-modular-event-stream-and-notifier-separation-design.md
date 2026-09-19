@@ -105,8 +105,8 @@ Because `client.py` uses synchronous `requests` and BeautifulSoup parsing, the p
 ```python
 import asyncio
 from typing import AsyncIterator
-from mb_cli.client import ManageBacClient
-from mb_cli.daemon.events import MBEvent
+from tahuti.client import ManageBacClient
+from tahuti.daemon.events import MBEvent
 
 class ManageBacDaemon:
     def __init__(
@@ -143,8 +143,8 @@ class ManageBacDaemon:
 ### 4.2 Consumer Example (Todoist / Dashboard / Notifier)
 ```python
 import asyncio
-from mb_cli import ManageBacClient
-from mb_cli.daemon import ManageBacDaemon
+from tahuti import ManageBacClient
+from tahuti.daemon import ManageBacDaemon
 
 async def main():
     client = ManageBacClient.from_config()
@@ -172,14 +172,14 @@ The following files contain personal or opinionated alerting logic and will be e
 4. `docs/deployments/2026-09-04-bark-webhook-receiver-deployment.md` (Operational deployment documentation for the Bark server)
 
 ### 5.2 Files to Refactor in `mb-cli`
-1. `src/mb_cli/daemon/service.py`:
+1. `src/tahuti/daemon/service.py`:
    - Clean up event generation to strictly match `MBEvent` specification.
    - Remove any Bark-specific payload assumptions.
-2. `src/mb_cli/daemon/scheduler.py`:
+2. `src/tahuti/daemon/scheduler.py`:
    - Keep generic deadline calculation emitting `deadline_approaching`, but remove opinionated alert priorities or audio flags.
-3. `src/mb_cli/daemon/__init__.py`:
+3. `src/tahuti/daemon/__init__.py`:
    - Export `ManageBacDaemon` with `.stream()` async generator support alongside CLI entry points.
-4. `src/mb_cli/__main__.py`:
+4. `src/tahuti/__main__.py`:
    - Ensure `mb daemon run --webhook-url <url>` cleanly dispatches pure `MBEvent` payloads to any target.
 
 ---

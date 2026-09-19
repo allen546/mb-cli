@@ -7,8 +7,8 @@ import logging
 from unittest.mock import MagicMock
 import pytest
 
-from mb_cli.daemon import ManageBacDaemon
-from mb_cli.daemon.events import MBEvent
+from tahuti.daemon import ManageBacDaemon
+from tahuti.daemon.events import MBEvent
 
 
 def test_daemon_stream_yields_events_and_terminates():

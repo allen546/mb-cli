@@ -1,4 +1,4 @@
-"""CLI entry-point for ``mb`` / ``python -m mb_cli``.
+"""CLI entry-point for ``mb`` / ``python -m tahuti``.
 
 Exit-code contract
 ------------------
@@ -108,7 +108,7 @@ EXIT_NOT_RUNNING = 3
 def _stdin_is_interactive() -> bool:
     """Whether a human is present to answer a prompt.
 
-    Same defensive shape as ``resolve_format`` in :mod:`mb_cli.formatters`: a
+    Same defensive shape as ``resolve_format`` in :mod:`tahuti.formatters`: a
     closed or replaced stdin must degrade to "non-interactive" rather than
     raise, because the daemon and every CI caller reach the code this guards.
     """
@@ -339,7 +339,7 @@ def _snapshot_path(state) -> Path:
     This is deliberately *not* :data:`DEFAULT_SNAPSHOT_PATH`, which ignores
     ``--config`` and is only a fallback for callers with no state at all.
 
-    The filename comes from :data:`mb_cli.config.SNAPSHOT_FILENAME` because the
+    The filename comes from :data:`tahuti.config.SNAPSHOT_FILENAME` because the
     submit containment check has to derive the very same path to refuse it.
     """
     return state.config_path.parent / SNAPSHOT_FILENAME

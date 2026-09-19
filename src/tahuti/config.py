@@ -96,7 +96,7 @@ def config_dir() -> Path:
 
     Resolved on every call rather than captured at import. ``Path.home()``
     reads ``$HOME``, so a module-level constant froze whatever the environment
-    was when :mod:`mb_cli.config` was first imported — and could then disagree
+    was when :mod:`tahuti.config` was first imported — and could then disagree
     with :func:`resolve_creds_path` and its siblings, which re-resolve per call.
     One code path would write to one directory while another read from a
     different one, which is exactly how a saved password ends up invisible to

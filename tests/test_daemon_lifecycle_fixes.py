@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests_mock as rm
 
-from mb_cli.daemon import (
+from tahuti.daemon import (
     DaemonConfig,
     DaemonService,
     _is_in_window,
@@ -36,12 +36,12 @@ from mb_cli.daemon import (
     start_loop,
     stop_daemon,
 )
-from mb_cli.daemon.events import MBEvent, ReminderThreshold
-from mb_cli.daemon.provider import AbstractNotificationProvider
-from mb_cli.daemon import state as state_module
-from mb_cli.daemon.scheduler import DDLScheduler, resolve_school_timezone
-from mb_cli.daemon.state import DaemonStateManager
-from mb_cli.daemon.system import (
+from tahuti.daemon.events import MBEvent, ReminderThreshold
+from tahuti.daemon.provider import AbstractNotificationProvider
+from tahuti.daemon import state as state_module
+from tahuti.daemon.scheduler import DDLScheduler, resolve_school_timezone
+from tahuti.daemon.state import DaemonStateManager
+from tahuti.daemon.system import (
     ServiceManager,
     pid_alive,
     read_pid_file,
@@ -123,7 +123,7 @@ def _stop_after(service: DaemonService, cycles: int = 1):
         if counter["n"] >= cycles:
             service._running = False
 
-    return patch("mb_cli.daemon.service.time.sleep", side_effect=_sleep)
+    return patch("tahuti.daemon.service.time.sleep", side_effect=_sleep)
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +158,7 @@ def _service_factory(tmp_path: Path, provider=None):
         service.state_manager = DaemonStateManager(state_path)
         return service
 
-    return patch("mb_cli.daemon.DaemonService", side_effect=factory)
+    return patch("tahuti.daemon.DaemonService", side_effect=factory)
 
 
 # ── 1. the long-running path must publish a stoppable pid ─────────────────
@@ -179,7 +179,7 @@ def test_service_writes_a_0600_pid_file_for_the_life_of_the_loop(tmp_path: Path)
         observed["mode"] = oct(pid_path.stat().st_mode & 0o777)
         service._running = False
 
-    with patch("mb_cli.daemon.service.time.sleep", side_effect=_sleep):
+    with patch("tahuti.daemon.service.time.sleep", side_effect=_sleep):
         service.start()
 
     assert observed["pid"] == str(os.getpid())
@@ -242,7 +242,7 @@ def test_a_daemon_pid_written_by_the_service_can_be_stopped(tmp_path: Path):
     assert pid_alive(proc.pid) is True
 
     try:
-        with patch("mb_cli.daemon._is_tahuti_pid", return_value=True):
+        with patch("tahuti.daemon._is_tahuti_pid", return_value=True):
             result = stop_daemon(str(config_path))
         assert result["stopped"] is True
         assert result["pid"] == proc.pid
@@ -271,7 +271,7 @@ def _run_once_with_provider(tmp_path: Path, provider, dry_run: bool, client=None
         captured["service"] = service
         return service
 
-    with patch("mb_cli.daemon.DaemonService", side_effect=factory):
+    with patch("tahuti.daemon.DaemonService", side_effect=factory):
         result = start_loop(
             client or _client(tmp_path),
             daemon_config,
@@ -305,7 +305,7 @@ def test_once_path_dispatches_through_the_service(tmp_path: Path):
         service_holder["service"] = service
         return service
 
-    with rm.Mocker() as m, patch("mb_cli.daemon.DaemonService", side_effect=factory):
+    with rm.Mocker() as m, patch("tahuti.daemon.DaemonService", side_effect=factory):
         m.post("http://localhost:9999/webhook", status_code=200)
         result = start_loop(client, daemon_config, once=True, dry_run=False)
 
@@ -363,7 +363,7 @@ def test_start_loop_threads_auth_refresh_fn_into_the_service(tmp_path: Path):
         service.state_manager = DaemonStateManager(tmp_path / "state.json")
         return service
 
-    with patch("mb_cli.daemon.DaemonService", side_effect=factory):
+    with patch("tahuti.daemon.DaemonService", side_effect=factory):
         start_loop(
             _client(tmp_path),
             _daemon_config(tmp_path),
@@ -377,12 +377,12 @@ def test_start_loop_threads_auth_refresh_fn_into_the_service(tmp_path: Path):
 def test_make_auth_refresh_fn_reports_failure_instead_of_raising(tmp_path: Path):
     client = MagicMock()
     with patch(
-        "mb_cli.auth._relogin_from_creds", side_effect=RuntimeError("no creds")
+        "tahuti.auth._relogin_from_creds", side_effect=RuntimeError("no creds")
     ) as relogin:
         assert make_auth_refresh_fn(client, MagicMock())() is False
         relogin.assert_called_once()
 
-    with patch("mb_cli.auth._relogin_from_creds") as relogin:
+    with patch("tahuti.auth._relogin_from_creds") as relogin:
         assert make_auth_refresh_fn(client, MagicMock())() is True
         relogin.assert_called_once()
 
@@ -534,14 +534,14 @@ def test_full_sync_gate_measures_from_the_last_attempt(tmp_path: Path):
 
 def test_next_active_window_returns_the_earliest_later_window():
     cfg = {"active_windows": [["22:00", "23:00"], ["12:00", "13:00"]]}
-    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 19, 10, 0)):
+    with patch("tahuti.daemon._now_local", return_value=datetime(2026, 9, 19, 10, 0)):
         nxt = _next_active_window(cfg)
     assert (nxt.hour, nxt.minute) == (12, 0)
 
 
 def test_next_active_window_falls_back_to_tomorrows_earliest_start():
     cfg = {"active_windows": [["22:00", "23:00"], ["08:00", "09:00"]]}
-    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 19, 23, 30)):
+    with patch("tahuti.daemon._now_local", return_value=datetime(2026, 9, 19, 23, 30)):
         nxt = _next_active_window(cfg)
     assert (nxt.hour, nxt.minute) == (8, 0)
     assert nxt.day == 20
@@ -626,7 +626,7 @@ def test_stop_daemon_escalates_to_sigkill(tmp_path: Path):
     proc = _spawn(_SIGTERM_PROOF_CHILD)
     write_pid_file(pid_path, proc.pid)
     try:
-        with patch("mb_cli.daemon._is_tahuti_pid", return_value=True):
+        with patch("tahuti.daemon._is_tahuti_pid", return_value=True):
             result = stop_daemon(str(config_path))
         assert result["stopped"] is True
         assert result["escalated_to_sigkill"] is True
@@ -646,9 +646,9 @@ def test_stop_daemon_reports_failure_when_the_process_survives(tmp_path: Path):
     write_pid_file(pid_path, 12345)
 
     with (
-        patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
+        patch("tahuti.daemon._is_tahuti_pid", return_value=True),
         patch(
-            "mb_cli.daemon.terminate_pid",
+            "tahuti.daemon.terminate_pid",
             return_value={"exited": False, "escalated": True},
         ),
     ):
@@ -671,8 +671,8 @@ def test_stop_daemon_leaves_a_replaced_pid_file_alone(tmp_path: Path):
         return {"exited": True, "escalated": False}
 
     with (
-        patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
-        patch("mb_cli.daemon.terminate_pid", side_effect=_replace_then_report),
+        patch("tahuti.daemon._is_tahuti_pid", return_value=True),
+        patch("tahuti.daemon.terminate_pid", side_effect=_replace_then_report),
     ):
         result = stop_daemon(str(config_path))
 
@@ -734,8 +734,8 @@ def test_start_background_closes_the_log_fd_when_popen_fails(
     def _boom(*_args, **_kwargs):
         raise OSError("cannot spawn")
 
-    monkeypatch.setattr("mb_cli.daemon.system.os.open", _tracking_open)
-    monkeypatch.setattr("mb_cli.daemon.system.subprocess.Popen", _boom)
+    monkeypatch.setattr("tahuti.daemon.system.os.open", _tracking_open)
+    monkeypatch.setattr("tahuti.daemon.system.subprocess.Popen", _boom)
 
     with pytest.raises(OSError):
         mgr.start_background()
@@ -760,7 +760,7 @@ def test_start_background_does_not_report_a_dead_child_as_started(
             return 2
 
     monkeypatch.setattr(
-        "mb_cli.daemon.system.subprocess.Popen", lambda *a, **k: _DeadChild()
+        "tahuti.daemon.system.subprocess.Popen", lambda *a, **k: _DeadChild()
     )
     result = mgr.start_background()
 
@@ -784,7 +784,7 @@ def test_stop_background_leaves_a_concurrently_written_pid_file(tmp_path: Path):
 
     try:
         with patch(
-            "mb_cli.daemon.system.terminate_pid", side_effect=_new_daemon_starts_midway
+            "tahuti.daemon.system.terminate_pid", side_effect=_new_daemon_starts_midway
         ):
             result = mgr.stop_background(verify_process=False)
 
@@ -799,6 +799,16 @@ def test_stop_background_leaves_a_concurrently_written_pid_file(tmp_path: Path):
 
 
 def test_naive_due_date_is_read_on_the_configured_school_clock(tmp_path: Path):
+    # CPython's `zoneinfo` is only a *reader* — it needs the IANA database from
+    # the OS or the `tzdata` package, and it is absent from macOS, Windows and
+    # plenty of Linux containers. When it is missing, `resolve_school_timezone`
+    # swallows the error and falls back to the host clock, so this test fails
+    # with a wrong schedule rather than an import error. Assert the dependency
+    # is present first so the failure names the real cause.
+    assert (
+        resolve_school_timezone("Asia/Shanghai") is not None
+    ), "no IANA timezone database available — install the `tzdata` package"
+
     state = DaemonStateManager(tmp_path / "state.json")
     # 11:59 PM == 23:59 on the school's clock.
     state.update_task(
@@ -821,6 +831,56 @@ def test_naive_due_date_is_read_on_the_configured_school_clock(tmp_path: Path):
 
     host_clock = DDLScheduler(state, reminders)
     assert host_clock.evaluate_deadlines(now=now) == []
+
+
+@pytest.mark.parametrize("host_tz", ["UTC", "Asia/Shanghai", "America/New_York"])
+def test_school_timezone_beats_the_host_clock(host_tz, monkeypatch, tmp_path):
+    """`school_timezone=` must not depend on what zone the daemon runs in.
+
+    It did. `parse_due_date` attached the *host's* zone to every naive due
+    date, so `due_dt.tzinfo` was never None and the scheduler's school-zone
+    branch could never run — the feature was written but never connected. The
+    symptom was a test that passed only when the host happened to be UTC+8 and
+    failed on UTC, so CI was red on every Python version while it looked fine
+    locally in Beijing.
+    """
+    monkeypatch.setenv("TZ", host_tz)
+
+    state = DaemonStateManager(tmp_path / "state.json")
+    state.update_task(
+        {
+            "id": "1000099",
+            "class_id": "1000012",
+            "title": "Essay",
+            "due_date": "September 15, 2026 at 11:59 PM",
+            "status": "not-submitted",
+        }
+    )
+    scheduler = DDLScheduler(
+        state, [ReminderThreshold(threshold_minutes=60, name="1h")],
+        school_timezone="Asia/Shanghai",
+    )
+    # 23:59 in Beijing is 15:59 UTC, so at 15:00 UTC it is 59 minutes away.
+    now = datetime(2026, 9, 15, 15, 0, tzinfo=ZoneInfo("UTC"))
+    events = scheduler.evaluate_deadlines(now=now)
+    assert len(events) == 1, host_tz
+    assert events[0].data["due_iso"].endswith("+08:00"), host_tz
+
+
+def test_parse_due_date_honours_the_school_zone_not_the_host(monkeypatch):
+    """The same wall-clock string must mean the same instant everywhere."""
+    from tahuti.client import parse_due_date
+
+    text = "September 15, 2026 at 11:59 PM"
+    for host_tz in ("UTC", "Asia/Shanghai", "America/New_York", "Australia/Sydney"):
+        monkeypatch.setenv("TZ", host_tz)
+        school = parse_due_date(text, school_tz=ZoneInfo("Asia/Shanghai"))
+        assert school.utcoffset().total_seconds() == 8 * 3600, host_tz
+        assert (school.hour, school.minute) == (23, 59), host_tz
+
+        # An input carrying its own offset keeps it under any school zone.
+        iso = parse_due_date("2026-09-15T23:59:00+02:00", school_tz=ZoneInfo("Asia/Shanghai"))
+        assert iso.utcoffset().total_seconds() == 2 * 3600, host_tz
 
 
 def test_resolve_school_timezone_rejects_junk():
@@ -846,7 +906,7 @@ def test_school_timezone_reaches_the_service_scheduler(tmp_path: Path):
 def test_bound_tasks_cache_evicts_the_oldest_entries(tmp_path: Path, monkeypatch):
     state = DaemonStateManager(tmp_path / "state.json")
     clock = [1_000_000.0]
-    monkeypatch.setattr("mb_cli.daemon.state.time.time", lambda: clock[0])
+    monkeypatch.setattr("tahuti.daemon.state.time.time", lambda: clock[0])
 
     for i in range(600):
         state.update_task({"id": f"t{i:03d}", "title": f"Task {i}"})
@@ -937,7 +997,7 @@ def test_once_pid_file_is_0600(tmp_path: Path):
         service.state_manager = DaemonStateManager(tmp_path / "state.json")
         return service
 
-    with patch("mb_cli.daemon.DaemonService", side_effect=factory):
+    with patch("tahuti.daemon.DaemonService", side_effect=factory):
         start_loop(_client(tmp_path), _daemon_config(tmp_path), once=True)
 
     assert observed["mode"] == "0o600"
@@ -958,7 +1018,7 @@ def test_once_pid_file_is_not_mistaken_for_a_daemon(tmp_path: Path):
         stop_result.update(stop_daemon(str(config_path)))
         return service
 
-    with patch("mb_cli.daemon.DaemonService", side_effect=factory):
+    with patch("tahuti.daemon.DaemonService", side_effect=factory):
         start_loop(_client(tmp_path), _daemon_config(tmp_path), once=True)
 
     assert stop_result["stopped"] is False
@@ -1020,7 +1080,7 @@ def test_configure_webhook_reports_failure_instead_of_raising(tmp_path: Path, mo
     def _boom(*_args, **_kwargs):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr("mb_cli.daemon.save_daemon_config", _boom)
+    monkeypatch.setattr("tahuti.daemon.save_daemon_config", _boom)
     result = configure_webhook("http://localhost:9/hook", str(path))
 
     assert result["ok"] is False
@@ -1037,7 +1097,7 @@ def test_configure_channel_send_reports_success_and_failure(tmp_path: Path, monk
     def _boom(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr("mb_cli.daemon.save_daemon_config", _boom)
+    monkeypatch.setattr("tahuti.daemon.save_daemon_config", _boom)
     failed = configure_channel_send("qq", "group-1", str(path))
     assert failed["ok"] is False
     assert "disk full" in failed["error"]

@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from mb_cli.client import ManageBacClient
-from mb_cli.daemon import diff_index
+from tahuti.client import ManageBacClient
+from tahuti.daemon import diff_index
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ from mb_cli.daemon import diff_index
 
 def _make_client(cache_dir=None) -> ManageBacClient:
     import threading
-    from mb_cli.cache import ResponseCache, DEFAULT_CACHE_DIR
+    from tahuti.cache import ResponseCache, DEFAULT_CACHE_DIR
     client = ManageBacClient.__new__(ManageBacClient)
     client.school = "testschool"
     client.domain = "managebac.cn"

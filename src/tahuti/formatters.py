@@ -19,7 +19,12 @@ from .task_status import (
 
 # Scripts that always want one shape can pin it here, so they never depend on
 # whether stdout happens to be a terminal (cron, CI, ``tee``, a pager).
-FORMAT_ENV = "MB_CLI_FORMAT"
+# The new spelling wins when both are set, so an already-migrated script is
+# never overridden by a stale old one — the same precedence rule as
+# :func:`tahuti.config.env_value`, which this mirrors rather than imports
+# because it has no need of that module's other concerns.
+FORMAT_ENV = "TAHUTI_FORMAT"
+FORMAT_ENV_LEGACY = "MB_CLI_FORMAT"
 _FORMAT_ENV_VALUES = ("json", "pretty")
 
 
@@ -51,7 +56,8 @@ def resolve_format(requested_format: str | None) -> str:
     Precedence, highest first:
 
     1. An explicit ``--format`` (``requested_format``).
-    2. ``$MB_CLI_FORMAT`` set to ``json`` or ``pretty``.
+    2. ``$TAHUTI_FORMAT`` (or the deprecated ``$MB_CLI_FORMAT``) set to
+       ``json`` or ``pretty``.
     3. The documented default: ``pretty`` on an interactive terminal, ``json``
        when stdout is not a TTY.
 
@@ -62,7 +68,7 @@ def resolve_format(requested_format: str | None) -> str:
     if requested_format:
         return str(requested_format)
 
-    override = os.environ.get(FORMAT_ENV, "").strip().lower()
+    override = (os.environ.get(FORMAT_ENV) or os.environ.get(FORMAT_ENV_LEGACY) or "").strip().lower()
     if override in _FORMAT_ENV_VALUES:
         return override
 
@@ -134,7 +140,7 @@ def render_pretty(payload: dict) -> str:
             lines.append("  (no tasks)")
             return "\n".join(lines)
 
-        from mb_cli.client import parse_due_date
+        from tahuti.client import parse_due_date
         from datetime import datetime
 
         def task_sort_key(t) -> datetime:

@@ -1,7 +1,7 @@
 """Tests for daemon state manager."""
 
 from pathlib import Path
-from mb_cli.daemon.state import DaemonStateManager
+from tahuti.daemon.state import DaemonStateManager
 
 
 def test_state_manager_lifecycle(tmp_path: Path):

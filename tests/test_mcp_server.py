@@ -1,4 +1,4 @@
-"""Tests for mb_cli.mcp_server."""
+"""Tests for tahuti.mcp_server."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.client import ManageBacClient
-from mb_cli.mcp_server import (
+from tahuti.client import ManageBacClient
+from tahuti.mcp_server import (
     _error_payload,
     _sanitize_error,
     count_grade_frequencies,
@@ -31,7 +31,7 @@ from mb_cli.mcp_server import (
 @pytest.fixture()
 def mock_build_client():
     """Patch auth.build_client for MCP tool tests."""
-    with patch("mb_cli.mcp_server.build_client") as mock:
+    with patch("tahuti.mcp_server.build_client") as mock:
         mock_state = MagicMock()
         mock_state.active_profile = "default"
         mock_client = MagicMock()
@@ -334,7 +334,7 @@ class TestGetNotificationsTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("endpoint", "token")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {"unread_messages": 3}
             mock_hub.list.return_value = {
@@ -350,7 +350,7 @@ class TestGetNotificationsTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.stats.return_value = {}
             mock_hub.list.return_value = {"items": [], "meta": {}}
@@ -398,7 +398,7 @@ class TestNotificationToolsValidateTheHubEndpoint:
         _mock, mock_client = mock_build_client_validating
         mock_client.get_notification_token.return_value = (scraped, "JWT-SECRET")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             MockHub.return_value.stats.return_value = {}
             MockHub.return_value.list.return_value = {"items": [], "meta": {}}
             MockHub.return_value.mark_read.return_value = {}
@@ -420,7 +420,7 @@ class TestNotificationToolsValidateTheHubEndpoint:
     @pytest.mark.parametrize("tool", TOOLS)
     def test_legitimate_hub_is_preserved(self, mock_build_client_validating, tool):
         """The guard must not break the working case."""
-        from mb_cli.notifications import HUB_ENDPOINTS
+        from tahuti.notifications import HUB_ENDPOINTS
 
         _mock, mock_client = mock_build_client_validating
         mock_client.get_notification_token.return_value = (
@@ -428,7 +428,7 @@ class TestNotificationToolsValidateTheHubEndpoint:
             "JWT-SECRET",
         )
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             MockHub.return_value.stats.return_value = {}
             MockHub.return_value.list.return_value = {"items": [], "meta": {}}
             MockHub.return_value.mark_read.return_value = {}
@@ -447,7 +447,7 @@ class TestMarkNotificationTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_read.return_value = True
             result = mark_notification(notification_id=123, action="read")
@@ -459,7 +459,7 @@ class TestMarkNotificationTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             result = mark_notification(notification_id=123, action="invalid")
             data = json.loads(result)
             assert "error" in data
@@ -470,7 +470,7 @@ class TestMarkAllNotificationsReadTool:
         mock, mock_client = mock_build_client
         mock_client.get_notification_token.return_value = ("https://mnn-hub.prod.faria.cn", "tok")
 
-        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+        with patch("tahuti.mcp_server.hub_client") as MockHub:
             mock_hub = MockHub.return_value
             mock_hub.mark_all_read.return_value = True
             result = mark_all_notifications_read()

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.mcp_server import view_task
+from tahuti.mcp_server import view_task
 
 TASK_URL = "https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099"
 
@@ -35,7 +35,7 @@ def view_task_env(tmp_path):
     client.base = "https://myschool.managebac.cn"
     client.get_task_detail.return_value = {"description": "Task body"}
     with patch(
-        "mb_cli.mcp_server.build_client",
+        "tahuti.mcp_server.build_client",
         return_value=(state, client, "test@example.com"),
     ):
         yield state, client

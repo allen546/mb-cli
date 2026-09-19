@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 def default_state_path() -> Path:
     """The daemon state file, resolved per call.
 
-    See :func:`mb_cli.cache.default_cache_dir`. Anything that must follow a
+    See :func:`tahuti.cache.default_cache_dir`. Anything that must follow a
     redirected ``$HOME`` — the submit containment check, tests — calls this
     rather than reading :data:`DEFAULT_STATE_PATH`.
     """

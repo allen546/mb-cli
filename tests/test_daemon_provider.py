@@ -2,8 +2,8 @@
 
 from unittest.mock import MagicMock
 import pytest
-from mb_cli.daemon.provider import MNNHubProvider, MobilePushProvider
-from mb_cli.daemon.events import MBEvent
+from tahuti.daemon.provider import MNNHubProvider, MobilePushProvider
+from tahuti.daemon.events import MBEvent
 
 
 def test_mnnhub_provider_normalization():

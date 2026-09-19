@@ -17,10 +17,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.__main__ import build_parser, cmd_daemon_run, cmd_daemon_start
-from mb_cli.__main__ import _apply_daemon_overrides
-from mb_cli.daemon import DEFAULT_WEBHOOK_URL
-from mb_cli.exceptions import CommandError
+from tahuti.__main__ import build_parser, cmd_daemon_run, cmd_daemon_start
+from tahuti.__main__ import _apply_daemon_overrides
+from tahuti.daemon import DEFAULT_WEBHOOK_URL
+from tahuti.exceptions import CommandError
 
 
 class _DaemonArgs:
@@ -131,7 +131,7 @@ def test_webhook_delivery_still_translates():
 
 def test_daemon_config_from_dict_reads_the_translated_interval():
     """End to end through the real config parser, not just the dict."""
-    from mb_cli.daemon import DaemonConfig
+    from tahuti.daemon import DaemonConfig
 
     config = DaemonConfig.from_dict(
         _apply_daemon_overrides({}, _DaemonArgs(interval=45))
@@ -175,7 +175,7 @@ def _background_args(**overrides):
 
 
 def test_background_forwards_previously_dropped_flags():
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         mgr = MockMgr.return_value
         mgr.start_background.return_value = {"started": True, "pid": 1}
         rc = cmd_daemon_start(
@@ -211,7 +211,7 @@ def test_background_channel_delivery_is_refused_before_spawning():
     HTTP webhook, so it would have started, computed alerts, and POSTed them to
     the localhost default while reporting success.
     """
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         MockMgr.return_value.start_background.return_value = {
             "started": True,
             "pid": 1,
@@ -225,7 +225,7 @@ def test_background_channel_delivery_is_refused_before_spawning():
 
 
 def test_background_secret_goes_to_environment_not_argv():
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         mgr = MockMgr.return_value
         mgr.start_background.return_value = {"started": True, "pid": 1}
         cmd_daemon_start(_background_args(webhook_url="https://h/x", secret="s3cret"))
@@ -236,7 +236,7 @@ def test_background_secret_goes_to_environment_not_argv():
 
 
 def test_background_reports_failure_exit_code():
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         mgr = MockMgr.return_value
         mgr.start_background.return_value = {"started": False, "reason": "already_running"}
         rc = cmd_daemon_start(_background_args())
@@ -249,11 +249,11 @@ def test_foreground_start_passes_interval_to_start_loop(tmp_path):
     client = MagicMock()
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_daemon_config", return_value={}),
-        patch("mb_cli.__main__.start_loop", return_value={}) as mock_loop,
-        patch("mb_cli.__main__.print_payload"),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_daemon_config", return_value={}),
+        patch("tahuti.__main__.start_loop", return_value={}) as mock_loop,
+        patch("tahuti.__main__.print_payload"),
     ):
         rc = cmd_daemon_start(_DaemonArgs(interval=45))
 
@@ -344,8 +344,8 @@ def test_dry_run_suppresses_the_webhook_dispatcher():
     (RFC 2606) cannot resolve, and `requests.post` is patched, so no real POST
     can leave the process either way.
     """
-    from mb_cli.daemon import DaemonConfig, DaemonService
-    from mb_cli.daemon.events import MBEvent, WebhookConfig
+    from tahuti.daemon import DaemonConfig, DaemonService
+    from tahuti.daemon.events import MBEvent, WebhookConfig
 
     config = DaemonConfig()
     config.webhooks = [WebhookConfig(url="https://webhook.example.invalid/hook")]
@@ -359,7 +359,7 @@ def test_dry_run_suppresses_the_webhook_dispatcher():
     assert service.dry_run is True
     assert service.dispatcher.webhooks == []
 
-    with patch("mb_cli.daemon.webhook.requests.post") as post:
+    with patch("tahuti.daemon.webhook.requests.post") as post:
         results = service.dispatcher.dispatch(MBEvent(event="task_created", data={}))
         post.assert_not_called()
 
@@ -369,8 +369,8 @@ def test_dry_run_suppresses_the_webhook_dispatcher():
 
 
 def test_dry_run_off_keeps_the_configured_webhooks():
-    from mb_cli.daemon import DaemonConfig, DaemonService
-    from mb_cli.daemon.events import WebhookConfig
+    from tahuti.daemon import DaemonConfig, DaemonService
+    from tahuti.daemon.events import WebhookConfig
 
     config = DaemonConfig()
     config.webhooks = [WebhookConfig(url="https://webhook.example.invalid/hook")]
@@ -398,7 +398,7 @@ def _run_loop_once(tmp_path: Path, dry_run: bool):
     the service is fully constructed — clears `_running` to end the loop and
     captures the service for inspection.
     """
-    from mb_cli.daemon import start_loop
+    from tahuti.daemon import start_loop
 
     captured: dict = {}
     client = MagicMock()
@@ -413,7 +413,7 @@ def _run_loop_once(tmp_path: Path, dry_run: bool):
         captured["service"] = service
         service._running = False
 
-    with patch("mb_cli.daemon.webhook.requests.post") as post:
+    with patch("tahuti.daemon.webhook.requests.post") as post:
         start_loop(
             client,
             _webhook_daemon_config(tmp_path),
@@ -461,11 +461,11 @@ def test_daemon_run_passes_dry_run_to_the_service():
     client = MagicMock()
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_daemon_config", return_value={}),
-        patch("mb_cli.__main__.DaemonService") as MockService,
-        patch("mb_cli.__main__.print_payload"),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_daemon_config", return_value={}),
+        patch("tahuti.__main__.DaemonService") as MockService,
+        patch("tahuti.__main__.print_payload"),
     ):
         MockService.return_value.run_check_cycle.return_value = {"total_dispatched": 0}
         rc = cmd_daemon_run(args)
@@ -488,11 +488,11 @@ def test_daemon_run_active_hours_reach_the_service_config():
     client = MagicMock()
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_daemon_config", return_value={}),
-        patch("mb_cli.__main__.DaemonService") as MockService,
-        patch("mb_cli.__main__.print_payload"),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_daemon_config", return_value={}),
+        patch("tahuti.__main__.DaemonService") as MockService,
+        patch("tahuti.__main__.print_payload"),
     ):
         MockService.return_value.run_check_cycle.return_value = {"total_dispatched": 0}
         cmd_daemon_run(args)

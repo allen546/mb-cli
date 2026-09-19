@@ -1,4 +1,4 @@
-"""Tests for mb_cli.daemon."""
+"""Tests for tahuti.daemon."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import requests_mock as rm
 # Ensure local src takes precedence over editable installs
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from mb_cli.daemon import (
+from tahuti.daemon import (
     DEFAULT_WEBHOOK_URL,
     _diff_snapshots_full,
     _is_tahuti_pid,
@@ -124,8 +124,8 @@ class TestDiffSnapshots:
 
 
 def test_canonical_snapshot_io_and_diff(tmp_path: Path):
-    from mb_cli.__main__ import load_snapshot, save_snapshot
-    from mb_cli.daemon import _diff_snapshots_full, diff_index
+    from tahuti.__main__ import load_snapshot, save_snapshot
+    from tahuti.daemon import _diff_snapshots_full, diff_index
 
     # Snapshot save & load
     snap_file = tmp_path / "snap.json"
@@ -332,8 +332,8 @@ class TestStartLoop:
         now = datetime.now(timezone.utc)
 
         with (
-            patch("mb_cli.daemon._next_active_window", return_value=now),
-            patch("mb_cli.daemon._time_until", return_value=0.0),
+            patch("tahuti.daemon._next_active_window", return_value=now),
+            patch("tahuti.daemon._time_until", return_value=0.0),
         ):
             result = start_loop(mock_client, daemon_config, dry_run=True, once=True)
         assert "alerts" in result
@@ -368,10 +368,10 @@ class TestStartLoop:
                 return MagicMock()
 
             with (
-                patch("mb_cli.daemon.service.DaemonStateManager", side_effect=capture),
-                patch("mb_cli.daemon.service.MNNHubProvider"),
-                patch("mb_cli.daemon._next_active_window"),
-                patch("mb_cli.daemon._time_until", return_value=0.0),
+                patch("tahuti.daemon.service.DaemonStateManager", side_effect=capture),
+                patch("tahuti.daemon.service.MNNHubProvider"),
+                patch("tahuti.daemon._next_active_window"),
+                patch("tahuti.daemon._time_until", return_value=0.0),
             ):
                 result = start_loop(
                     MagicMock(), daemon_config, dry_run=dry_run, once=True
@@ -394,8 +394,8 @@ class TestStartLoop:
         now = datetime.now(timezone.utc)
 
         with (
-            patch("mb_cli.daemon._next_active_window", return_value=now),
-            patch("mb_cli.daemon._time_until", return_value=0.0),
+            patch("tahuti.daemon._next_active_window", return_value=now),
+            patch("tahuti.daemon._time_until", return_value=0.0),
         ):
             start_loop(mock_client, daemon_config, dry_run=True, once=True)
         assert not pid_path.exists()
@@ -411,8 +411,8 @@ class TestStartLoop:
         now = datetime.now(timezone.utc)
 
         with (
-            patch("mb_cli.daemon._next_active_window", return_value=now),
-            patch("mb_cli.daemon._time_until", return_value=0.0),
+            patch("tahuti.daemon._next_active_window", return_value=now),
+            patch("tahuti.daemon._time_until", return_value=0.0),
         ):
             start_loop(mock_client, daemon_config, dry_run=True, once=True)
         assert not pid_path.exists()
@@ -487,10 +487,10 @@ class TestStopDaemon:
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_tahuti_pid", return_value=False):
+        with patch("tahuti.daemon._is_tahuti_pid", return_value=False):
             result = stop_daemon(str(config_path))
             assert result["stopped"] is False
-            assert result["reason"] == "not_mb_cli_process"
+            assert result["reason"] == "not_tahuti_process"
 
     def test_valid_process_kills(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
@@ -508,8 +508,8 @@ class TestStopDaemon:
             raise AssertionError("SIGKILL must not be needed when SIGTERM works")
 
         with (
-            patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
-            patch("mb_cli.daemon.os.kill", side_effect=_fake_kill),
+            patch("tahuti.daemon._is_tahuti_pid", return_value=True),
+            patch("tahuti.daemon.os.kill", side_effect=_fake_kill),
         ):
             result = stop_daemon(str(config_path))
 
@@ -531,9 +531,9 @@ class TestStopDaemon:
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
         with (
-            patch("mb_cli.daemon._is_tahuti_pid", return_value=True),
+            patch("tahuti.daemon._is_tahuti_pid", return_value=True),
             patch(
-                "mb_cli.daemon.terminate_pid",
+                "tahuti.daemon.terminate_pid",
                 return_value={"exited": False, "escalated": True},
             ) as term,
         ):
@@ -557,18 +557,18 @@ class TestIsTahutiPid:
     @pytest.mark.parametrize(
         "cmdline",
         [
-            f"{sys.executable} -m mb_cli daemon run",
+            f"{sys.executable} -m tahuti daemon run",
             "/opt/homebrew/bin/tahuti daemon run",
             "/usr/bin/python -m mb_crawler daemon run",
         ],
     )
     def test_accepts_a_tahuti_daemon(self, cmdline: str):
-        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+        with patch("tahuti.daemon.subprocess.run", return_value=self._ps(cmdline)):
             assert _is_tahuti_pid(4242) is True, cmdline
 
     @pytest.mark.parametrize(
         "cmdline", ["/lib/systemd/systemd --user", "/usr/sbin/cfprefsd daemon"]
     )
     def test_rejects_unrelated_processes(self, cmdline: str):
-        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+        with patch("tahuti.daemon.subprocess.run", return_value=self._ps(cmdline)):
             assert _is_tahuti_pid(4242) is False, cmdline

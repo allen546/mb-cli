@@ -26,11 +26,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli import __main__ as m
-from mb_cli import auth
-from mb_cli import keychain
-from mb_cli.auth import _load_creds, _store_password, build_client
-from mb_cli.config import (
+from tahuti import __main__ as m
+from tahuti import auth
+from tahuti import keychain
+from tahuti.auth import _load_creds, _store_password, build_client
+from tahuti.config import (
     clear_creds,
     insecure_state_files,
     is_too_permissive,
@@ -112,7 +112,7 @@ class TestLogoutDeletesCredentials:
         _write_creds(creds)
         assert creds.exists()
 
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             m.cmd_logout(m.build_parser().parse_args(_logout_argv()))
 
@@ -121,7 +121,7 @@ class TestLogoutDeletesCredentials:
     def test_logout_reports_removal(self, isolated_env, capsys):
         creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             m.cmd_logout(m.build_parser().parse_args(_logout_argv()))
         payload = json.loads(capsys.readouterr().out)
@@ -133,7 +133,7 @@ class TestLogoutDeletesCredentials:
         """`--keep-credentials` is the documented opt-out for silent re-login."""
         creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             m.cmd_logout(
                 m.build_parser().parse_args(_logout_argv("--keep-credentials"))
@@ -142,7 +142,7 @@ class TestLogoutDeletesCredentials:
         assert json.loads(creds.read_text())["password"] == "s3cret"
 
     def test_keep_credentials_reports_kept(self, isolated_env, capsys):
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             m.cmd_logout(
                 m.build_parser().parse_args(_logout_argv("--keep-credentials"))
@@ -153,7 +153,7 @@ class TestLogoutDeletesCredentials:
 
     def test_logout_without_creds_is_not_an_error(self, isolated_env, capsys):
         """Nothing to delete must not raise or claim a false removal."""
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             assert m.cmd_logout(m.build_parser().parse_args(_logout_argv())) == 0
         payload = json.loads(capsys.readouterr().out)
@@ -165,7 +165,7 @@ class TestLogoutDeletesCredentials:
         session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         with (
-            patch("mb_cli.cache.ResponseCache") as cache_cls,
+            patch("tahuti.cache.ResponseCache") as cache_cls,
             patch.object(keychain, "delete", return_value=True) as delete,
         ):
             cache_cls.return_value.clear.return_value = 0
@@ -176,7 +176,7 @@ class TestLogoutDeletesCredentials:
         session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         with (
-            patch("mb_cli.cache.ResponseCache") as cache_cls,
+            patch("tahuti.cache.ResponseCache") as cache_cls,
             patch.object(keychain, "delete", return_value=True) as delete,
         ):
             cache_cls.return_value.clear.return_value = 0
@@ -188,7 +188,7 @@ class TestLogoutDeletesCredentials:
     def test_logout_all_profiles_removes_creds(self, isolated_env):
         creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         _write_creds(creds)
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             m.cmd_logout(m.build_parser().parse_args(_logout_argv("--all")))
         assert not creds.exists()
@@ -225,7 +225,7 @@ class TestPasswordIsOptIn:
         client.school = "myschool"
         client.domain = "managebac.com"
         client.base = "https://myschool.managebac.com"
-        with patch("mb_cli.auth.ManageBacClient", return_value=client):
+        with patch("tahuti.auth.ManageBacClient", return_value=client):
             return build_client(
                 school="myschool",
                 email="student@example.com",
@@ -261,7 +261,7 @@ class TestPasswordIsOptIn:
 
     def test_the_response_cache_no_longer_follows_the_credential_flags(self, isolated_env):
         """`enabled=not refresh`, and neither new flag is in that expression."""
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
+        with patch("tahuti.auth.ManageBacClient") as client_cls:
             client_cls.return_value.login.return_value = True
             client_cls.return_value.session.cookies.get.return_value = "c"
             client_cls.return_value.school = "myschool"
@@ -370,7 +370,7 @@ class TestWeakPermissionWarning:
         session = Path(os.environ["MANAGEBAC_SESSION"])
         _write_session(session)
         # `logout` needs no network, so it exercises main() end to end.
-        with patch("mb_cli.cache.ResponseCache") as cache_cls:
+        with patch("tahuti.cache.ResponseCache") as cache_cls:
             cache_cls.return_value.clear.return_value = 0
             with pytest.raises(SystemExit) as exc:
                 m.main(["logout", "--format", "json"])
@@ -1089,7 +1089,7 @@ class TestKeychainWiring:
         args = m.build_parser().parse_args(["login", "--keychain", "--keep-credentials"])
         assert args.keychain is True
         assert args.keep_credentials is True
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
+        with patch("tahuti.auth.ManageBacClient") as client_cls:
             client_cls.return_value.login.return_value = True
             client_cls.return_value.session.cookies.get.return_value = "newcookie"
             client_cls.return_value.school = "myschool"
@@ -1106,7 +1106,7 @@ class TestKeychainWiring:
     def test_keychain_enabled_login_writes_no_cleartext(self, isolated_env):
         creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         with (
-            patch("mb_cli.auth.ManageBacClient") as client_cls,
+            patch("tahuti.auth.ManageBacClient") as client_cls,
             patch.object(keychain, "enabled", return_value=True),
             patch.object(keychain, "store", return_value=True),
         ):
@@ -1234,7 +1234,7 @@ class TestCredentialEnvVars:
             "daemon", "start", "-b", "--password", "pw123", "--format", "json"
         )
         with patch(
-            "mb_cli.daemon.system.ServiceManager.start_background",
+            "tahuti.daemon.system.ServiceManager.start_background",
             return_value={"started": True},
         ) as start:
             m.cmd_daemon_start(args)
@@ -1355,7 +1355,7 @@ class TestCredsPathResolvesOnce:
 
     def test_state_paths_follow_home_set_after_import(self, isolated_env, monkeypatch):
         """`config_dir()` reads $HOME per call; a constant would freeze it."""
-        import mb_cli.config as config
+        import tahuti.config as config
 
         # Drop the fixture's redirects so the defaults (not the env vars) apply.
         for var in (
@@ -1387,14 +1387,14 @@ class TestCredsPathResolvesOnce:
 
     def test_legacy_path_names_stay_importable(self):
         """Removing the constants must not break an out-of-tree importer."""
-        from mb_cli.config import CONFIG_DIR, DEFAULT_CONFIG_PATH, DEFAULT_CREDS_PATH
+        from tahuti.config import CONFIG_DIR, DEFAULT_CONFIG_PATH, DEFAULT_CREDS_PATH
 
         assert CONFIG_DIR == Path.home() / ".config" / "tahuti"
         assert DEFAULT_CONFIG_PATH == CONFIG_DIR / "config.json"
         assert DEFAULT_CREDS_PATH == CONFIG_DIR / "creds.json"
 
     def test_unknown_attribute_still_raises(self):
-        import mb_cli.config as config
+        import tahuti.config as config
 
         with pytest.raises(AttributeError):
             config.THIS_NAME_DOES_NOT_EXIST

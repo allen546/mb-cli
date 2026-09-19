@@ -29,6 +29,17 @@ classifiers = [
 dependencies = [
     "requests>=2.28",
     "beautifulsoup4>=4.12",
+    # The IANA timezone database, unconditionally. CPython's `zoneinfo` is only
+    # a reader — it needs the database from somewhere, and it is missing from
+    # plenty of hosts that run Python: macOS, Windows, and the slim Linux
+    # containers that CI and Docker images use (this repo's own GitHub runner
+    # is one — see test_naive_due_date_is_read_on_the_configured_school_clock,
+    # which failed on every Python version until this was added). It is not
+    # platform-conditional because the hosts that lack it are not predictable
+    # from sys_platform, and the failure is silent: ZoneInfo raises,
+    # resolve_school_timezone swallows it, and the scheduler falls back to the
+    # host clock — the ~16-hour-late-reminder bug it exists to prevent.
+    "tzdata>=2023.3",
 ]
 
 # Upper bound is required: mcp 2.x renamed FastMCP to MCPServer and removed
@@ -51,10 +62,10 @@ dev = [
 ]
 
 [project.scripts]
-tahuti = "mb_cli.__main__:main"
-tahuti-mcp = "mb_cli.mcp_server:main"
-mb = "mb_cli.__main__:main"        # alias (pre-rename command, still supported)
-mb-mcp = "mb_cli.mcp_server:main"  # alias
+tahuti = "tahuti.__main__:main"
+tahuti-mcp = "tahuti.mcp_server:main"
+mb = "tahuti.__main__:main"        # alias (pre-rename command, still supported)
+mb-mcp = "tahuti.mcp_server:main"  # alias
 
 [project.urls]
 Homepage = "https://github.com/allen546/tahuti"
@@ -101,4 +112,4 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["/src/mb_cli"]
+packages = ["/src/tahuti"]

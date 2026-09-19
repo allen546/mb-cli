@@ -36,7 +36,7 @@ When a user accidentally submits a file to the wrong task (or needs to replace a
 
 ## 3. Architecture & Components
 
-### 3.1 Client Layer (`src/mb_cli/client.py`)
+### 3.1 Client Layer (`src/tahuti/client.py`)
 
 #### `get_submissions(class_id: str, task_id: str) -> list[dict]`
 Enhance the existing parser to extract rich metadata for each submission row:
@@ -72,7 +72,7 @@ Implements submission deletion:
 
 ---
 
-### 3.2 CLI Interface (`src/mb_cli/__main__.py`)
+### 3.2 CLI Interface (`src/tahuti/__main__.py`)
 
 #### Command Syntax
 ```bash
@@ -99,7 +99,7 @@ mb submissions [target] [--id TASK_ID] [--list] [--add FILE_PATH] [--delete ASSE
 
 ---
 
-### 3.3 Formatting Layer (`src/mb_cli/formatters.py`)
+### 3.3 Formatting Layer (`src/tahuti/formatters.py`)
 
 * `format_submissions_list(task_info: dict, submissions: list[dict]) -> str`:
   Formats a table with headers: `Asset ID`, `File Name`, `Uploaded At`, `Deletable`, `Feedback`.
@@ -108,7 +108,7 @@ mb submissions [target] [--id TASK_ID] [--list] [--add FILE_PATH] [--delete ASSE
 
 ---
 
-### 3.4 MCP Server Integration (`src/mb_cli/mcp_server.py`)
+### 3.4 MCP Server Integration (`src/tahuti/mcp_server.py`)
 
 Register tool `delete_submission`:
 ```python

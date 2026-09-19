@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli import __version__
-from mb_cli.__main__ import build_parser, main
+from tahuti import __version__
+from tahuti.__main__ import build_parser, main
 
 
 # ── `tahuti --version` ───────────────────────────────────────────────────
@@ -32,8 +32,8 @@ def test_version_short_flag(capsys):
     assert __version__ in capsys.readouterr().out
 
 
-def test_version_is_sourced_from_mb_cli_version():
-    """Guards against the string drifting from `mb_cli.__version__`."""
+def test_version_is_sourced_from_tahuti_version():
+    """Guards against the string drifting from `tahuti.__version__`."""
     parser = build_parser()
     action = next(
         a for a in parser._actions if getattr(a, "dest", None) == "version"
@@ -41,8 +41,8 @@ def test_version_is_sourced_from_mb_cli_version():
     assert __version__ in action.version
 
 
-def test_pyproject_version_matches_mb_cli_version():
-    """`pyproject.toml` and `mb_cli.__version__` must agree.
+def test_pyproject_version_matches_tahuti_version():
+    """`pyproject.toml` and `tahuti.__version__` must agree.
 
     They are the two places a version lives, and a release that updates one and
     not the other builds an artifact whose metadata and runtime disagree — the
@@ -106,7 +106,7 @@ def _feedback_item(name, comment="ok"):
 def test_check_feedback_with_filter_does_not_crash(capsys):
     """`get_teacher_feedback` returns a dict; iterating it used to raise
     AttributeError: 'str' object has no attribute 'get'."""
-    from mb_cli.__main__ import cmd_submissions
+    from tahuti.__main__ import cmd_submissions
 
     items = [_feedback_item("essay.pdf"), _feedback_item("quiz.pdf")]
     client = MagicMock()
@@ -115,10 +115,10 @@ def test_check_feedback_with_filter_does_not_crash(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__._resolve_task_ids", return_value=("456", "123")),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__._resolve_task_ids", return_value=("456", "123")),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
     ):
         rc = cmd_submissions(_SubmissionsArgs(check_feedback="essay"))
 
@@ -133,7 +133,7 @@ def test_check_feedback_with_filter_does_not_crash(capsys):
 
 
 def test_check_feedback_without_filter_returns_everything(capsys):
-    from mb_cli.__main__ import cmd_submissions
+    from tahuti.__main__ import cmd_submissions
 
     items = [_feedback_item("essay.pdf"), _feedback_item("quiz.pdf")]
     client = MagicMock()
@@ -142,10 +142,10 @@ def test_check_feedback_without_filter_returns_everything(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__._resolve_task_ids", return_value=("456", "123")),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__._resolve_task_ids", return_value=("456", "123")),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
     ):
         rc = cmd_submissions(_SubmissionsArgs(check_feedback=True))
 
@@ -155,7 +155,7 @@ def test_check_feedback_without_filter_returns_everything(capsys):
 
 
 def test_check_feedback_no_match_returns_empty_list_not_original(capsys):
-    from mb_cli.__main__ import cmd_submissions
+    from tahuti.__main__ import cmd_submissions
 
     items = [_feedback_item("quiz.pdf")]
     client = MagicMock()
@@ -164,10 +164,10 @@ def test_check_feedback_no_match_returns_empty_list_not_original(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__._resolve_task_ids", return_value=("456", "123")),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__._resolve_task_ids", return_value=("456", "123")),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
     ):
         rc = cmd_submissions(_SubmissionsArgs(check_feedback="nomatch"))
 
@@ -183,7 +183,7 @@ def test_check_feedback_no_match_returns_empty_list_not_original(capsys):
 
 
 def test_submit_accepts_id_instead_of_positional(capsys):
-    from mb_cli.__main__ import cmd_submit
+    from tahuti.__main__ import cmd_submit
 
     class Args:
         target = None
@@ -199,11 +199,11 @@ def test_submit_accepts_id_instead_of_positional(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__._resolve_task_ids", return_value=("456", "1000026")),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value=None),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__._resolve_task_ids", return_value=("456", "1000026")),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value=None),
     ):
         rc = cmd_submit(Args())
 
@@ -229,7 +229,7 @@ class _ViewArgs:
 
 
 def test_view_subject_mismatch_is_reported(capsys):
-    from mb_cli.__main__ import cmd_view
+    from tahuti.__main__ import cmd_view
 
     client = MagicMock()
     client.get_task_detail.return_value = {}
@@ -237,10 +237,10 @@ def test_view_subject_mismatch_is_reported(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value={
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value={
             "id": "123", "title": "Essay", "class_name": "Physics", "link": "http://x/123"
         }),
     ):
@@ -253,7 +253,7 @@ def test_view_subject_mismatch_is_reported(capsys):
 
 
 def test_view_subject_match_passes_through(capsys):
-    from mb_cli.__main__ import cmd_view
+    from tahuti.__main__ import cmd_view
 
     client = MagicMock()
     client.get_task_detail.return_value = {}
@@ -261,10 +261,10 @@ def test_view_subject_match_passes_through(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value={
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value={
             "id": "123", "title": "Essay", "class_name": "Mathematics HL", "link": "http://x/123"
         }),
     ):
@@ -276,7 +276,7 @@ def test_view_subject_match_passes_through(capsys):
 
 
 def test_view_without_subject_ignores_the_check(capsys):
-    from mb_cli.__main__ import cmd_view
+    from tahuti.__main__ import cmd_view
 
     client = MagicMock()
     client.get_task_detail.return_value = {}
@@ -284,10 +284,10 @@ def test_view_without_subject_ignores_the_check(capsys):
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value={
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value={
             "id": "123", "title": "Essay", "class_name": "Physics", "link": "http://x/123"
         }),
     ):
@@ -300,7 +300,7 @@ def test_view_without_subject_ignores_the_check(capsys):
 
 
 def test_notifications_unread_only_filters_the_request():
-    from mb_cli.__main__ import cmd_notifications
+    from tahuti.__main__ import cmd_notifications
 
     class Args:
         page = 1
@@ -321,9 +321,9 @@ def test_notifications_unread_only_filters_the_request():
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.hub_client", return_value=hub),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.hub_client", return_value=hub),
     ):
         rc = cmd_notifications(Args())
 
@@ -332,7 +332,7 @@ def test_notifications_unread_only_filters_the_request():
 
 
 def test_notifications_defaults_to_all_filter():
-    from mb_cli.__main__ import cmd_notifications
+    from tahuti.__main__ import cmd_notifications
 
     class Args:
         page = 1
@@ -353,9 +353,9 @@ def test_notifications_defaults_to_all_filter():
     state.active_profile = "default"
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.hub_client", return_value=hub),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.hub_client", return_value=hub),
     ):
         cmd_notifications(Args())
 

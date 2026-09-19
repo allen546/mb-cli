@@ -10,7 +10,41 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
 ## [Unreleased]
 
+### Fixed
+- **`school_timezone` now actually works.** It never did. `parse_due_date`
+  attached the *host's* zone to every naive due date, so `due_dt.tzinfo` was
+  never `None` and the scheduler's school-zone branch could never run — the
+  feature was written but never wired up. On a daemon in UTC serving a UTC+8
+  school, a 23:59 deadline read as 23:59 UTC and every reminder fired about
+  16 hours late, silently. `parse_due_date` takes an optional `school_tz`, so
+  the school's reading is applied while the input is still a bare wall-clock
+  time; an input carrying its own offset keeps it. The suite is now
+  host-timezone independent — 1425 passing under UTC, Asia/Shanghai,
+  America/New_York, Australia/Sydney and Europe/Berlin — where before, this
+  only passed when the host happened to be UTC+8, which is why CI was red on
+  every Python version while it looked fine locally in Beijing.
+- **Declared `tzdata`.** CPython's `zoneinfo` is only a reader; the IANA
+  database comes from the OS or that package, and it is absent from macOS,
+  Windows and plenty of Linux containers (GitHub's runners among them). Without
+  it `ZoneInfo("Asia/Shanghai")` raised, `resolve_school_timezone` swallowed
+  it, and the scheduler fell back to the host clock. The test now asserts the
+  database is reachable before asserting on the schedule, so a regression names
+  the cause instead of reporting `assert 0 == 1`.
+
 ### Changed
+- **The Python import package is `tahuti`.** `0.4.1` renamed the distribution,
+  the CLI command and the repository but deliberately left the import path as
+  `mb_cli`, so `pip install tahuti` followed by `import tahuti` raised
+  `ModuleNotFoundError`. The package directory is now `src/tahuti/` and both
+  `import tahuti` and `python -m tahuti` work; `python -m mb_cli` and
+  `import mb_cli` no longer do.
+- **`TAHUTI_FORMAT` replaces `MB_CLI_FORMAT`** as the documented name for the
+  output-shape override. The old spelling is still read as a fallback and the
+  new one wins when both are set, matching how every `MB_CRAWLER_*` variable
+  already behaves — so an existing script does not break on upgrade.
+- The daemon's stop-status reason string for a reclaimed PID is now
+  `not_tahuti_process`, matching the `_is_tahuti_process` guard it reports on.
+
 - **`tahuti login` asks for the domain, school and email before the password.**
   A fresh device no longer has to know that `--school` and `--domain` exist:
   it is asked, in the order those values are actually used. The domain is

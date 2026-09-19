@@ -32,7 +32,7 @@ def hub_client(
 ) -> MNNHubClient:
     """Build the MNN-hub client, honouring the caller's TLS decision.
 
-    The single construction point for :class:`~mb_cli.notifications.MNNHubClient`.
+    The single construction point for :class:`~tahuti.notifications.MNNHubClient`.
     ``verify`` is keyword-only and has no default on purpose: six call sites
     used to build the client directly and so kept ``verify=True``, which made
     ``--no-verify-tls`` apply to ManageBac and not to the hub. A user who
@@ -42,7 +42,7 @@ def hub_client(
     rather than silently reverting to the stricter policy.
 
     Pass ``client.session.verify`` from an already-built
-    :class:`~mb_cli.client.ManageBacClient` so the hub cannot diverge from
+    :class:`~tahuti.client.ManageBacClient` so the hub cannot diverge from
     whatever TLS decision that client is using.
     """
     # `requests` accepts a bool or a CA-bundle path. Anything else — notably the
@@ -87,7 +87,7 @@ def _store_password(
     Returns the backend actually used: ``"keychain"``, ``"file"``, or
     ``"none"``. The OS keychain is opt-in and preferred when available; without
     it the password lands in the cleartext 0600 ``creds.json`` that
-    :mod:`mb_cli.config` writes. A keychain that fails to store falls back to
+    :mod:`tahuti.config` writes. A keychain that fails to store falls back to
     the file rather than silently losing the credential.
 
     Only ever called when the caller asked for the password to be kept — see

@@ -2,7 +2,7 @@
 
 Both entry points that upload a file — the ``submit_file`` MCP tool and the
 ``submit`` CLI command — go through one containment helper
-(:func:`mb_cli.config.own_state_refusal`), so these tests run the same set of
+(:func:`tahuti.config.own_state_refusal`), so these tests run the same set of
 paths through both and would catch either call site drifting from the other.
 
 The exfiltration target is a school dropbox a teacher reads, and the MCP path
@@ -10,7 +10,7 @@ is driven by a model rather than by someone choosing a path on purpose — so th
 threat is a confused tool call reaching for ``creds.json`` or a cached grade
 page, not a deliberate one.  Scope is confined to tahuti's own directories:
 files elsewhere on the system are deliberately left alone (see the module
-comment in ``mb_cli/config.py``).
+comment in ``tahuti/config.py``).
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.__main__ import build_parser, cmd_submit
-from mb_cli.config import own_state_refusal
-from mb_cli.mcp_server import submit_file
+from tahuti.__main__ import build_parser, cmd_submit
+from tahuti.config import own_state_refusal
+from tahuti.mcp_server import submit_file
 
 # Marker that stands in for a real secret.  Every state file below carries it so
 # the tests can assert the refusal never echoes the file's contents.
@@ -58,14 +58,14 @@ def _state_paths() -> dict[str, Path]:
     import, so ``conftest.isolated_user_state``'s redirect is what gets tested
     and a renamed constant fails loudly here instead of quietly going untested.
     """
-    from mb_cli.__main__ import DEFAULT_SNAPSHOT_PATH
-    from mb_cli.cache import DEFAULT_CACHE_DIR
-    from mb_cli.config import (
+    from tahuti.__main__ import DEFAULT_SNAPSHOT_PATH
+    from tahuti.cache import DEFAULT_CACHE_DIR
+    from tahuti.config import (
         resolve_config_path,
         resolve_creds_path,
         resolve_session_path,
     )
-    from mb_cli.daemon.state import DEFAULT_STATE_PATH
+    from tahuti.daemon.state import DEFAULT_STATE_PATH
 
     return {
         "creds": resolve_creds_path(),
@@ -92,7 +92,7 @@ def tahuti_state(isolated_user_state: Path) -> dict[str, Path]:
 @pytest.fixture()
 def mock_build_client():
     """Patch ``auth.build_client`` and hand back the mock and its client."""
-    with patch("mb_cli.mcp_server.build_client") as mock:
+    with patch("tahuti.mcp_server.build_client") as mock:
         mock.return_value = (MagicMock(), MagicMock(), "student@example.com")
         yield mock, mock.return_value[1]
 
@@ -110,12 +110,12 @@ def patched_cli():
     state.active_profile = "default"
     build = MagicMock(return_value=(state, client, "student@example.com"))
     with (
-        patch("mb_cli.__main__._build_client", build),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__._resolve_task_ids", return_value=("456", "1000026")),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value=None),
-        patch("mb_cli.__main__.update_snapshot_with_class_tasks"),
+        patch("tahuti.__main__._build_client", build),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__._resolve_task_ids", return_value=("456", "1000026")),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value=None),
+        patch("tahuti.__main__.update_snapshot_with_class_tasks"),
     ):
         yield client
 
@@ -274,7 +274,7 @@ class TestCliSubmitContainment:
 
     def test_refuses_before_any_client_is_built(self, tahuti_state, capsys):
         """A refused path costs no authentication round-trip."""
-        with patch("mb_cli.__main__._build_client") as build:
+        with patch("tahuti.__main__._build_client") as build:
             rc = cmd_submit(_cli_args(tahuti_state["creds"]))
 
         payload = json.loads(capsys.readouterr().out)

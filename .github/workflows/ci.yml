@@ -51,10 +51,11 @@ jobs:
         # Regression guard for the packaging bug where the sdist shipped a
         # nested copy of the repo from .claude/worktrees/ (76 of 153 entries).
         #
-        # The distribution name is derived from pyproject rather than hardcoded:
-        # the distribution is `tahuti` while the import package is still
-        # `mb_cli`, so hardcoding either one breaks on the next rename. The
-        # sdist root directory is `<name>-<version>/` by PEP 517/625 convention.
+        # The distribution name is derived from pyproject rather than hardcoded,
+        # so a future rename cannot silently leave this asserting the old one.
+        # The two names used to differ, which is exactly how a hardcoded
+        # assertion went stale unnoticed; they are the same as of 0.4.2.
+        # The sdist root directory is `<name>-<version>/` by PEP 517/625 convention.
         # Read with sed rather than tomllib, which is 3.11+ while the floor is
         # 3.10 — the build job pins 3.12, but a name lookup has no business
         # depending on the interpreter version.
@@ -82,7 +83,7 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
-          for required in "${dist_name}-.*/src/mb_cli/__init__.py" \
+          for required in "${dist_name}-.*/src/tahuti/__init__.py" \
                           "${dist_name}-.*/README.md" \
                           "${dist_name}-.*/LICENSE" \
                           "${dist_name}-.*/pyproject.toml"; do
@@ -99,11 +100,12 @@ jobs:
           wheel=$(ls dist/*.whl)
           names=$(unzip -Z1 "$wheel")
 
-          # The import package is `mb_cli`; the distribution (and therefore the
-          # dist-info directory) is `tahuti`. Asserting the two independently is
-          # what catches a rename that changes one without the other.
-          printf '%s\n' "$names" | grep -q '^mb_cli/__init__.py$' \
-            || { echo "::error::wheel is missing mb_cli/__init__.py"; exit 1; }
+          # The import package and the distribution (and therefore the
+          # dist-info directory) are both `tahuti`. Asserting the package
+          # contents independently of the dist-info name is what catches a
+          # rename that changes one without the other.
+          printf '%s\n' "$names" | grep -q '^tahuti/__init__.py$' \
+            || { echo "::error::wheel is missing tahuti/__init__.py"; exit 1; }
           printf '%s\n' "$names" | grep -qE '^tahuti-[0-9.]+\.dist-info/METADATA$' \
             || { echo "::error::wheel is missing dist-info METADATA"; exit 1; }
           printf '%s\n' "$names" | grep -qE '^tahuti-[0-9.]+\.dist-info/entry_points\.txt$' \

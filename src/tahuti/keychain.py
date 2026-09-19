@@ -294,7 +294,7 @@ def store(account: str, secret: str) -> bool:
     """Store *secret* under *account*. Returns True on success.
 
     ``True`` means the secret came back **byte for byte**, and it means that on
-    every platform — not only on Windows. :mod:`mb_cli.auth` unlinks the
+    every platform — not only on Windows. :mod:`tahuti.auth` unlinks the
     cleartext ``creds.json`` on a ``True`` return, so a helper that exits 0
     without actually persisting anything would leave the user with no copy of
     the password anywhere. Reading the item straight back turns that into a

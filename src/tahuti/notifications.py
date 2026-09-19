@@ -13,7 +13,7 @@ inverse of what a rate-limit defence looks like. The hub returns no
 ``X-RateLimit-*`` and no ``Retry-After``, so it declares no ceiling to defend.
 
 Pacing is the caller's decision. ``DaemonConfig.poll_jitter_seconds``
-(``mb_cli/daemon/events.py``) is applied by ``DaemonService`` between poll
+(``tahuti/daemon/events.py``) is applied by ``DaemonService`` between poll
 cycles, which is the right altitude: a poll loop that sleeps inside its own
 transport cannot poll tightly, which is the whole point of this client. Do not
 re-add a sleep here on the theory that it is rate-limit defence — see

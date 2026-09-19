@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from mb_cli.daemon.events import (
+from tahuti.daemon.events import (
     DEFAULT_REMINDER_THRESHOLDS,
     STANDARD_TASK_FIELDS,
     DaemonConfig,
