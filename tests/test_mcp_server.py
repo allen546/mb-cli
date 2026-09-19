@@ -169,8 +169,12 @@ class TestViewTaskTool:
     def test_view_task_by_numeric_id(self, mock_build_client):
         mock, mock_client = mock_build_client
         mock_client.get_task_detail.return_value = {"description": "d"}
+        link = "https://myschool.managebac.cn/student/classes/1000014/core_tasks/1000099"
+        mock_client.find_task_by_id.return_value = {"id": "1000099", "link": link}
         data = json.loads(view_task(task_id="1000099"))
         assert data["task"]["id"] == "1000099"
+        # The resolved task's link is what gets fetched, not the bare id.
+        assert mock_client.get_task_detail.call_args.args[0] == link
 
     def test_view_task_id_from_url_with_query_string(self, mock_build_client):
         mock, mock_client = mock_build_client

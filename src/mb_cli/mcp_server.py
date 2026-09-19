@@ -326,6 +326,16 @@ def list_tasks(
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+def _snapshot_path_for(state) -> Path:
+    """Return the snapshot file belonging to *state*'s config directory.
+
+    The snapshot is written beside the config file, so this follows a
+    non-default profile's location.  ``DEFAULT_SNAPSHOT_PATH`` only names the
+    default one, and the CLI's ``_snapshot_path`` is private to ``__main__``.
+    """
+    return state.config_path.parent / "snapshot.json"
+
+
 @mcp.tool()
 def view_task(
     task_id: str | None = None,
@@ -341,6 +351,9 @@ def view_task(
     """View detailed information about a specific task.
 
     Provide either task_id or task_url. The task_url can be a full ManageBac URL.
+    A bare task_id is looked up in the local snapshot and then, if needed, by
+    crawling up to `pages` pages of the task lists — so passing the full URL is
+    faster.
 
     Args:
         task_id: Numeric task ID (e.g. "1000026")
@@ -353,7 +366,7 @@ def view_task(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
-    _state, client, _email = build_client(
+    state, client, _email = build_client(
         school=school,
         domain=domain,
         cookie=cookie,
@@ -371,8 +384,47 @@ def view_task(
     except InvalidToolInput as exc:
         return _invalid_input(exc)
 
-    detail = client.get_task_detail(target)
-    task = {"id": resolved_id, "link": target}
+    from .__main__ import find_task_by_id, load_snapshot
+
+    if "/core_tasks/" in target:
+        # A task URL already names the detail page, so it is fetched as given;
+        # the snapshot only supplies the metadata the listing carries.
+        snapshot = load_snapshot(_snapshot_path_for(state))
+        task = find_task_by_id(snapshot, resolved_id) or {
+            "id": resolved_id,
+            "link": target,
+        }
+        detail = client.get_task_detail(target)
+    else:
+        task = find_task_by_id(load_snapshot(_snapshot_path_for(state)), resolved_id)
+        if not task:
+            fallback = client.find_task_by_id(resolved_id, max_pages=pages)
+            if isinstance(fallback, dict):
+                task = fallback
+        if not task:
+            # A bare id names no URL, and get_task_detail would concatenate it
+            # onto the base URL rather than fail cleanly.
+            return json.dumps(
+                {
+                    "error": (
+                        f"No task found for id {resolved_id} in the local snapshot "
+                        f"or the first {pages} pages of the task lists; pass the "
+                        "full task URL or raise pages"
+                    )
+                }
+            )
+        detail = (
+            client.get_task_detail(task["link"], from_hint=False)
+            if task.get("link")
+            else {}
+        )
+
+    # get_task_detail reports a fetch failure by returning a truthy
+    # {"error": ...} dict instead of raising, so without this the envelope below
+    # would nest that error inside an otherwise-successful payload.
+    if isinstance(detail, dict) and detail.get("error"):
+        return json.dumps({"error": str(detail["error"])})
+
     return json.dumps({"task": task, "detail": detail}, indent=2, ensure_ascii=False)
 
 
