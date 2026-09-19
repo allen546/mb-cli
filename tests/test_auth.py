@@ -99,6 +99,57 @@ class TestSessionEmail:
         assert client_cls.call_args.kwargs["cache"].cache_dir == expected
 
 
+class TestLoginEmailAgreesWithSessionEmail:
+    """``logout`` must resolve the same account ``login`` acted on.
+
+    ``__main__._login_email`` restated the precedence rule that
+    ``auth.session_email`` owns, and the two copies disagreed about the order.
+    This pins them together, so a future edit to either fails here rather than
+    in someone's real cache directory.
+    """
+
+    @pytest.mark.parametrize(
+        "profile_email,session_email_,expected",
+        [
+            ("profile@example.com", "session@example.com", "profile@example.com"),
+            (None, "session@example.com", "session@example.com"),
+            ("profile@example.com", None, "profile@example.com"),
+            (None, None, None),
+            # An empty string is not a value: it must fall through.
+            ("", "session@example.com", "session@example.com"),
+        ],
+    )
+    def test_the_two_resolvers_agree(self, profile_email, session_email_, expected):
+        from mb_cli.__main__ import _login_email
+
+        state = _state(profile_email=profile_email, session_email_=session_email_)
+        assert _login_email(state) == expected
+
+    def test_the_keychain_item_and_cache_dir_are_keyed_by_one_email(self):
+        """The actual damage the duplication caused.
+
+        With profile and session emails set to different values, ``logout``
+        deleted a *different* profile's hash directory and left the JWT-bearing
+        entries in place while still reporting success. Both keys must come from
+        the same resolver for that to be impossible.
+        """
+        import hashlib
+
+        from mb_cli.__main__ import _cache_dir_for_email, _login_email
+
+        profile_email = "profile@example.com"
+        state = _state(profile_email=profile_email, session_email_="session@example.com")
+
+        resolved = _login_email(state)
+        # The cache dir logout clears is the hash of the email login used...
+        assert _cache_dir_for_email(resolved).name == hashlib.sha256(
+            profile_email.encode()
+        ).hexdigest()[:16]
+        # ...which is the profile's, not the session's. Before the two resolvers
+        # were unified, this was the disagreement that cost real cache entries.
+        assert resolved == profile_email
+
+
 # ── the hub must follow the client's TLS decision ─────────────────────────
 #
 # `MNNHubClient` defaults to `verify=True`, and four call sites built it

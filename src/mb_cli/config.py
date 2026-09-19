@@ -149,7 +149,7 @@ def _write_json(path: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        os.chmod(tmp_name, 0o600)
+        os.chmod(tmp_name, SECURE_FILE_MODE)
         os.replace(tmp_name, path)
     except Exception:
         try:

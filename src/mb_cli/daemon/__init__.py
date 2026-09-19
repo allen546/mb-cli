@@ -355,15 +355,29 @@ def run_daemon_once(
     old = load_snapshot(snapshot_path)
     result = client.crawl_all(max_pages=10, fetch_details=False)
     alerts = _diff_snapshots_full(old, result)
-    save_snapshot(snapshot_path, result)
 
     delivered = False
-    if alerts and not dry_run:
-        webhook_url = daemon_config.get("delivery", {}).get(
-            "webhook_url", DEFAULT_WEBHOOK_URL
+    if dry_run:
+        # The snapshot is the baseline every future diff is measured against, so
+        # advancing it here is the same class of bug as persisting dedup state:
+        # the dry run would report the alerts it found and then leave a baseline
+        # claiming they had already been seen. The next real run diffs against
+        # *that*, finds nothing, and delivers nothing — the dry run ate the
+        # delivery it was only meant to preview. The snapshot is also the user's
+        # own record of what was last delivered, and a dry run delivers nothing.
+        log.info(
+            "Dry run: %d alert(s) computed, snapshot left at %s unchanged",
+            len(alerts),
+            snapshot_path,
         )
-        verify = daemon_config.get("verify_tls", True)
-        delivered = _post_webhook(webhook_url, alerts, result, verify=verify)
+    else:
+        save_snapshot(snapshot_path, result)
+        if alerts:
+            webhook_url = daemon_config.get("delivery", {}).get(
+                "webhook_url", DEFAULT_WEBHOOK_URL
+            )
+            verify = daemon_config.get("verify_tls", True)
+            delivered = _post_webhook(webhook_url, alerts, result, verify=verify)
     return {
         "alerts": alerts,
         "alert_count": len(alerts),
@@ -478,13 +492,25 @@ def start_loop(
             old = load_snapshot(snapshot_path)
             index = client.crawl_index()
             alerts, changed_ids = diff_index(old, index)
-            save_snapshot(snapshot_path, index)
-            _log(
-                log_path,
-                f"check alert_count={len(alerts)} "
-                f"details_fetched={len(changed_ids)} "
-                f"delivered=False",
-            )
+            if dry_run:
+                # Same reason as `run_daemon_once`: the snapshot is the baseline
+                # the next run diffs against, so advancing it here would make the
+                # dry run report its alerts and then hide them from every
+                # subsequent real run.
+                _log(
+                    log_path,
+                    f"dry-run alert_count={len(alerts)} "
+                    f"details_fetched={len(changed_ids)} "
+                    f"snapshot={snapshot_path} left unchanged",
+                )
+            else:
+                save_snapshot(snapshot_path, index)
+                _log(
+                    log_path,
+                    f"check alert_count={len(alerts)} "
+                    f"details_fetched={len(changed_ids)} "
+                    f"delivered=False",
+                )
             return {
                 "alerts": alerts,
                 "alert_count": len(alerts),
