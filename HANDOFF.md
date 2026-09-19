@@ -284,9 +284,11 @@ into `_snapshot_path()`, added missing return annotations, fixed a
 verified, not assumed: no WebSocket was ever attempted in any of the 183
 commits (`git log --all -S'wss://' -S'ws://' -S'websocket'` returns nothing),
 and both `mnn-hub.prod.faria.com` and `.cn` resolve via DNS — so the
-constraint is *protocol*, not availability. `SPEC.md:39` had claimed
+constraint is *protocol*, not availability. The old `SPEC.md:39` had claimed
 "WebSocket server URL" speculatively from the root commit and was never
-validated; the code and its 2026-09-02 design spec always said REST.
+validated; the code and its 2026-09-02 design spec always said REST. That file
+was deleted on 2026-09-19 as stale — see
+`docs/realtime-transport-findings.md` for the measured evidence.
 
 Docs were corrected to match: README retitled "Event Engine", `library.md` and
 `events.md` no longer claim real-time push, and `events.md` gained a

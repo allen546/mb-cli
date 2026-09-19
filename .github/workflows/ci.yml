@@ -70,7 +70,7 @@ jobs:
           fi
           echo "distribution name: $dist_name"
 
-          forbidden=('\.claude' '\.pyc' '__pycache__' 'docs/superpowers' 'SPEC\.md' 'use_case\.md' '/\.git/')
+          forbidden=('\.claude' '\.pyc' '__pycache__' 'docs/superpowers' '/\.git/')
           fail=0
           for pat in "${forbidden[@]}"; do
             n=$(printf '%s\n' "$entries" | grep -c "$pat" || true)

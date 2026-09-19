@@ -94,9 +94,6 @@ exclude = [
     # Internal design/planning artifacts; kept in the repo but not shipped.
     "/docs/superpowers",
     "/docs/deployments",
-    # Working notes, not user-facing documentation.
-    "/SPEC.md",
-    "/use_case.md",
     # Never ship bytecode.
     "**/__pycache__",
     "*.pyc",
