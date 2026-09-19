@@ -189,6 +189,10 @@ class DaemonStateManager:
             return
         if not force and not self._dirty and self.path.exists():
             return
+        # Keep the cache bounded even between the 12-hourly syncs, which are the
+        # only other place pruning happens.
+        if len(self.tasks_cache) > MAX_TASKS_CACHE_ENTRIES:
+            self.bound_tasks_cache(MAX_TASKS_CACHE_ENTRIES)
         _ensure_parent(self.path)
         data = {
             "last_synced_at": self.last_synced_at,

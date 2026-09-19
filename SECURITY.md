@@ -84,13 +84,14 @@ This tool needs your ManageBac password or session cookie to authenticate, so
 understanding what is stored where matters.
 
 By default `mb` keeps state in `~/.config/tahuti/` (override with
-`MB_CRAWLER_CONFIG` / `MB_CRAWLER_SESSION` / `MB_CRAWLER_CREDS_PATH`):
+`MANAGEBAC_CONFIG` / `MANAGEBAC_SESSION` / `MANAGEBAC_CREDS_PATH`; the
+pre-rename `MB_CRAWLER_*` names still work as deprecated fallbacks):
 
 | File | Contents | Protection |
 | ---- | -------- | --------- |
 | `config.json` | School domain, preferences, webhook URL | `0600`, in a `0700` dir |
 | `session.json` | Authenticated session cookie | `0600`, in a `0700` dir |
-| `creds.json` | **Your ManageBac password, in plaintext** | `0600`, in a `0700` dir |
+| `creds.json` / `creds.<profile>.json` | **Your ManageBac password, in plaintext** — written only by `login --keep-credentials` | `0600`, in a `0700` dir |
 | `snapshot.json` | Cached coursework (task titles, grades) | `0600`, in a `0700` dir |
 | `cache/` | Cached HTTP responses, including grade pages and the MNN Hub JWT | `0600` files, `0700` dir |
 | `daemon_state.json` | Notification/reminder dedup state | `0600`, in a `0700` dir |
@@ -102,37 +103,61 @@ By default `mb` keeps state in `~/.config/tahuti/` (override with
   atomically `os.replace`d into place, so a plaintext password is never visible
   at a permissive mode even briefly. Directories are `0700`, including the
   parents that `mkdir(parents=True)` would otherwise leave at the umask default.
-- **`tahuti logout` deletes the stored password.** It removes `creds.json` and any
-  OS-keychain entry, in addition to clearing the session cookie and the response
-  cache. Pass `--keep-credentials` if you want silent re-login preserved.
-- **`tahuti login --temp` writes nothing to disk.** It sends `remember_me=0` to
-  ManageBac, skips saving the password, skips saving the session cookie, and
-  disables the response cache — the cache holds full grade pages and the hub JWT,
-  so persisting it would have quietly defeated the flag.
-- **Loose permissions are reported.** On startup `mb` warns on stderr if
-  `creds.json`, `session.json`, or `config.json` is group- or world-readable.
+- **`tahuti logout` deletes the stored password.** It removes this profile's
+  creds file and any OS-keychain entry, in addition to clearing the session
+  cookie and the response cache; `--all` reaches every profile's file and the
+  legacy global one. Pass `--keep-credentials` if you want silent re-login
+  preserved.
+- **A password is written only when you ask for it.** `tahuti login` saves
+  `session.json` — the cookie — so you are not prompted on every command, and
+  writes no password at all. `login --keep-credentials` is the only thing that
+  puts a password on disk or in the keychain, whatever its source: a password
+  from `MANAGEBAC_PASSWORD` is input for that run and is never stored. The
+  consequence to be aware of is the one on the other side of the trade: when the
+  cookie expires and no password was kept, the next command fails with
+  `missing_credentials` rather than prompting, and names the command that fixes
+  it.
+- **`--no-remember-me` is server-side only.** It omits `remember_me` from the
+  login POST, so the cookie's lifetime is ManageBac's default rather than a
+  requested persistent one. It writes nothing, deletes nothing, and composes
+  with `--keep-credentials` — unlike the old `login --temp`, which it replaces
+  and which claimed to write nothing to disk while `_relogin_from_creds`
+  rewrote `session.json` unconditionally.
+- **Loose permissions are reported.** On startup `mb` warns on stderr if a creds
+  file, `session.json`, or `config.json` is group- or world-readable.
   File permissions are the only barrier here, so a `0644` creds file is worth
-  shouting about. Set `MB_CRAWLER_NO_PERM_WARN=1` to silence it.
-- **An optional OS keychain exists.** `tahuti login --keychain` (or
-  `MB_CRAWLER_KEYCHAIN=1`) stores the password in the macOS Keychain, the Linux
-  Secret Service, or the Windows Credential Locker instead of `creds.json`. It
-  adds no dependency — it shells out to `security`, `secret-tool`, or
-  `powershell.exe` — and is strictly opt-in. `tahuti logout` deletes the keychain
-  entry too. Two Windows-specific limits are worth knowing before you opt in:
-  the Credential Locker **roams entries to your Microsoft account by default**,
-  and `PasswordVault` needs Windows PowerShell 5.1 (PowerShell 7 cannot load the
-  WinRT type). If either is unacceptable, do not pass `--keychain` on Windows.
-  The secret is handed to the helper over **stdin**, never `argv`, so it does not
-  appear in process listings.
+  shouting about. Set `MANAGEBAC_NO_PERM_WARN=1` to silence it.
+- **An optional OS keychain exists.** `tahuti login --keep-credentials --keychain`
+  (or `MANAGEBAC_KEYCHAIN=1`) stores the password in the macOS Keychain, the Linux
+  Secret Service, or the Windows Credential Locker instead of the cleartext creds
+  file. It adds no dependency — it shells out to `security`, `secret-tool`, or
+  `powershell.exe` — and is strictly opt-in. `--keychain` decides only *where* a
+  kept password goes; on its own it keeps nothing, because `--keep-credentials`
+  is what decides whether a password is kept at all. `tahuti logout` deletes the
+  keychain entry too. Two Windows-specific limits are worth knowing before you
+  opt in: the Credential Locker **roams entries to your Microsoft account by
+  default**, and `PasswordVault` needs Windows PowerShell 5.1 (PowerShell 7
+  cannot load the WinRT type). If either is unacceptable, do not pass
+  `--keychain` on Windows. The secret is handed to the helper over **stdin**,
+  never `argv`, so it does not appear in process listings.
 - **Windows credential support is implemented but has not been executed on real
   Windows hardware.** The code paths are exercised by tests that fake
   `sys.platform`, and the argv/script construction is verified, but the
   PowerShell/WinRT calls themselves have not run against a live Credential
   Locker. Treat `--keychain` on Windows as unvalidated until it has been.
 - Secrets passed to a background daemon go through the child process's
-  **environment** (`MB_WEBHOOK_SECRET`, `MB_CRAWLER_PASSWORD`,
-  `MB_CRAWLER_COOKIE`) rather than `argv`, because `argv` is readable by any
+  **environment** (`MB_WEBHOOK_SECRET`, `MANAGEBAC_PASSWORD`,
+  `MANAGEBAC_COOKIE`) rather than `argv`, because `argv` is readable by any
   local user via `ps` for the life of the process.
+- **The daemon stores no credential of its own, and says so at startup.** A
+  long-lived process must not carry a copy of your password in its config file,
+  where it would outlive every reason to have it. The cost is that a daemon with
+  no `--password` / `--cookie`, no password in its environment and no stored
+  credential works until the cookie expires and then stops — so `daemon run` and
+  `daemon start` print a warning naming the profile and the command that fixes
+  it (`tahuti login --keep-credentials`). It never asks for `keep_credentials`
+  itself: whether a password is kept is the operator's decision, made once, at
+  login.
 - Webhook payloads are signed with HMAC-SHA256 and the bundled receiver in
   `extras/mb-notifier/` refuses unsigned, replayed (bounded id cache), or stale
   (±300s) pushes, comparing digests in constant time.
@@ -144,30 +169,34 @@ password at all (they keep a browser storage-state file), or encrypt it at rest
 (AES256 with a local key). **We store your ManageBac password in cleartext.**
 The keychain closes that gap only if you opt in. The honest position:
 
-- **Default storage is cleartext at `0600`.** File permissions are the *only*
-  barrier. Anything running as your user — malware, a compromised editor
-  extension, a stray backup that drops modes — can read it. `root` and any
-  process with `CAP_DAC_OVERRIDE` can read it regardless. This is exactly why
-  the loose-permission warning exists: the barrier is thin and worth monitoring.
+- **Default storage is cleartext at `0600`, and now it is opt-in.** File
+  permissions are the *only* barrier. Anything running as your user — malware, a
+  compromised editor extension, a stray backup that drops modes — can read it.
+  `root` and any process with `CAP_DAC_OVERRIDE` can read it regardless. This is
+  exactly why the loose-permission warning exists: the barrier is thin and worth
+  monitoring. What changed is that a bare `tahuti login` no longer creates the
+  file at all; `creds.json` / `creds.<profile>.json` exists only because someone
+  passed `--keep-credentials`.
 - **The keychain is optional and has real limits.** It is unlocked only while
   you are logged in, so on a headless Linux box with no secret service the store
-  fails and `mb` falls back to `creds.json` with a warning rather than silently
-  losing your credential. On macOS, `security add-generic-password` accepts a
-  secret only as an argument, so the password is briefly visible in that
-  short-lived child's `argv` — a window of milliseconds, after which the item is
-  encrypted at rest by the login keychain. Linux `secret-tool` takes the secret
-  on stdin and has no such exposure. A keychain item is also not covered by your
-  normal file backups.
-- **`--keep-credentials` deliberately re-opens the hole.** `tahuti logout` deletes
-  the password by default because that is the safer default; the flag exists for
-  users who prefer silent re-login over revocation. Know which one you are
-  relying on.
-- **`MB_CRAWLER_PASSWORD` and `MB_CRAWLER_COOKIE` are now read as input**, not
+  fails and `mb` falls back to the cleartext creds file with a warning rather
+  than silently losing your credential. On macOS, `security add-generic-password`
+  accepts a secret only as an argument, so the password is briefly visible in
+  that short-lived child's `argv` — a window of milliseconds, after which the
+  item is encrypted at rest by the login keychain. Linux `secret-tool` takes the
+  secret on stdin and has no such exposure. A keychain item is also not covered
+  by your normal file backups.
+- **`--keep-credentials` deliberately re-opens the hole.** `tahuti logout`
+  deletes the password by default because that is the safer default, and a bare
+  `login` never writes it; the flag exists for users who prefer silent re-login
+  over revocation. Know which one you are relying on.
+- **`MANAGEBAC_PASSWORD` and `MANAGEBAC_COOKIE` are now read as input**, not
   just exported to the daemon child — so they work for non-interactive and CI
-  use (`MB_CRAWLER_PASSWORD=... tahuti daemon run` needs no prompt), with an
+  use (`MANAGEBAC_PASSWORD=... tahuti daemon run` needs no prompt), with an
   explicit `--password` / `--cookie` taking precedence. That also means a
   leaked environment variable is now directly usable as a credential, and a
-  process's environment is still readable by its own user.
+  process's environment is still readable by its own user. They are input only:
+  a password from the environment is never written to disk.
 - **Webhook payloads contain student PII.** Concretely, the JSON body carries
   task titles, class names, class and task ids, due dates, `grade_letter` /
   `grade_score`, and a task URL — plus `sender` (the teacher or staff member who
@@ -184,7 +213,7 @@ The keychain closes that gap only if you opt in. The honest position:
   only — webhook delivery has its own `verify_tls` setting in the daemon config,
   which this flag does **not** change, so webhook POSTs still verify normally.
 - **`--password` / `-p` on the command line lands in your shell history.** Prefer
-  the interactive prompt or `MB_CRAWLER_PASSWORD`.
+  the interactive prompt or `MANAGEBAC_PASSWORD`.
 
 If any of these limits is unacceptable for your environment, run `mb` inside a
 container or a dedicated locked-down user account.

@@ -45,8 +45,8 @@ def test_cli_daemon_test_webhook():
 
 
 def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+    monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
     mock_client = MagicMock()
     mock_client.get_tasks_by_view.return_value = []

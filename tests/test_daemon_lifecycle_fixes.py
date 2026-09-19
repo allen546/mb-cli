@@ -706,7 +706,11 @@ def test_save_daemon_config_leaves_no_plaintext_file_on_failure(
         save_daemon_config(data, str(path))
 
     assert not path.exists(), "the secret was written before permissions were set"
-    leaked = [p for p in tmp_path.iterdir() if "s3cr3t" in p.read_text()]
+    # `is_file()` because the config dir itself is created under tmp_path, and
+    # reading a directory raises rather than failing the assertion.
+    leaked = [
+        p for p in tmp_path.iterdir() if p.is_file() and "s3cr3t" in p.read_text()
+    ]
     assert leaked == [], f"plaintext secret left behind in {leaked}"
 
 

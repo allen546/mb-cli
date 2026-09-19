@@ -48,14 +48,21 @@ REAL_CONFIG_DIR = _REAL_HOME / ".config" / "tahuti"
 
 # (env var, filename under the redirected config dir) — read at call time.
 _CALL_TIME_PATH_ENV_VARS: tuple[tuple[str, str], ...] = (
-    ("MB_CRAWLER_CONFIG", "config.json"),
-    ("MB_CRAWLER_SESSION", "session.json"),
-    ("MB_CRAWLER_CREDS_PATH", "creds.json"),
+    ("MANAGEBAC_CONFIG", "config.json"),
+    ("MANAGEBAC_SESSION", "session.json"),
+    ("MANAGEBAC_CREDS_PATH", "creds.json"),
 )
 
 # Credential/behaviour switches that a developer's shell may leak into the
-# suite. Cleared rather than set, so tests that want one can opt back in.
+# suite. Cleared rather than set, so tests that want one can opt back in. Both
+# spellings, because the pre-rename `MB_CRAWLER_*` names still work as
+# deprecated fallbacks — a leaked one would reach the code just as well as a
+# leaked new one.
 _CREDENTIAL_ENV_VARS: tuple[str, ...] = (
+    "MANAGEBAC_PASSWORD",
+    "MANAGEBAC_COOKIE",
+    "MANAGEBAC_KEYCHAIN",
+    "MANAGEBAC_NO_PERM_WARN",
     "MB_CRAWLER_PASSWORD",
     "MB_CRAWLER_COOKIE",
     "MB_CRAWLER_KEYCHAIN",

@@ -2,7 +2,7 @@
 
 Running this suite once deleted the operator's live ManageBac password:
 `cmd_logout` resolves the credential file through `resolve_creds_path()`, and
-nothing redirected `MB_CRAWLER_CREDS_PATH`, so it fell through to the real
+nothing redirected `MANAGEBAC_CREDS_PATH`, so it fell through to the real
 ~/.config/tahuti/creds.json and `clear_creds()` unlinked it. The autouse
 `isolated_user_state` fixture is what stops that recurring; these tests are
 what stop *it* from being removed or quietly narrowed.
@@ -126,11 +126,17 @@ class TestNoRealCredentialStore:
         assert keychain.enabled() is False
 
     def test_credential_env_vars_are_absent_by_default(self):
-        """A leaked MB_CRAWLER_* from the developer's shell must not survive
+        """A leaked MANAGEBAC_* from the developer's shell must not survive
         into a test that never asked for it."""
         import os
 
         for var in (
+            "MANAGEBAC_PASSWORD",
+            "MANAGEBAC_COOKIE",
+            "MANAGEBAC_KEYCHAIN",
+            "MANAGEBAC_NO_PERM_WARN",
+            # The deprecated spellings are still read, so a leaked one would
+            # reach the code just as well.
             "MB_CRAWLER_PASSWORD",
             "MB_CRAWLER_COOKIE",
             "MB_CRAWLER_KEYCHAIN",
@@ -156,8 +162,8 @@ class TestLogoutCannotReachTheRealCredentialFile:
     def test_logout_deletes_only_a_sandboxed_creds_file(
         self, tmp_path: Path, monkeypatch, real_user_config_dir: Path
     ):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
 
         # Guard first: if this ever resolves outside the sandbox, fail here
         # rather than writing a canary over a real credential file.
@@ -165,7 +171,7 @@ class TestLogoutCannotReachTheRealCredentialFile:
         assert resolved != real_user_config_dir / "creds.json"
         assert real_user_config_dir not in resolved.parents, (
             f"{resolved} is the operator's real credential file; `logout` "
-            f"would unlink it. MB_CRAWLER_CREDS_PATH must be redirected."
+            f"would unlink it. MANAGEBAC_CREDS_PATH must be redirected."
         )
 
         import json
@@ -198,7 +204,7 @@ class TestPerTestOverridesStillWin:
         self, isolated_user_state: Path, monkeypatch
     ):
         chosen = isolated_user_state.parent / "elsewhere.json"
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(chosen))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(chosen))
         assert resolve_creds_path() == chosen
 
     def test_per_test_setattr_beats_the_sandbox(self, monkeypatch):

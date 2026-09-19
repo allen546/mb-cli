@@ -182,12 +182,16 @@ class TestMcpSubmitContainment:
     def test_refuses_a_creds_file_relocated_by_env_var(
         self, mock_build_client, tahuti_state, tmp_path, monkeypatch
     ):
-        """``MB_CRAWLER_CREDS_PATH`` can put the password outside the config dir."""
+        """``MANAGEBAC_CREDS_PATH`` can put the password outside the config dir.
+
+        The deprecated ``MB_CRAWLER_CREDS_PATH`` spelling is still honoured as a
+        fallback, but the canonical name is what a current install sets.
+        """
         mock, mock_client = mock_build_client
         relocated = tmp_path / "backups" / "creds.json"
         relocated.parent.mkdir(parents=True)
         relocated.write_text(json.dumps({"password": SECRET}), "utf-8")
-        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(relocated))
+        monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(relocated))
 
         payload = json.loads(submit_file(task_id=TASK_URL, file_path=str(relocated)))
 

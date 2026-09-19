@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
+from pathlib import Path
 
 from .cache import ResponseCache
 from .client import ManageBacClient
@@ -10,10 +12,13 @@ from . import keychain
 from .config import (
     AppState,
     clear_creds,
+    creds_paths,
+    legacy_creds_path,
     load_creds,
     load_state,
     resolve_creds_path,
     save_creds,
+    save_profile,
     save_session,
 )
 from .exceptions import CommandError
@@ -50,7 +55,7 @@ def hub_client(
     return MNNHubClient(endpoint, token, verify=verify, timeout=timeout)
 
 
-def _creds_path() -> str:
+def _creds_path(profile: str | None = None) -> str:
     """Resolve the creds path per-call so tests can redirect it via env.
 
     ``build_client`` and friends must never touch the developer's real saved
@@ -63,11 +68,20 @@ def _creds_path() -> str:
     ``_creds_path()`` could name two different files: one would write the
     password to ``~/.config/tahuti/creds.json`` while the other went looking for
     it in ``~/.config/mb-crawler/creds.json`` and reported ``missing_credentials``.
+
+    *profile* is passed through because the file is per-profile: two accounts
+    must be able to keep a password each, and ``logout`` of one must not be able
+    to reach the other's.
     """
-    return str(resolve_creds_path())
+    return str(resolve_creds_path(profile=profile))
 
 
-def _store_password(email: str, password: str, use_keychain: bool | None = None) -> str:
+def _store_password(
+    email: str,
+    password: str,
+    use_keychain: bool | None = None,
+    profile: str | None = None,
+) -> str:
     """Persist a password for silent re-login.
 
     Returns the backend actually used: ``"keychain"``, ``"file"``, or
@@ -75,27 +89,62 @@ def _store_password(email: str, password: str, use_keychain: bool | None = None)
     it the password lands in the cleartext 0600 ``creds.json`` that
     :mod:`mb_cli.config` writes. A keychain that fails to store falls back to
     the file rather than silently losing the credential.
+
+    Only ever called when the caller asked for the password to be kept — see
+    ``build_client(keep_credentials=...)``.
     """
     if keychain.enabled(use_keychain):
         if keychain.store(email, password):
             # Drop any cleartext copy left by an earlier non-keychain login, so
             # switching backends does not leave the password on disk twice.
-            clear_creds(_creds_path())
+            for path in creds_paths(profile=profile):
+                clear_creds(path)
             return "keychain"
         log.warning("OS keychain unavailable — falling back to creds.json")
-    save_creds(_creds_path(), email, password)
+    path = resolve_creds_path(profile=profile)
+    save_creds(path, email, password)
+    _migrate_legacy_creds(profile, email, written=path)
     return "file"
 
 
-def _load_creds(email_hint: str | None = None) -> dict | None:
+def _migrate_legacy_creds(profile: str | None, email: str, written: Path) -> None:
+    """Drop the pre-per-profile global copy once the profile has its own.
+
+    The password file was written to one global path before it was keyed by
+    profile, so an install upgrading mid-life has its password in
+    ``creds.json`` while the profile that now owns it writes
+    ``creds.<profile>.json``. Leaving the old file would mean two cleartext
+    copies of one password, and ``logout`` would have to remember to delete
+    both. Only the copy holding *this* account is removed: a different account's
+    password in the global file is not ours to delete.
+
+    *written* is the file just created. For the default profile it *is* the
+    global file, so there is nothing to migrate — comparing against it is what
+    stops this from deleting the password it was just asked to store.
+    """
+    legacy = legacy_creds_path()
+    if legacy == Path(written) or not legacy.exists():
+        return
+    existing = load_creds(legacy)
+    if existing and existing.get("email") == email:
+        clear_creds(legacy)
+
+
+def _load_creds(email_hint: str | None = None, profile: str | None = None) -> dict | None:
     """Load saved credentials, consulting the OS keychain as a fallback.
 
-    ``creds.json`` wins when it holds a password so an existing install keeps
-    working unchanged. The keychain is consulted when the file is missing or
-    carries no password — i.e. after ``tahuti login --keychain`` — using the
+    ``creds.<profile>.json`` wins when it holds a password so an existing
+    install keeps working unchanged. The pre-per-profile global ``creds.json``
+    is tried next when this profile has no file of its own, so an upgrade does
+    not force a re-login. The keychain is consulted when no file carries a
+    password — i.e. after ``tahuti login --keychain`` — using the
     profile/session email as the account name.
     """
-    creds = load_creds(_creds_path())
+    creds = None
+    for path in creds_paths(profile=profile):
+        creds = load_creds(path)
+        if creds is not None:
+            break
     if creds and creds.get("password"):
         return creds
     account = (creds or {}).get("email") or email_hint
@@ -128,6 +177,27 @@ def session_email(state: AppState, override: str | None = None) -> str:
     return override or state.profile.email or state.session.email or ""
 
 
+def apply_authenticated(state: AppState, client: ManageBacClient, email: str) -> str:
+    """Record in memory what this client just authenticated as.
+
+    Returns the email the caller should report. The CLI uses this to fill its
+    payload; ``build_client`` uses it before persisting. It lives here so the
+    two cannot describe the same login differently — they used to, which is how
+    ``logout`` ended up clearing a different profile's cache directory.
+    """
+    state.profile.school = client.school
+    state.profile.domain = client.domain
+    state.profile.email = email or state.profile.email
+
+    state.session.school = client.school
+    state.session.domain = client.domain
+    state.session.email = email or state.session.email
+    state.session.base_url = client.base
+    state.session.cookie = client.session.cookies.get("_managebac_session")
+    state.session.logged_in_at = datetime.now().isoformat()
+    return email or state.profile.email or ""
+
+
 def build_client(
     school: str | None = None,
     domain: str | None = None,
@@ -140,7 +210,8 @@ def build_client(
     verify: bool | str = True,
     cache_ttl: int | None = None,
     retry: int = 3,
-    remember: bool = True,
+    remember_me: bool | None = True,
+    keep_credentials: bool = False,
     use_keychain: bool | None = None,
 ) -> tuple[AppState, ManageBacClient, str]:
     """Build and authenticate a :class:`ManageBacClient`.
@@ -148,8 +219,24 @@ def build_client(
     Returns ``(state, client, email)``.  Raises :class:`CommandError` on
     missing credentials or authentication failure.
 
-    *use_keychain* overrides ``MB_CRAWLER_KEYCHAIN`` for this call only;
-    ``None`` defers to the environment.
+    *remember_me* is what ManageBac is told — ``None`` omits the ``remember_me``
+    field from the login POST entirely, which is a server-side cookie-lifetime
+    decision and touches nothing on disk.
+
+    *keep_credentials* is whether the password may be written to disk, for
+    unattended renewal of an expired cookie. It defaults to *False*: typing a
+    password once per expiry is the lower-friction *and* the safer default, and
+    a plaintext password is the one artifact here with no upside to keeping.
+
+    *use_keychain* overrides ``MANAGEBAC_KEYCHAIN`` for this call only; ``None``
+    defers to the environment. It decides *where* a kept password goes, never
+    whether it is kept.
+
+    Everything else is derived, so there is no fourth knob to get out of step:
+    the response cache follows ``refresh`` alone (it is on by default and
+    ``logout`` clears it), and ``session.json`` is always written — it holds the
+    session cookie, and withholding it would mean retyping the password for
+    every command. That is the whole point of the split below.
     """
     state = load_state(profile)
     school = school or state.profile.school or state.session.school
@@ -161,7 +248,7 @@ def build_client(
     email_val = session_email(state, email)
     if not email_val:
         try:
-            creds = _load_creds()
+            creds = _load_creds(profile=state.active_profile)
             if creds:
                 email_val = creds.get("email")
         except Exception:
@@ -178,12 +265,12 @@ def build_client(
     resolved_ttl = (
         cache_ttl if cache_ttl is not None else state.profile.default_cache_ttl
     )
-    # `remember=False` (`tahuti login --temp`) must leave nothing on disk, and the
-    # response cache holds full grade pages plus the MNN-hub JWT — so the cache
-    # is disabled too, not just the saved password.
-    cache = ResponseCache(
-        cache_dir=cache_dir, enabled=not refresh and remember, ttl=resolved_ttl
-    )
+    # `refresh` alone decides. The cache used to hang off `remember` as well, so
+    # `--temp` turned it off along with the password it was not saving anyway —
+    # and a plain `tahuti list` paid for it in re-crawls it had not asked for.
+    # It holds grade pages and the MNN-hub JWT, which is why `logout` clears it
+    # rather than why a login may switch it off.
+    cache = ResponseCache(cache_dir=cache_dir, enabled=not refresh, ttl=resolved_ttl)
     client = ManageBacClient(
         school, domain=domain, cache=cache, verify=verify, retry=retry
     )
@@ -195,12 +282,12 @@ def build_client(
             raise CommandError(
                 "missing_credentials", "Missing email for password login"
             )
-        if not client.login(email_val, password, remember=remember):
+        if not client.login(email_val, password, remember=remember_me):
             raise CommandError("authentication_failed", "ManageBac login failed")
-        # `remember=False` (mb --temp) means "do not persist my password to
-        # disk".  Persisting it anyway would silently defeat that flag.
-        if remember:
-            _store_password(email_val, password, use_keychain)
+        if keep_credentials:
+            _store_password(
+                email_val, password, use_keychain, profile=state.active_profile
+            )
     elif state.session.cookie and not reauth:
         # Health check: try saved cookie, re-login if stale
         client.set_cookie(state.session.cookie)
@@ -208,10 +295,10 @@ def build_client(
             pass  # cookie is good
         else:
             log.info("Saved cookie expired — attempting silent re-login")
-            _relogin_from_creds(client, state)
+            _relogin_from_creds(client, state, remember_me=remember_me)
     else:
         # No session cookie and no explicit password — try loading from config
-        creds = _load_creds(email_val)
+        creds = _load_creds(email_val, profile=state.active_profile)
         login_email = email_val or (creds.get("email") if creds else None)
         login_pass = password or (creds.get("password") if creds else None)
         if not login_email or not login_pass:
@@ -219,19 +306,24 @@ def build_client(
                 "missing_credentials",
                 "No session, no password — pass password= or set a password via `tahuti login`",
             )
-        if not client.login(login_email, login_pass, remember=remember):
+        if not client.login(login_email, login_pass, remember=remember_me):
             raise CommandError("authentication_failed", "ManageBac login failed")
-        # Persist new session — unless this is a `--temp` login, which must not
-        # leave a reusable cookie behind any more than it leaves a password.
-        if remember:
-            state.session.cookie = client.session.cookies.get("_managebac_session")
-            state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
-            state.session.school = school
-            state.session.domain = domain
-            state.session.email = login_email
-            save_session(state)
+        # A password supplied by the environment is input, not a request to keep
+        # it: `MANAGEBAC_PASSWORD=... tahuti list` must not end up writing that
+        # password into creds.json behind the user's back.
+        if keep_credentials:
+            _store_password(
+                login_email, login_pass, use_keychain, profile=state.active_profile
+            )
 
-    return state, client, email_val or ""
+    email_out = apply_authenticated(state, client, email_val or "")
+    # One owner for every write. `_authenticate_client` used to save the session
+    # too, from outside, with a `persist` switch whose only job was to patch the
+    # policy decided here — and `_relogin_from_creds` saved unconditionally, so a
+    # stale cookie plus a stored password rewrote session.json whatever the
+    # caller asked for. Deciding in one place is what makes the flag honest.
+    _persist(state)
+    return state, client, email_out
 
 
 def _is_session_alive(client: ManageBacClient) -> bool:
@@ -257,17 +349,61 @@ def _is_session_alive(client: ManageBacClient) -> bool:
         return False
 
 
-def _relogin_from_creds(client: ManageBacClient, state: AppState) -> None:
-    """Re-login using saved credentials. Raises CommandError on failure."""
-    creds = _load_creds(state.session.email or state.profile.email)
+def _relogin_from_creds(
+    client: ManageBacClient, state: AppState, remember_me: bool | None = True
+) -> None:
+    """Re-login using saved credentials. Raises CommandError on failure.
+
+    *remember_me* is the caller's policy, threaded through rather than
+    hardcoded: this used to pass ``remember=True`` no matter what the caller
+    asked for, so ``--no-remember-me`` silently became ``remember_me=1`` on the
+    one path that runs unattended.
+
+    A dead cookie with no stored password is an error, not a prompt and not a
+    fallback. Prompting would hang a daemon or a CI job; falling back would
+    invent a credential the user never gave. Nothing is written in that case.
+    """
+    creds = _load_creds(
+        state.session.email or state.profile.email, profile=state.active_profile
+    )
     if not creds or "email" not in creds or "password" not in creds:
         raise CommandError(
             "missing_credentials",
-            f"Cookie expired and no creds found in {_creds_path()}",
+            f"Cookie expired and no password is saved for profile "
+            f"{state.active_profile!r} (looked in "
+            f"{', '.join(str(p) for p in creds_paths(profile=state.active_profile))}"
+            "). Run `tahuti login --keep-credentials` once to store one, and "
+            "later commands will renew the session by themselves; without it, "
+            "re-authenticate with `tahuti login`.",
         )
-    if not client.login(creds["email"], creds["password"], remember=True):
+    if not client.login(creds["email"], creds["password"], remember=remember_me):
         raise CommandError("authentication_failed", "Silent re-login failed")
-    # Persist the new cookie so subsequent calls don't re-login
-    state.session.cookie = client.session.cookies.get("_managebac_session")
-    state.session.logged_in_at = __import__("datetime").datetime.now().isoformat()
+    # In memory only: the caller decides when that reaches disk, so a failed
+    # re-login leaves the previous session file untouched rather than half
+    # overwritten.
+    apply_authenticated(state, client, creds["email"])
+
+
+def _persist(state: AppState) -> None:
+    """Write the profile and session this client authenticated as.
+
+    The single place persistence policy is expressed. ``build_client`` calls it
+    once on its way out; :func:`refresh_session` calls it for a caller that is
+    renewing a client it already holds. Nothing else in the package writes these
+    two files, which is what stops a flag from being silently overruled by a
+    second owner.
+    """
+    save_profile(state)
     save_session(state)
+
+
+def refresh_session(
+    client: ManageBacClient, state: AppState, remember_me: bool | None = True
+) -> None:
+    """Renew an expired session from saved credentials and persist the result.
+
+    The daemon's re-auth entry point: it holds a client it built earlier and
+    cannot call ``build_client`` again mid-loop.
+    """
+    _relogin_from_creds(client, state, remember_me=remember_me)
+    _persist(state)

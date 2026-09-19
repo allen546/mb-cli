@@ -557,8 +557,13 @@ class DaemonService:
         # Dispatch event to webhooks
         results = self.dispatcher.dispatch(event)
 
-        # Only mark processed if delivery succeeded on at least one endpoint or no endpoints configured
-        if not self.config.webhooks or any(r.get("success") for r in results):
+        # Mark processed only when no endpoint still owes the event.
+        # `any(r.get("success"))` was wrong: one success plus one
+        # transiently-failed endpoint marked the notification handled, so the
+        # endpoint that failed was silently abandoned — `retryable_results`
+        # existed for exactly this and nothing called it. A *permanently* failed
+        # endpoint is not retryable, so it does not re-poll forever.
+        if not self.config.webhooks or not retryable_results(results):
             self.state_manager.mark_notification_processed(dedup_key)
         return event
 
@@ -588,15 +593,11 @@ class DaemonService:
                 dispatched_events.append(dispatched)
                 new_notifications_count += 1
 
-                # Mark processed only when no endpoint still owes the event.
-                # `any(r.get("success"))` was wrong: one success plus one
-                # transiently-failed endpoint marked the notification handled,
-                # so the endpoint that failed was silently abandoned — the
-                # `retryable_results` primitive existed for exactly this and
-                # nothing called it. A *permanently* failed endpoint is not
-                # retryable, so it does not re-poll forever.
-                if notif_id and (not self.config.webhooks or not retryable_results(results)):
-                    self.state_manager.mark_notification_processed(int(notif_id))
+                # Marking happens in `_process_event`, which owns `dedup_key`.
+                # A second mark here was a merge artifact: it referenced a
+                # `notif_id` local that does not exist in this scope (NameError
+                # on any cycle that dispatched an event), and it double-counted
+                # against the synthetic dedup key the provider repair produces.
 
         except Exception as exc:
             # Swallowed for the benefit of the long-running loop, which must keep

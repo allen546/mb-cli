@@ -7,7 +7,8 @@ pin, in the order the defects were reported:
 1. ``daemon configure-channel`` was a write-only stub that silently succeeded
    and then POSTed to a hardcoded localhost webhook.
 2. ``daemon start --once`` computed alerts, delivered nothing, and exited 0.
-3. ``login --temp`` persisted a reusable session cookie.
+3. the session write had two owners, so ``login --temp`` persisted a reusable
+   session cookie (the flag is gone; the split now has one owner).
 4. ``logout`` resolved the account with inverted precedence and cleared the
    wrong cache directory / keychain entry.
 5. ``download`` reported success when the detail fetch had failed.
@@ -57,22 +58,22 @@ def _isolate_state(tmp_path, monkeypatch):
 
     ``DEFAULT_CACHE_DIR``, ``DEFAULT_SNAPSHOT_PATH``, ``DEFAULT_PID_PATH``,
     ``DEFAULT_LOG_PATH`` and ``DEFAULT_DAEMON_PATH`` are all computed from
-    ``config_dir()`` at *module import time*, so no ``MB_CRAWLER_*`` variable
+    ``config_dir()`` at *module import time*, so no ``MANAGEBAC_*`` variable
     and no ``HOME`` override can reach them — they have to be patched in place.
     ``daemon/__init__.py`` additionally re-binds the pid/log defaults via
     ``from .system import ...``, giving a second independent binding that
     ``load_daemon_config`` reads, so both are patched.
     """
     for var in (
-        "MB_CRAWLER_KEYCHAIN",
-        "MB_CRAWLER_PASSWORD",
-        "MB_CRAWLER_COOKIE",
-        "MB_CRAWLER_CREDS_PATH",
+        "MANAGEBAC_KEYCHAIN",
+        "MANAGEBAC_PASSWORD",
+        "MANAGEBAC_COOKIE",
+        "MANAGEBAC_CREDS_PATH",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
-    monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
-    monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(tmp_path / "creds.json"))
+    monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
+    monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
+    monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(tmp_path / "creds.json"))
     monkeypatch.setattr("mb_cli.cache.DEFAULT_CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr("mb_cli.__main__.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json")
     for module in ("mb_cli.daemon.system", "mb_cli.daemon"):
@@ -418,10 +419,19 @@ class TestDaemonStartOnceReportsTruthfully:
         assert captured["payload"]["data"]["delivered"] is False
 
 
-# ── Defect 3 — `login --temp` persisted a reusable session cookie ───────
+# ── Defect 3 — the session write had two owners ─────────────────────────
+#
+# `login --temp` was meant to leave nothing on disk, but `build_client` saved
+# the session on its own path while `_authenticate_client` saved it again from
+# outside behind a `persist` switch — so the flag was overruled by whichever
+# owner ran last. The redesign deletes the switch and the second owner: the
+# session *is* the persistent session, so it is always written, and the two new
+# flags (`--keep-credentials`, `--no-remember-me`) govern the password and the
+# `remember_me` field and nothing else. These pin that at CLI level, with only
+# the HTTP layer mocked.
 
 
-class TestLoginTempWritesNoSessionCookie:
+class TestLoginAlwaysPersistsTheSession:
     def _run_login(self, tmp_path, monkeypatch, capsys, extra_argv=()):
         _isolate_state(tmp_path, monkeypatch)
         argv = [
@@ -439,7 +449,7 @@ class TestLoginTempWritesNoSessionCookie:
             *extra_argv,
         ]
         # Only the HTTP layer is mocked; build_client and cmd_login run for real
-        # so the flag has to survive both of them.
+        # so the flags have to survive both of them.
         with patch("mb_cli.auth.ManageBacClient") as client_cls:
             client = client_cls.return_value
             client.login.return_value = True
@@ -451,39 +461,42 @@ class TestLoginTempWritesNoSessionCookie:
                 main(argv)
         return exc_info.value.code, json.loads(capsys.readouterr().out), client_cls
 
-    def test_temp_login_leaves_no_cookie_on_disk(self, tmp_path, monkeypatch, capsys):
-        code, payload, _ = self._run_login(
-            tmp_path, monkeypatch, capsys, ["--temp"]
-        )
+    def test_login_persists_the_session_cookie(self, tmp_path, monkeypatch, capsys):
+        """The point of a persistent session: no password prompt next time."""
+        code, _, _ = self._run_login(tmp_path, monkeypatch, capsys)
         assert code == 0
-        session_file = Path(os.environ["MB_CRAWLER_SESSION"])
-        on_disk = (
-            json.loads(session_file.read_text()) if session_file.exists() else {}
-        )
-        for profile_data in (on_disk.get("profiles") or {}).values():
-            assert not profile_data.get("cookie"), "--temp persisted a cookie"
-        # creds.json is build_client's job, but the pair must agree.
-        assert not Path(os.environ["MB_CRAWLER_CREDS_PATH"]).exists()
-
-    def test_temp_login_disables_the_response_cache(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """HANDOFF §2 documents the cache as disabled, not merely the password."""
-        _, _, client_cls = self._run_login(
-            tmp_path, monkeypatch, capsys, ["--temp"]
-        )
-        assert client_cls.call_args.kwargs["cache"].enabled is False
-
-    def test_non_temp_login_still_persists_the_session(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """Control: the fix must not break silent re-login for normal logins."""
-        code, payload, _ = self._run_login(tmp_path, monkeypatch, capsys)
-        assert code == 0
-        session_file = Path(os.environ["MB_CRAWLER_SESSION"])
+        session_file = Path(os.environ["MANAGEBAC_SESSION"])
         assert session_file.exists()
         saved = json.loads(session_file.read_text())
         assert saved["profiles"]["default"]["cookie"] == "reusable-cookie"
+
+    def test_no_password_is_saved_without_the_flag(self, tmp_path, monkeypatch, capsys):
+        code, payload, _ = self._run_login(tmp_path, monkeypatch, capsys)
+        assert code == 0
+        assert payload["data"]["credentials_saved"] is False
+        assert not Path(os.environ["MANAGEBAC_CREDS_PATH"]).exists()
+
+    @pytest.mark.parametrize(
+        "flag", ["--keep-credentials", "--no-remember-me", "--keep-credentials --no-remember-me"]
+    )
+    def test_neither_new_flag_suppresses_the_session(
+        self, tmp_path, monkeypatch, capsys, flag
+    ):
+        """The old `--temp` suppressed all four things at once; these are scoped."""
+        code, _, _ = self._run_login(tmp_path, monkeypatch, capsys, flag.split())
+        assert code == 0
+        session_file = Path(os.environ["MANAGEBAC_SESSION"])
+        assert session_file.exists()
+        saved = json.loads(session_file.read_text())
+        assert saved["profiles"]["default"]["cookie"] == "reusable-cookie"
+
+    def test_keep_credentials_saves_the_password(self, tmp_path, monkeypatch, capsys):
+        _, payload, _ = self._run_login(
+            tmp_path, monkeypatch, capsys, ["--keep-credentials"]
+        )
+        assert payload["data"]["credentials_saved"] is True
+        creds = json.loads(Path(os.environ["MANAGEBAC_CREDS_PATH"]).read_text())
+        assert creds["password"] == "not-a-real-password"
 
 
 # ── Defect 4 — `logout` resolved the account with inverted precedence ───
@@ -567,7 +580,7 @@ class TestLogoutClearsTheRightAccount:
     ):
         _isolate_state(tmp_path, monkeypatch)
         _write_state(tmp_path, "profile@example.com", "other@example.com")
-        creds = Path(os.environ["MB_CRAWLER_CREDS_PATH"])
+        creds = Path(os.environ["MANAGEBAC_CREDS_PATH"])
         creds.write_text(json.dumps({"email": "profile@example.com", "password": "x"}))
         with patch("builtins.print"):
             with pytest.raises(SystemExit):

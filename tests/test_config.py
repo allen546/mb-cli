@@ -24,11 +24,11 @@ class TestResolveConfigPath:
         assert resolve_config_path("/my/path") == Path("/my/path")
 
     def test_env_var(self, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", "/env/config.json")
+        monkeypatch.setenv("MANAGEBAC_CONFIG", "/env/config.json")
         assert resolve_config_path(None) == Path("/env/config.json")
 
     def test_default(self, monkeypatch):
-        monkeypatch.delenv("MB_CRAWLER_CONFIG", raising=False)
+        monkeypatch.delenv("MANAGEBAC_CONFIG", raising=False)
         result = resolve_config_path(None)
         assert result.name == "config.json"
         assert "tahuti" in str(result)
@@ -39,11 +39,11 @@ class TestResolveSessionPath:
         assert resolve_session_path("/my/session") == Path("/my/session")
 
     def test_env_var(self, monkeypatch):
-        monkeypatch.setenv("MB_CRAWLER_SESSION", "/env/session.json")
+        monkeypatch.setenv("MANAGEBAC_SESSION", "/env/session.json")
         assert resolve_session_path(None) == Path("/env/session.json")
 
     def test_default(self, monkeypatch):
-        monkeypatch.delenv("MB_CRAWLER_SESSION", raising=False)
+        monkeypatch.delenv("MANAGEBAC_SESSION", raising=False)
         result = resolve_session_path(None)
         assert result.name == "session.json"
         assert "tahuti" in str(result)
@@ -53,8 +53,8 @@ class TestLoadState:
     def test_default_when_no_files(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
         state = load_state()
         assert state.active_profile == "default"
         assert state.profile.domain == "managebac.com"
@@ -102,8 +102,8 @@ class TestLoadState:
                 }
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         assert state.active_profile == "test"
@@ -130,8 +130,8 @@ class TestLoadState:
                 {"profiles": {"alpha": {"cookie": "c1"}, "beta": {"cookie": "c2"}}}
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state(profile_name="beta")
         assert state.active_profile == "beta"
@@ -143,8 +143,8 @@ class TestSaveProfile:
     def test_creates_and_writes_profile(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         state.profile.school = "myschool"
@@ -170,8 +170,8 @@ class TestSaveProfile:
             )
         )
         session_path.write_text(json.dumps({}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         state.profile.school = "new_school"
@@ -186,8 +186,8 @@ class TestSaveSession:
     def test_creates_and_writes_session(self, tmp_path: Path, monkeypatch):
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         state.session.cookie = "my_cookie"
@@ -213,8 +213,8 @@ class TestClearSession:
                 }
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         clear_session(state)
@@ -231,8 +231,8 @@ class TestClearSession:
                 {"profiles": {"default": {"cookie": "c1"}, "other": {"cookie": "c2"}}}
             )
         )
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         clear_session(state, all_profiles=True)
@@ -242,8 +242,8 @@ class TestClearSession:
         config_path = tmp_path / "config.json"
         session_path = tmp_path / "session.json"
         session_path.write_text(json.dumps({"profiles": {"default": {"cookie": "c1"}}}))
-        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(config_path))
-        monkeypatch.setenv("MB_CRAWLER_SESSION", str(session_path))
+        monkeypatch.setenv("MANAGEBAC_CONFIG", str(config_path))
+        monkeypatch.setenv("MANAGEBAC_SESSION", str(session_path))
 
         state = load_state()
         clear_session(state)

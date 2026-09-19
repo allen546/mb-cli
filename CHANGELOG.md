@@ -116,6 +116,84 @@ deviation is latent-only on current data. See *Changed*.
   `--not-assessed`.** It previously stayed `None`, so callers could not tell a
   not-yet-assessed task from one whose grade the parser missed. These six tiles
   were already `NOT_ASSESSED` and display identically.
+- **BREAKING: `tahuti login` saves the session but no longer saves your password.**
+  One boolean, `remember`, used to gate four unrelated things — the `remember_me`
+  form field, the response cache, password storage and the session write — so
+  the only way to avoid writing a cleartext password was `login --temp`, which
+  also threw away the session cookie and the cache. `remember` is split into
+  three independent knobs: `remember_me` (what ManageBac is told), `refresh`
+  (the cache) and the new `--keep-credentials` (the password). `session.json` is
+  now written on every successful login, so you are not asked for your password
+  on every command, and `creds.json` is written only when you pass
+  `--keep-credentials`. **A script that relied on `login --temp` leaving no file
+  behind now finds `session.json`; a script that relied on a bare `login`
+  storing the password now has to ask for it.**
+- **BREAKING: `login --temp` is gone.** Its promise — "writes nothing to disk" —
+  was already false: `_relogin_from_creds` rewrote `session.json` unconditionally
+  on the one path that needed no prompt, so a stale cookie plus a saved password
+  left the file behind no matter what the caller asked. `--keep-credentials` and
+  `--no-remember-me` replace it, each scoped to one decision.
+- **BREAKING: the password file is per profile.** `creds.json` is now
+  `creds.<profile>.json` for any profile other than `default`, which keeps the
+  historical path for the single-profile case. It was written to one global path
+  even though profiles already existed, so two accounts could not each keep a
+  password and `logout` of one had to guess which file was whose. An install that
+  already has a password in the global file keeps working: a profile with no file
+  of its own still reads it, and the first `--keep-credentials` for the matching
+  account removes the stale copy. `logout` resolves the *active* profile's file;
+  `logout --all` clears every profile's plus the legacy one.
+- **BREAKING: `MB_CRAWLER_*` is renamed to `MANAGEBAC_*`** for `CONFIG`,
+  `SESSION`, `CREDS_PATH`, `KEYCHAIN`, `PASSWORD`, `COOKIE` and `NO_PERM_WARN`,
+  including the daemon's secret plumbing. The old names still work as deprecated
+  fallbacks, with the new name winning when both are set, so existing shells,
+  systemd units and CI jobs keep authenticating; `MB_WEBHOOK_SECRET` is
+  unaffected.
+- **`login --no-remember-me`** omits `remember_me` from the login POST entirely,
+  leaving the cookie's lifetime to ManageBac's default instead of requesting a
+  persistent one. A server-side setting only: it changes nothing on disk and
+  composes with `--keep-credentials`. It also applies to the unattended renewal
+  path, which previously hardcoded `remember_me=1` whatever the caller asked for.
+- **`login --keychain` now decides only where a kept password goes.** It no
+  longer implies that a password is kept at all — that is `--keep-credentials`'s
+  job — so `--keychain` alone cannot silently stop storing anything. Both flags'
+  help text states the guarantee they actually make.
+- **The response cache follows `--refresh` alone.** It used to hang off the
+  credential flags as well, so `--temp` disabled a cache that holds grade pages
+  and the hub JWT and a plain `tahuti list` paid for re-crawls it had not asked
+  for. `logout` still clears it.
+
+### Security
+- **A password supplied through the environment is no longer written to disk.**
+  `MANAGEBAC_PASSWORD=... tahuti list` authenticated and then persisted that
+  password into `creds.json`, because the code could not tell "input for this
+  run" from "store this for me". Only `tahuti login --keep-credentials` writes a
+  password now, whatever the source.
+- **A dead cookie with no stored password is a clean error.** It used to prompt,
+  which hangs a daemon or a CI job with no TTY, and the message named neither the
+  profile nor the fix. It now fails with `missing_credentials`, writes nothing,
+  and names `tahuti login --keep-credentials`.
+- **`tahuti daemon` keeps no credential of its own and says so up front.** The
+  daemon deliberately stores no password — a long-lived process must not carry a
+  copy of one in its config file — but with no password, no cookie and no stored
+  credential it used to work until the cookie expired and then stop with nothing
+  in its output saying why. `daemon run` and `daemon start` now print a startup
+  warning on stderr naming the command that fixes it. The secret still reaches a
+  detached child through its environment, never `argv`, because `ps` would
+  otherwise expose it to any local user.
+- **`insecure_state_files()` reports a per-profile password file.** It looked
+  only at the global `creds.json`, so `creds.<profile>.json` sitting at `0644`
+  passed the permission audit silently even though the loose-permission warning
+  exists precisely because file modes are the only barrier in front of a
+  cleartext password.
+
+### Fixed
+- **`_relogin_from_creds` no longer writes `session.json` behind the caller's
+  back.** It saved unconditionally, so an unattended renewal overwrote the
+  session file even when the caller had asked for nothing to be persisted — and a
+  failed re-login left it half-updated. Persistence now has exactly one owner,
+  `auth.build_client` (plus `auth.refresh_session` for the daemon's renewal
+  entry point), and a renewal that fails leaves the previous session file
+  untouched.
 
 ## [0.4.0] - 2026-09-19
 

@@ -339,49 +339,49 @@ class TestStartLoop:
         assert "alerts" in result
         assert result["alert_count"] == 0
 
-    def test_once_mode_dry_run_leaves_the_snapshot_baseline_alone(
-        self, tmp_path: Path, make_crawl_result
-    ):
-        """`start_loop`'s `once` branch advanced the snapshot unconditionally.
+    def test_once_mode_dry_run_persists_nothing(self, tmp_path: Path):
+        """A dry run must not consume the deliveries it only previewed.
 
-        `save_snapshot` ran before any `dry_run` check, so
-        `daemon start --once --dry-run` reported the alerts it found and left a
-        baseline claiming they had already been seen. Every later real run
-        diffed against that and delivered nothing.
+        This replaced an earlier test that asserted a *snapshot* baseline survived
+        a dry run. That test encoded a contract the daemon-lifecycle fix
+        deliberately removed: `start_loop`'s `once` branch used to diff a
+        snapshot and return before `DaemonService` existed, so
+        `daemon start --once --webhook-url` exited 0 having sent nothing. The
+        `once` branch now runs a real check cycle, and there is no snapshot to
+        advance.
+
+        The invariant that still matters moved with it: a dry run must persist
+        nothing, because `mark_notification_processed` followed by `save()` is
+        exactly what makes an event invisible to the *next* run — so one dry run
+        would silently swallow the real delivery it only previewed.
+
+        The guarantee cannot depend on who built the state manager, so this
+        asserts on the flag `run_check_cycle` and `save()` actually consult.
         """
-        snapshot_path = tmp_path / "snapshot.json"
-        snapshot_path.write_text(json.dumps({"upcoming": [], "past": [], "overdue": []}))
         daemon_config = self._make_daemon_config(tmp_path)
-        mock_client = MagicMock()
-        mock_client.crawl_index.return_value = make_crawl_result(
-            upcoming=[{"id": "1", "title": "T1", "class_name": "Math"}]
-        )
 
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
+        for dry_run, expected_persist in ((True, False), (False, True)):
+            seen = {}
 
-        with (
-            patch("mb_cli.daemon._next_active_window", return_value=now),
-            patch("mb_cli.daemon._time_until", return_value=0.0),
-        ):
-            result = start_loop(mock_client, daemon_config, dry_run=True, once=True)
+            def capture(path=None, *, persist=True, _seen=seen):
+                _seen["persist"] = persist
+                return MagicMock()
 
-        # The alerts were still computed — that is the point of a dry run.
-        assert result["alert_count"] >= 1
-        assert json.loads(snapshot_path.read_text()) == {
-            "upcoming": [],
-            "past": [],
-            "overdue": [],
-        }
+            with (
+                patch("mb_cli.daemon.service.DaemonStateManager", side_effect=capture),
+                patch("mb_cli.daemon.service.MNNHubProvider"),
+                patch("mb_cli.daemon._next_active_window"),
+                patch("mb_cli.daemon._time_until", return_value=0.0),
+            ):
+                result = start_loop(
+                    MagicMock(), daemon_config, dry_run=dry_run, once=True
+                )
 
-        # And the real run that follows still sees them.
-        with (
-            patch("mb_cli.daemon._next_active_window", return_value=now),
-            patch("mb_cli.daemon._time_until", return_value=0.0),
-        ):
-            real = start_loop(mock_client, daemon_config, dry_run=False, once=True)
-        assert real["alert_count"] >= 1
-        assert len(json.loads(snapshot_path.read_text())["upcoming"]) == 1
+            assert "alert_count" in result, "the once path must still report"
+            assert seen.get("persist") is expected_persist, (
+                f"dry_run={dry_run} must build a "
+                f"{'non-' if expected_persist is False else ''}persisting state manager"
+            )
 
     def test_once_mode_cleans_pid(self, tmp_path: Path, make_crawl_result):
         pid_path = tmp_path / "daemon.pid"

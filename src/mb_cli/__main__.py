@@ -45,17 +45,24 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-from .auth import build_client, hub_client, session_email
+from .auth import apply_authenticated, build_client, hub_client, session_email
 from .client import ManageBacClient, parse_task_url
 from . import __version__
 from . import keychain
 from .config import (
+    all_creds_paths,
     SNAPSHOT_FILENAME,
     clear_creds,
     clear_session,
     config_dir,
+    COOKIE_ENV,
+    COOKIE_ENV_LEGACY,
+    creds_paths,
+    env_value,
     load_state,
     own_state_refusal,
+    PASSWORD_ENV,
+    PASSWORD_ENV_LEGACY,
     resolve_creds_path,
     save_profile,
     save_session,
@@ -184,15 +191,19 @@ def _build_client(args, command: str) -> tuple:
     if not password and not cookie:
         # Environment fallback for non-interactive/CI use. `tahuti daemon start -b`
         # already hands these to the detached child, so reading them back closes
-        # the loop: `MB_CRAWLER_PASSWORD=... tahuti daemon run` needs no prompt.
+        # the loop: `MANAGEBAC_PASSWORD=... tahuti daemon run` needs no prompt.
         # An explicit --password/--cookie still wins over the environment.
-        password = os.environ.get("MB_CRAWLER_PASSWORD") or None
-        cookie = os.environ.get("MB_CRAWLER_COOKIE") or None
+        password = env_value(PASSWORD_ENV, PASSWORD_ENV_LEGACY)
+        cookie = env_value(COOKIE_ENV, COOKIE_ENV_LEGACY)
         if not password and not cookie:
             state = load_state(args.profile, args.config, args.session_file)
             if not state.session.cookie or getattr(args, "reauth", False):
                 password = getpass.getpass("ManageBac password: ")
     verify = not getattr(args, "no_verify_tls", False)
+    # `--no-remember-me` is the only thing that reaches ManageBac; where a kept
+    # password lands is `--keychain`'s business, and whether it is kept at all is
+    # `--keep-credentials`'s. Neither has any say over the session file, which
+    # `build_client` writes because that is the persistent session.
     return build_client(
         school=args.school,
         domain=args.domain,
@@ -205,35 +216,34 @@ def _build_client(args, command: str) -> tuple:
         verify=verify,
         cache_ttl=getattr(args, "cache_ttl", None),
         retry=getattr(args, "retry", 3),
-        remember=not getattr(args, "temp", False),
+        remember_me=_remember_me(args),
+        keep_credentials=bool(getattr(args, "keep_credentials", False)),
         use_keychain=getattr(args, "keychain", None),
     )
 
 
-def _authenticate_client(state, client, email: str, persist: bool = True) -> str:
-    """Persist auth state to disk (CLI-specific).
+def _remember_me(args) -> bool | None:
+    """What to tell ManageBac about ``remember_me`` for this invocation.
 
-    *persist=False* is the ``login --temp`` case. :func:`auth.build_client`
-    already declines to write creds.json or enable the response cache for a
-    ``remember=False`` login; writing session.json here would hand back the
-    reusable cookie the flag exists to avoid, turning a ``--temp`` login into a
-    permanent one. The profile/session are still updated in memory so the
-    command can report what it just authenticated as.
+    ``None`` — omit the field — only comes from ``login --no-remember-me``. The
+    flag exists on no other command, so every other invocation keeps sending
+    ``remember_me=1`` exactly as it always has.
     """
-    state.profile.school = client.school
-    state.profile.domain = client.domain
-    state.profile.email = email or state.profile.email
+    if bool(getattr(args, "no_remember_me", False)):
+        return None
+    return True
 
-    state.session.school = client.school
-    state.session.domain = client.domain
-    state.session.email = email or state.session.email
-    state.session.base_url = client.base
-    state.session.cookie = client.session.cookies.get("_managebac_session")
-    state.session.logged_in_at = datetime.now().isoformat()
-    if persist:
-        save_profile(state)
-        save_session(state)
-    return email or state.profile.email or ""
+
+def _authenticate_client(state, client, email: str) -> str:
+    """Record in memory what this client authenticated as, for the payload.
+
+    Deliberately writes nothing: :func:`auth.build_client` owns every on-disk
+    write. This function used to save the profile and session itself, behind a
+    ``persist`` switch whose only purpose was to override the policy
+    ``build_client`` had already applied — and ``_relogin_from_creds`` saved
+    unconditionally, so the two owners disagreed and the flag lost.
+    """
+    return apply_authenticated(state, client, email)
 
 
 def _cache_dir_for_email(email: str | None) -> Path:
@@ -552,13 +562,16 @@ def update_snapshot_with_class_tasks(
 
 
 def cmd_login(args) -> int:
-    # `--temp` is threaded all the way down: `build_client` gets
-    # remember=False (no creds.json, response cache disabled) and
-    # `_authenticate_client` is told not to persist either, so a temp login
-    # leaves nothing on disk for the next command to pick up.
-    temp = bool(getattr(args, "temp", False))
+    # What the user is told afterwards is what actually happened, so each field
+    # is read from the same flag `_build_client` passed down rather than
+    # restated here. `remember_me: null` means the field was left out of the
+    # POST; `credentials_saved: false` is the default and is the whole point of
+    # the redesign — the session is saved so you are not asked again, the
+    # password is not saved unless you ask for it.
+    remember_me = _remember_me(args)
+    keep_credentials = bool(getattr(args, "keep_credentials", False))
     state, client, email = _build_client(args, "login")
-    email = _authenticate_client(state, client, email, persist=not temp)
+    email = _authenticate_client(state, client, email)
     payload = ok(
         "login",
         state.active_profile,
@@ -568,8 +581,13 @@ def cmd_login(args) -> int:
             "email": email,
             "base_url": client.base,
             "auth_method": "cookie" if args.cookie else "password",
-            "temp": temp,
-            "persisted": not temp,
+            "remember_me": remember_me,
+            # Policy, not outcome: a kept password lands in the OS keychain when
+            # one is selected and available, and in `creds.<profile>.json`
+            # otherwise. Naming the backend here would mean re-deriving
+            # `_store_password`'s fallback, and the one thing worth reporting
+            # honestly is that the password was kept at all.
+            "credentials_saved": keep_credentials and not args.cookie,
         },
     )
     print_payload(payload, args.output, args.format)
@@ -830,12 +848,24 @@ def cmd_logout(args) -> int:
     # would keep the cleartext password on disk after the user asked to be
     # logged out, so it goes by default; --keep-credentials opts back into
     # silent re-login for users who find the prompt more annoying than the risk.
+    #
+    # The files cleared are the ones *this profile* authenticates from — its own
+    # `creds.<profile>.json`, plus the pre-per-profile global `creds.json` when
+    # this profile has none of its own and would otherwise read that. Clearing
+    # another profile's file would be the bug per-profile credentials exists to
+    # remove; leaving the fallback behind would let the next command silently
+    # re-login from a password the user just asked to delete.
     creds_removed = False
     keychain_removed = False
+    cleared_paths: list[str] = []
     if not getattr(args, "keep_credentials", False):
-        # Same resolution login used to write them, so logout cannot end up
-        # deleting another profile's files (or none at all).
-        creds_removed = clear_creds(resolve_creds_path())
+        targets = (
+            all_creds_paths() if args.all else creds_paths(profile=state.active_profile)
+        )
+        for path in targets:
+            if clear_creds(path):
+                creds_removed = True
+                cleared_paths.append(str(path))
         email = _login_email(state)
         if email:
             keychain_removed = keychain.delete(email)
@@ -848,6 +878,7 @@ def cmd_logout(args) -> int:
             "all_profiles": args.all,
             "cache_entries_removed": cache_cleared,
             "credentials_removed": creds_removed,
+            "credential_files_removed": cleared_paths,
             "keychain_entry_removed": keychain_removed,
             "credentials_kept": bool(getattr(args, "keep_credentials", False)),
         },
@@ -947,20 +978,79 @@ def _error_payload(command: str, profile: str, code: str, message: str, data=Non
     return payload
 
 
+def _daemon_renewal_sources(args, state=None) -> tuple[bool, str]:
+    """Whether the daemon can renew its own session, and how.
+
+    Returns ``(can_renew, description)``. Three sources, in the order a daemon
+    would use them: a password or cookie handed to it for this run, then a
+    password a previous ``tahuti login --keep-credentials`` left on disk or in
+    the OS keychain.
+
+    The daemon deliberately keeps no credential of its own — it is a long-lived
+    process, and a copy of the password in its config file would outlive every
+    reason to have it. The cost of that choice is visible here: with none of the
+    three sources, the daemon works until the current cookie expires and then
+    stops, and nothing in its output says why.
+    """
+    profile = getattr(state, "active_profile", None) or getattr(args, "profile", None)
+    if getattr(args, "password", None) or getattr(args, "cookie", None):
+        return True, "a credential passed on the command line"
+    if env_value(PASSWORD_ENV, PASSWORD_ENV_LEGACY) or env_value(
+        COOKIE_ENV, COOKIE_ENV_LEGACY
+    ):
+        return True, f"{PASSWORD_ENV}/{COOKIE_ENV} in the environment"
+    from .auth import _load_creds
+
+    try:
+        email = session_email(state) if state is not None else None
+        if _load_creds(email, profile=profile):
+            return True, "a saved password from an earlier login"
+    except Exception as exc:  # a broken/unreadable creds file is not a crash
+        log.debug("Could not check for a saved password: %s", exc)
+    return False, "nothing"
+
+
+def _warn_if_daemon_cannot_renew(args, state=None) -> bool:
+    """Say plainly, at startup, when the daemon will stop at the next expiry.
+
+    Returns *True* when the warning was emitted. Written to stderr, not logged
+    and not put in the payload: ``--format json`` stdout stays machine-readable,
+    and this is a fact about the *next* few hours that a single log line at
+    DEBUG would bury.
+    """
+    can_renew, source = _daemon_renewal_sources(args, state)
+    if can_renew:
+        return False
+    profile = getattr(state, "active_profile", None) or getattr(args, "profile", None)
+    print(
+        f"warning: the daemon has no password and no saved credential for "
+        f"profile {profile or 'default'!r} ({source}), so it cannot renew the "
+        f"session when the cookie expires — it will stop working then instead "
+        f"of recovering. Run `tahuti login --keep-credentials` once to store "
+        f"the password, or pass --password/--cookie to `daemon start`.",
+        file=sys.stderr,
+    )
+    return True
+
+
 def cmd_daemon_run(args) -> int:
     _reject_channel_delivery(args)
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
+    _warn_if_daemon_cannot_renew(args, state)
     daemon_config = load_daemon_config(getattr(args, "daemon_config", None))
     _apply_daemon_overrides(daemon_config, args)
     config = DaemonConfig.from_dict(daemon_config)
 
     def refresh_fn() -> bool:
-        from .auth import _relogin_from_creds
+        from .auth import refresh_session
         try:
-            _relogin_from_creds(client, state)
+            refresh_session(client, state)
             return True
         except Exception as err:
+            # A missing password is the expected failure here, and its message
+            # names the command that fixes it — so it is logged verbatim rather
+            # than replaced by a generic "re-login failed".
             log.warning("Silent re-login failed: %s", err)
             return False
 
@@ -1005,9 +1095,9 @@ def cmd_daemon_start(args) -> int:
         if getattr(args, "email", None):
             extra_args.extend(["--email", args.email])
         if getattr(args, "password", None):
-            daemon_secret_env["MB_CRAWLER_PASSWORD"] = args.password
+            daemon_secret_env[PASSWORD_ENV] = args.password
         if getattr(args, "cookie", None):
-            daemon_secret_env["MB_CRAWLER_COOKIE"] = args.cookie
+            daemon_secret_env[COOKIE_ENV] = args.cookie
         if getattr(args, "daemon_config", None):
             extra_args.extend(["--daemon-config", args.daemon_config])
         if getattr(args, "webhook_url", None):
@@ -1035,6 +1125,11 @@ def cmd_daemon_start(args) -> int:
         if getattr(args, "no_verify_tls", False):
             extra_args.append("--no-verify-tls")
 
+        # Before the spawn, because this is the moment the user can still act on
+        # it. A detached child that silently dies at the next cookie expiry
+        # leaves nothing to diagnose but a log file.
+        _warn_if_daemon_cannot_renew(args)
+
         res = mgr.start_background(extra_args=extra_args, env=daemon_secret_env)
         payload = ok("daemon.start", getattr(args, "profile", "default") or "default", res)
         print_payload(payload, args.output, args.format)
@@ -1042,6 +1137,7 @@ def cmd_daemon_start(args) -> int:
 
     state, client, email = _build_client(args, "daemon")
     _authenticate_client(state, client, email)
+    _warn_if_daemon_cannot_renew(args, state)
     daemon_config = load_daemon_config(args.daemon_config)
     _apply_daemon_overrides(daemon_config, args)
     once = bool(getattr(args, "once", False))
@@ -2061,20 +2157,38 @@ def build_parser() -> argparse.ArgumentParser:
             help="Output format (default: pretty for TTY, json otherwise)",
         )
 
-    login = subparsers.add_parser("login", help="Authenticate and persist session")
+    login = subparsers.add_parser(
+        "login",
+        help="Authenticate: saves the session cookie, and the password only on request",
+    )
     add_common_auth_flags(login)
     login.add_argument(
-        "--temp",
+        "--keep-credentials",
         action="store_true",
-        help="Do not use 'remember me' (session expires when browser closes)",
+        help="Also save the password so an expired cookie can be renewed without "
+        "a prompt. Off by default: the session cookie is saved either way, so "
+        "you are not asked for your password on every command, but nothing "
+        "writes your password to disk unless you pass this. Goes to the OS "
+        "keychain when --keychain is given and one is available, and to the "
+        "cleartext 0600 creds file otherwise. Same flag, same sense, as "
+        "`logout --keep-credentials`.",
+    )
+    login.add_argument(
+        "--no-remember-me",
+        action="store_true",
+        help="Omit remember_me from the login POST, leaving the cookie's lifetime "
+        "to ManageBac's default instead of asking for a persistent one. A "
+        "server-side setting only — it changes nothing on disk, and composes "
+        "with --keep-credentials.",
     )
     login.add_argument(
         "--keychain",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Store the password in the OS keychain instead of cleartext "
-        "creds.json (macOS Keychain / Linux Secret Service / Windows "
-        "Credential Locker). Overrides MB_CRAWLER_KEYCHAIN.",
+        help="Where a password kept by --keep-credentials goes: the OS keychain "
+        "(macOS Keychain / Linux Secret Service / Windows Credential Locker) "
+        "instead of cleartext creds.<profile>.json. Overrides "
+        "MANAGEBAC_KEYCHAIN. Decides only *where*, never *whether*.",
     )
     login.set_defaults(func=cmd_login)
 
@@ -2185,7 +2299,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-credentials",
         action="store_true",
         help="Keep the saved password so later commands can log in silently "
-        "(by default `logout` deletes creds.json and any keychain entry)",
+        "(by default `logout` deletes this profile's creds file and any keychain "
+        "entry; `logout --all` deletes every profile's)",
     )
     logout.add_argument("--output", "-o", help="Write output to file")
     logout.add_argument(

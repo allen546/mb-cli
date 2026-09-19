@@ -13,7 +13,8 @@ cost, and no new failure mode when the feature is unused. Three platforms:
   ``cmdkey``-only store.
 
 Opt in per login with ``tahuti login --keychain``, or globally with
-``MB_CRAWLER_KEYCHAIN=1``. When enabled the password goes to the keychain
+``MANAGEBAC_KEYCHAIN=1`` (the pre-rename ``MB_CRAWLER_KEYCHAIN=1`` still works).
+When enabled the password goes to the keychain
 *instead of* the cleartext ``creds.json``, and ``tahuti logout`` deletes it.
 
 Limits worth knowing (see SECURITY.md):
@@ -72,10 +73,14 @@ import shutil
 import subprocess
 import sys
 
+from .config import env_value
+
 log = logging.getLogger(__name__)
 
-#: Env var enabling the keychain for every login.
-KEYCHAIN_ENV = "MB_CRAWLER_KEYCHAIN"
+#: Env var enabling the keychain for every login. ``MB_CRAWLER_KEYCHAIN`` is
+#: the deprecated pre-rename spelling and still works; the new name wins.
+KEYCHAIN_ENV = "MANAGEBAC_KEYCHAIN"
+KEYCHAIN_ENV_LEGACY = "MB_CRAWLER_KEYCHAIN"
 
 #: Service name the item is filed under. Kept space-free so the same string
 #: stays usable as a Windows credential target, where spaces are delimiters.
@@ -218,14 +223,16 @@ def available() -> bool:
 def enabled(explicit: bool | None = None) -> bool:
     """Whether keychain storage is switched on.
 
-    An explicit ``--keychain`` / ``--no-keychain`` flag wins; otherwise the
-    ``MB_CRAWLER_KEYCHAIN`` environment variable decides. A machine without a
+    An explicit ``--keychain`` / ``--no-keychain`` flag wins; otherwise
+    ``MANAGEBAC_KEYCHAIN`` (deprecated: ``MB_CRAWLER_KEYCHAIN``) decides, with
+    the new name taking precedence when both are set. A machine without a
     usable helper is never "enabled", so callers can rely on this alone to
     pick a backend.
     """
     if explicit is not None:
         return explicit and available()
-    if os.environ.get(KEYCHAIN_ENV, "").strip().lower() in _TRUE:
+    value = env_value(KEYCHAIN_ENV, KEYCHAIN_ENV_LEGACY) or ""
+    if value.strip().lower() in _TRUE:
         return available()
     return False
 
