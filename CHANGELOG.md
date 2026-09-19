@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Dates for `0.3.0` and earlier are derived from git history (those releases were
 never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
+## [Unreleased]
+
+### Fixed
+- **`tahuti view` no longer shows the class's subject line as the task body.**
+  ManageBac labels the description `<div class="h4">Description</div>` — a
+  *div* whose class is a heading name — so the heading selector, which tested
+  `tag.name`, never matched it. The fallback then matched the class hero
+  (`f-title__description f-hero__description`), and `view` printed "World
+  Languages and Cultures — Chinese Language Arts I" under `[description]`
+  while the actual assignment was never shown. It read as plausible, which is
+  why it went unnoticed. The label selector now accepts a heading-shaped class,
+  and the hero is excluded from the fallback so it fails closed (no description)
+  rather than returning the wrong text.
+
+### Added
+- **`class_description` is reported separately from `description`.** The class's
+  subject line is its own field, printed on its own line next to `class:`; the
+  task's body stays under `[description]`. They are different things that
+  ManageBac renders on the same page.
+- **Task descriptions keep their formatting.** `get_task_detail` now returns
+  `description_html` alongside the flattened `description`, and the pretty
+  output renders it as ANSI — so a teacher's red "hand this in Monday" line is
+  red in the terminal, along with bold, italic and underline. Depth follows the
+  terminal (`$COLORTERM`/`$TERM`), and `$NO_COLOR` wins outright; the JSON
+  payload stays escape-free so `tahuti view | jq` is unaffected. MCP receives
+  the same `description_html` so the importer can clean ManageBac markup into
+  `MBEvent` itself rather than a pre-flattened string.
+
 ## [0.4.2] - 2026-09-19
 
 **Breaking:** the Python import package is `tahuti`, not `mb_cli`. `pip install

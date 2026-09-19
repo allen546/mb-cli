@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 import requests_mock as rm
+from bs4 import BeautifulSoup
 
 from tahuti.cache import ResponseCache
 from tahuti.client import ManageBacClient, parse_due_date
@@ -879,4 +880,101 @@ class TestTaskDetailHasOneFailureShape:
         assert all("detail" not in t for t in tasks), (
             "a failed detail fetch leaked a dict onto the task"
         )
+
+
+# ── The class subject line must never be reported as the task body ──
+
+
+CLASS_SUBJECT = "World Languages and Cultures — Chinese Language Arts I"
+TASK_BODY = "Read the newsletter and annotate the sentences you like."
+
+
+def _detail_page(label_html: str, *, hero: bool = True) -> str:
+    """A task detail page shaped like ManageBac's real one.
+
+    The ordering matters: the class hero sits *before* the task card, so any
+    selector that matches on a ``description`` class name finds the hero first
+    unless it is excluded.
+    """
+    hero_html = (
+        '<div class="f-title__description text-secondary f-hero__description">'
+        f"{CLASS_SUBJECT}</div>"
+        if hero
+        else ""
+    )
+    return f"""<html><body>
+  <main>
+    <div class="f-hero">
+      <h1>AP Chinese Language Arts I</h1>
+      {hero_html}
+    </div>
+    <div class="fusion-card-item">
+      <div class="card-header">
+        {label_html}
+        <div class="show-more">{TASK_BODY}</div>
+      </div>
+    </div>
+  </main>
+</body></html>"""
+
+
+class TestClassSubjectIsNotTheTaskBody:
+    """`description` is the task's own body; `class_description` is the class's.
+
+    ManageBac labels the task body with ``<div class="h4">Description</div>`` —
+    a *div* whose class is a heading name, so a ``tag.name`` test misses it.
+    The fallback then matched the class hero
+    (``f-title__description f-hero__description``), so `view` printed the
+    class's subject line under ``[description]``.  That reads as plausible, so
+    it went unnoticed: the real homework text was simply never shown.
+    """
+
+    def test_task_body_is_the_task_body_not_the_class_subject(self, client):
+        page = _detail_page('<div class="h4">Description</div>')
+        with patch.object(client, "_get", return_value=BeautifulSoup(page, "html.parser")):
+            detail = client.get_task_detail("/student/classes/1/core_tasks/10")
+
+        assert detail["description"] == TASK_BODY
+        assert CLASS_SUBJECT not in detail["description"], (
+            "the class subject line leaked into the task body"
+        )
+
+    def test_class_subject_is_reported_in_its_own_field(self, client):
+        page = _detail_page('<div class="h4">Description</div>')
+        with patch.object(client, "_get", return_value=BeautifulSoup(page, "html.parser")):
+            detail = client.get_task_detail("/student/classes/1/core_tasks/10")
+
+        assert detail["class_description"] == CLASS_SUBJECT
+
+    def test_a_real_heading_label_still_works(self, client):
+        """The heading-element layout must not regress to the div-class one."""
+        page = _detail_page("<h4>Description</h4>")
+        with patch.object(client, "_get", return_value=BeautifulSoup(page, "html.parser")):
+            detail = client.get_task_detail("/student/classes/1/core_tasks/10")
+
+        assert detail["description"] == TASK_BODY
+        assert detail["class_description"] == CLASS_SUBJECT
+
+    def test_no_label_fails_closed_rather_than_showing_the_class_subject(self, client):
+        """With no Description label, report nothing rather than the wrong thing.
+
+        A wrong-but-plausible body is worse than an absent one: the caller shows
+        a class's subject line and the user has no way to tell it is not the
+        assignment.
+        """
+        page = _detail_page("")
+        with patch.object(client, "_get", return_value=BeautifulSoup(page, "html.parser")):
+            detail = client.get_task_detail("/student/classes/1/core_tasks/10")
+
+        assert not detail.get("description"), "fell back to the class hero"
+        assert detail["class_description"] == CLASS_SUBJECT
+
+    def test_a_page_with_no_hero_still_yields_the_task_body(self, client):
+        """Excluding the hero must not cost us the description when it is absent."""
+        page = _detail_page('<div class="h4">Description</div>', hero=False)
+        with patch.object(client, "_get", return_value=BeautifulSoup(page, "html.parser")):
+            detail = client.get_task_detail("/student/classes/1/core_tasks/10")
+
+        assert detail["description"] == TASK_BODY
+        assert not detail.get("class_description")
 

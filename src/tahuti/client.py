@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from .cache import ResponseCache
 from .exceptions import CommandError
 from .filters import classify_task_view, is_task_submitted
+from .richtext import clean_redactor_html
 from .task_status import (
     SUBMISSION_NOT_SUBMITTED,
     SUBMISSION_SUBMITTED,
@@ -2524,30 +2525,70 @@ class ManageBacClient:
             if comments:
                 detail["comments"] = comments
 
-        # Description parsing
+        # Description parsing.
+        #
+        # ManageBac renders the label as <div class="h4">Description</div> on
+        # the task detail page: a *div* whose class is a heading name.  A
+        # tag.name test never sees it, so the heading branch always missed and
+        # the fallback below matched the class hero subtitle
+        # (<div class="f-title__description f-hero__description">) instead —
+        # `view` then reported the class's subject line as the task body, which
+        # reads as plausible and so went unnoticed.
+        def _is_description_label(tag) -> bool:
+            if tag.get_text(" ", strip=True) != "Description":
+                return False
+            if tag.name in {"h3", "h4", "h5", "th"}:
+                return True
+            classes = tag.get("class") or []
+            return tag.name == "div" and any(c in {"h3", "h4", "h5", "h6"} for c in classes)
+
+        # bs4 invokes a `class_` callable once per *individual* class name, not
+        # with the whole list, so these take a single name.
+        def _is_class_hero_class(name) -> bool:
+            return bool(name) and bool(
+                re.search(r"f-hero__description|f-title__description", str(name), re.IGNORECASE)
+            )
+
         desc = None
         if from_hint:
             desc = main_content.find(class_="fr-view") or main_content.find(class_="fix-body-margins")
         else:
-            desc_heading = main_content.find(
-                lambda tag: (
-                    tag.name in {"h3", "h4", "h5", "th"}
-                    and tag.get_text(" ", strip=True) == "Description"
-                )
-            )
+            desc_heading = main_content.find(_is_description_label)
             if desc_heading:
                 desc = desc_heading.find_next(
                     "div",
                     class_=re.compile(r"fr-view|fix-body-margins|show-more", re.IGNORECASE),
                 )
             if not desc:
+                # Fall back to a description-ish block, but never the class
+                # hero: naming the class's subject is not describing the task.
+                # Fail closed (no description) rather than return the wrong
+                # text, because a wrong-but-plausible body is worse than none.
                 desc = main_content.find(
-                    class_=re.compile(r"description|task-body", re.IGNORECASE)
+                    class_=lambda c: bool(c)
+                    and bool(re.search(r"description|task-body", str(c), re.IGNORECASE))
+                    and not _is_class_hero_class(c)
                 )
+
+        # The class's own subject line, parsed independently so it can be
+        # reported in its own place instead of standing in for the task body.
+        class_description = self._text_from_block(
+            main_content.find(class_=_is_class_hero_class), limit=300
+        )
+        if class_description:
+            detail["class_description"] = class_description
 
         description_text = self._text_from_block(desc)
         if description_text:
             detail["description"] = description_text
+
+        # Keep the markup too.  Flattening here would force every consumer to
+        # re-derive structure that is right there in the page, so the raw HTML
+        # goes alongside the plain text and the importer cleans it into MBEvent
+        # itself.  ANSI is a terminal concern and is applied by the formatter.
+        description_html = clean_redactor_html(desc)
+        if description_html:
+            detail["description_html"] = description_html
 
         attachments = self._extract_attachments(main_content)
         if attachments:

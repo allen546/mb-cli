@@ -10,6 +10,7 @@ import tempfile
 import unicodedata
 from textwrap import indent
 
+from .richtext import color_depth, html_to_ansi
 from .task_status import (
     as_naive,
     get_task_display_grade,
@@ -223,15 +224,30 @@ def render_pretty(payload: dict) -> str:
             f"  id: {task.get('id')}",
             f"  title: {task.get('title')}",
             f"  class: {task.get('class_name')}",
+        ]
+        # The class's subject line belongs next to the class it describes, not
+        # in the task's own body — they are different things and ManageBac
+        # renders both on the same page.
+        if detail.get("class_description"):
+            lines.append(f"  class description: {detail['class_description']}")
+        lines.extend([
             f"  due: {task.get('due_date')}",
             f"  grade: {grade_display}",
             f"  status: {status_display}",
             f"  submit button: {'Yes' if has_submit_btn else 'No'}",
             f"  link: {task.get('link')}",
-        ]
-        if detail.get("description"):
+        ])
+        if detail.get("description") or detail.get("description_html"):
             lines.append("\n[description]")
-            lines.append(indent(detail["description"], "  "))
+            # Colour is decided here, at the presentation layer, never in the
+            # client: the JSON payload must stay escape-free, and what the
+            # terminal can show depends on the terminal.
+            markup = detail.get("description_html")
+            if markup:
+                rendered = html_to_ansi(markup, depth=color_depth())
+            else:
+                rendered = detail["description"]
+            lines.append(indent(rendered, "  "))
         if detail.get("comments"):
             lines.append("\n[comments]")
             for idx, comment in enumerate(detail["comments"], start=1):
