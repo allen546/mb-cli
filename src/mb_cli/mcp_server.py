@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from .auth import build_client, hub_client
 from .client import parse_task_url
 from .filters import InvalidViewError, normalize_view
-from .notifications import MNNHubClient, hub_for_domain
+from .notifications import MNNHubClient
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,28 @@ def _sanitize_error(exc: Exception) -> str:
 def _error_payload(exc: Exception) -> str:
     """Build the JSON error string returned by MCP tools."""
     return json.dumps({"error": _sanitize_error(exc)})
+
+
+def _hub_for(client) -> MNNHubClient:
+    """Build a hub client whose endpoint the scraped page cannot choose.
+
+    ``data-mnn-hub-endpoint`` comes out of scraped ManageBac HTML, and the hub
+    token is sent as ``Authorization: Bearer <jwt>``.  Routing the raw value
+    into ``MNNHubClient`` therefore let a poisoned page (or a TLS-stripping
+    MITM, which ``verify_tls=False`` makes possible) pick the host that
+    receives the JWT — including a cleartext ``http://`` one.
+
+    ``client._validated_hub_endpoint`` is the guard that already protects the
+    CLI path; it accepts the scraped value only when it is https, carries no
+    userinfo or port, and names a known Faria hub, falling back to the host
+    this domain expects.  All three notification tools go through here.
+    """
+    hub_endpoint, token = client.get_notification_token()
+    return hub_client(
+        client._validated_hub_endpoint(hub_endpoint),
+        token,
+        verify=client.session.verify,
+    )
 
 
 # ── Input validation ───────────────────────────────────────────────────
@@ -682,10 +704,7 @@ def get_notifications(
         verify=verify_tls,
         retry=retry,
     )
-    hub_endpoint, token = client.get_notification_token()
-    if not hub_endpoint:
-        hub_endpoint = hub_for_domain(client.domain)
-    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
+    hub = _hub_for(client)
 
     stats = hub.stats()
     filter_ = "unread" if unread_only else "all"
@@ -728,10 +747,7 @@ def mark_notification(
         verify=verify_tls,
         retry=retry,
     )
-    hub_endpoint, token = client.get_notification_token()
-    if not hub_endpoint:
-        hub_endpoint = hub_for_domain(client.domain)
-    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
+    hub = _hub_for(client)
 
     actions = {
         "read": hub.mark_read,
@@ -776,10 +792,7 @@ def mark_all_notifications_read(
         verify=verify_tls,
         retry=retry,
     )
-    hub_endpoint, token = client.get_notification_token()
-    if not hub_endpoint:
-        hub_endpoint = hub_for_domain(client.domain)
-    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
+    hub = _hub_for(client)
     ok = hub.mark_all_read()
     return json.dumps({"ok": ok, "action": "mark_all_read"})
 

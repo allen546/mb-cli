@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 import requests
 
 from ..client import ManageBacClient, parse_task_url
-from ..notifications import MNNHubClient, hub_for_domain
+from ..notifications import MNNHubClient
 from .events import MBEvent
 
 log = logging.getLogger(__name__)
@@ -86,12 +86,13 @@ class MNNHubProvider(AbstractNotificationProvider):
             return self.hub
         try:
             endpoint, token = self._acquire_token()
-            if not endpoint:
-                endpoint = hub_for_domain(self.client.domain)
-            self.hub_endpoint = endpoint
+            # `data-mnn-hub-endpoint` is scraped HTML and the token goes out as
+            # `Authorization: Bearer <jwt>`, so the raw value cannot pick the
+            # host it is sent to. See ManageBacClient._validated_hub_endpoint.
+            self.hub_endpoint = self.client._validated_hub_endpoint(endpoint)
             self.token = token
             self.hub = MNNHubClient(
-                endpoint, token, verify=self.client.session.verify
+                self.hub_endpoint, token, verify=self.client.session.verify
             )
         except Exception as exc:
             # The only observable effect of this handler is the log line; the

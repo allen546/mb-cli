@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mb_cli.client import ManageBacClient
 from mb_cli.mcp_server import (
     _error_payload,
     _sanitize_error,
@@ -351,6 +352,90 @@ class TestGetNotificationsTool:
             mock_hub.list.return_value = {"items": [], "meta": {}}
             get_notifications(unread_only=True)
             mock_hub.list.assert_called_once_with(page=1, per_page=20, filter_="unread")
+
+
+class TestNotificationToolsValidateTheHubEndpoint:
+    """The hub endpoint comes from scraped HTML; the token is a bearer JWT.
+
+    `client.get_notification_token()` returns `data-mnn-hub-endpoint` verbatim,
+    and its docstring requires callers to pass it through
+    `_validated_hub_endpoint`. The MCP notification tools did not, so a poisoned
+    page could name the host that receives `Authorization: Bearer <jwt>`.
+
+    `mock_build_client` hands back a MagicMock client, which stubs the validator
+    out — so these tests bind the *real* method onto it. Without that, they
+    would assert nothing about the guard.
+    """
+
+    TOOLS = (get_notifications, mark_notification, mark_all_notifications_read)
+
+    @pytest.fixture()
+    def mock_build_client_validating(self, mock_build_client):
+        """The same client, with the production validator bound on it."""
+        mock, mock_client = mock_build_client
+        mock_client._validated_hub_endpoint = (
+            ManageBacClient._validated_hub_endpoint.__get__(mock_client)
+        )
+        return mock, mock_client
+
+    @pytest.mark.parametrize("tool", TOOLS)
+    @pytest.mark.parametrize(
+        "scraped",
+        [
+            "https://mnn-hub.prod.faria.cn@evil.test",  # userinfo spoof
+            "http://mnn-hub.prod.faria.cn",  # cleartext downgrade
+            "https://evil.test/hub",  # foreign host
+            "wss://evil.test",  # non-http scheme
+        ],
+    )
+    def test_hostile_endpoint_never_receives_the_token(
+        self, mock_build_client_validating, tool, scraped
+    ):
+        _mock, mock_client = mock_build_client_validating
+        mock_client.get_notification_token.return_value = (scraped, "JWT-SECRET")
+
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+            MockHub.return_value.stats.return_value = {}
+            MockHub.return_value.list.return_value = {"items": [], "meta": {}}
+            MockHub.return_value.mark_read.return_value = {}
+            MockHub.return_value.mark_all_read.return_value = {}
+            try:
+                tool(notification_id=1) if tool is mark_notification else tool()
+            except Exception:
+                # The call may fail for unrelated reasons (mocked hub); only the
+                # endpoint that was constructed matters here.
+                pass
+
+        assert MockHub.call_count >= 1, "no hub client was constructed"
+        endpoint = MockHub.call_args.args[0]
+        assert "evil.test" not in endpoint, (
+            f"{tool.__name__} sent the hub JWT to attacker-chosen host {endpoint!r}"
+        )
+        assert endpoint.startswith("https://"), f"token would travel in cleartext: {endpoint!r}"
+
+    @pytest.mark.parametrize("tool", TOOLS)
+    def test_legitimate_hub_is_preserved(self, mock_build_client_validating, tool):
+        """The guard must not break the working case."""
+        from mb_cli.notifications import HUB_ENDPOINTS
+
+        _mock, mock_client = mock_build_client_validating
+        mock_client.get_notification_token.return_value = (
+            HUB_ENDPOINTS["managebac.cn"],
+            "JWT-SECRET",
+        )
+
+        with patch("mb_cli.mcp_server.hub_client") as MockHub:
+            MockHub.return_value.stats.return_value = {}
+            MockHub.return_value.list.return_value = {"items": [], "meta": {}}
+            MockHub.return_value.mark_read.return_value = {}
+            MockHub.return_value.mark_all_read.return_value = {}
+            try:
+                tool(notification_id=1) if tool is mark_notification else tool()
+            except Exception:
+                pass
+
+        assert MockHub.call_count >= 1
+        assert MockHub.call_args.args[0] == HUB_ENDPOINTS["managebac.cn"]
 
 
 class TestMarkNotificationTool:

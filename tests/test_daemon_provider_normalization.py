@@ -28,6 +28,7 @@ import requests
 import requests_mock
 from bs4 import BeautifulSoup
 
+from mb_cli.client import ManageBacClient
 from mb_cli.daemon.events import MBEvent
 from mb_cli.daemon.provider import MNNHubProvider
 from mb_cli.daemon.service import DaemonService
@@ -413,6 +414,13 @@ def _hub_client():
         "https://mnn-hub.prod.faria.cn",
         "jwt_token",
     )
+    # `_ensure_hub` routes the scraped endpoint through the real validator, so a
+    # MagicMock here would stub the guard out and hand its return value straight
+    # to requests as a URL. Binding the production method keeps these tests
+    # exercising the same allowlist the daemon actually runs.
+    client._validated_hub_endpoint = ManageBacClient._validated_hub_endpoint.__get__(
+        client
+    )
     return client
 
 
@@ -437,6 +445,37 @@ class TestEnsureHub:
         provider = MNNHubProvider(client)
         assert provider._ensure_hub().base.startswith("https://mnn-hub.prod.faria.cn")
         assert provider.hub_endpoint == "https://mnn-hub.prod.faria.cn"
+
+    @pytest.mark.parametrize(
+        "scraped",
+        [
+            "https://mnn-hub.prod.faria.cn@evil.test",  # userinfo spoof
+            "http://mnn-hub.prod.faria.cn",  # cleartext downgrade
+            "https://evil.test/collect",  # foreign host
+            "wss://evil.test",  # non-http scheme
+        ],
+    )
+    def test_hostile_scraped_endpoint_never_receives_the_jwt(self, scraped):
+        """The daemon polls unattended, so it must not trust the scraped host.
+
+        `get_notification_token()` returns `data-mnn-hub-endpoint` verbatim from
+        scraped HTML and the token is sent as `Authorization: Bearer <jwt>`.
+        `_ensure_hub` used to pass that value straight to `MNNHubClient`, letting
+        a poisoned page or TLS-stripping MITM choose where the JWT lands.
+        """
+        client = _hub_client()
+        client.get_notification_token.return_value = (scraped, "jwt_token")
+        provider = MNNHubProvider(client)
+
+        hub = provider._ensure_hub()
+
+        assert "evil.test" not in provider.hub_endpoint, (
+            f"daemon sent the hub JWT to attacker-chosen host {provider.hub_endpoint!r}"
+        )
+        assert provider.hub_endpoint.startswith("https://"), (
+            f"token would travel in cleartext: {provider.hub_endpoint!r}"
+        )
+        assert hub.base.startswith("https://mnn-hub.prod.faria.cn")
 
     def test_unrelated_token_error_propagates_without_relogin(self):
         client = _hub_client()

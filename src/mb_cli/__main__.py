@@ -78,7 +78,6 @@ from .filters import (
     result_views,
 )
 from .formatters import error, ok, print_payload
-from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)
 
@@ -1376,9 +1375,12 @@ def cmd_notifications(args) -> int:
     _authenticate_client(state, client, email)
 
     hub_endpoint, token = client.get_notification_token()
-    if not hub_endpoint:
-        hub_endpoint = hub_for_domain(client.domain)
-    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
+    # `data-mnn-hub-endpoint` is scraped HTML, and the token goes out as
+    # `Authorization: Bearer <jwt>`; the validator confines it to a known Faria
+    # hub over https. See ManageBacClient._validated_hub_endpoint.
+    hub = hub_client(
+        client._validated_hub_endpoint(hub_endpoint), token, verify=client.session.verify
+    )
 
     if args.read is not None:
         payload = _notification_mutation_payload(
