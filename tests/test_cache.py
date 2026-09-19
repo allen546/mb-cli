@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import mb_cli.cache as cache_mod
 from mb_cli.cache import ResponseCache
 
 
@@ -702,7 +704,7 @@ class TestDefaults:
     def test_default_cache_dir(self):
         from mb_cli.cache import DEFAULT_CACHE_DIR
 
-        assert DEFAULT_CACHE_DIR == Path.home() / ".config" / "mb-crawler" / "cache"
+        assert DEFAULT_CACHE_DIR == Path.home() / ".config" / "tahuti" / "cache"
 
     def test_default_enabled(self, tmp_path: Path):
         cache = ResponseCache(cache_dir=tmp_path)
@@ -714,7 +716,7 @@ class TestDefaults:
 
     def test_none_cache_dir_uses_default(self):
         cache = ResponseCache(cache_dir=None)
-        assert cache.cache_dir == Path.home() / ".config" / "mb-crawler" / "cache"
+        assert cache.cache_dir == Path.home() / ".config" / "tahuti" / "cache"
 
     def test_string_cache_dir_converted_to_path(self, tmp_path: Path):
         cache = ResponseCache(cache_dir=str(tmp_path))
@@ -795,6 +797,84 @@ def test_cache_dir_hardened_0700(tmp_path):
     assert root.stat().st_mode & 0o777 == 0o700, oct(root.stat().st_mode & 0o777)
 
 
+# ── the hardening walk must stop at the package's own tree ────────────────
+#
+# `put` used to chmod every ancestor of the cache dir, up to `/`. Unprivileged
+# those chmods failed and the OSError was swallowed, but under root or in a
+# container they succeeded: `/home` and `/` went to 0700, breaking every other
+# account's home traversal. A single put() also reset the user's own $HOME from
+# 0755 to 0700. The original intent — a credential-bearing tree that other
+# local users cannot traverse — is preserved, just bounded.
+
+
+def _package_tree(tmp_path: Path, monkeypatch):
+    """Build `$HOME/.config/tahuti/cache` under *tmp_path* and point the
+    hardening boundary at it, so the walk has somewhere safe to stop."""
+    home = tmp_path / "home"
+    state = home / ".config" / "tahuti"
+    (state / "cache").mkdir(parents=True)
+    for d in (home, home / ".config", state, state / "cache"):
+        os.chmod(d, 0o755)
+    monkeypatch.setattr(cache_mod, "config_dir", lambda: state)
+    return home, state
+
+
+def test_put_does_not_chmod_the_users_home(tmp_path, monkeypatch):
+    """Reproduced the defect: one put() took $HOME from 0755 to 0700."""
+    home, state = _package_tree(tmp_path, monkeypatch)
+    outer_mode = tmp_path.stat().st_mode & 0o777
+    ResponseCache(cache_dir=state / "cache" / "abc123", ttl=60).put(
+        "https://x.managebac.cn/a", "body", 200
+    )
+    assert home.stat().st_mode & 0o777 == 0o755, oct(home.stat().st_mode & 0o777)
+    assert (home / ".config").stat().st_mode & 0o777 == 0o755
+    assert tmp_path.stat().st_mode & 0o777 == outer_mode
+
+
+def test_put_still_hardens_the_packages_own_tree(tmp_path, monkeypatch):
+    """The original intent survives: our credential-bearing tree is closed."""
+    home, state = _package_tree(tmp_path, monkeypatch)
+    ResponseCache(cache_dir=state / "cache" / "abc123", ttl=60).put(
+        "https://x.managebac.cn/a", "body", 200
+    )
+    assert state.stat().st_mode & 0o777 == 0o700, oct(state.stat().st_mode & 0o777)
+    assert (state / "cache").stat().st_mode & 0o777 == 0o700
+    target = state / "cache" / "abc123"
+    assert target.stat().st_mode & 0o777 == 0o700
+
+
+def test_put_chmods_no_directory_outside_the_package_tree(tmp_path, monkeypatch):
+    """Under root the old walk reached `/`; assert it cannot leave our tree."""
+    home, state = _package_tree(tmp_path, monkeypatch)
+    chmodded: list[Path] = []
+    real_chmod = os.chmod
+
+    def spy(path, mode, **kwargs):
+        chmodded.append(Path(path))
+        return real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(cache_mod.os, "chmod", spy)
+    ResponseCache(cache_dir=state / "cache" / "abc123", ttl=60).put(
+        "https://x.managebac.cn/a", "body", 200
+    )
+    ours = {state, state / "cache", state / "cache" / "abc123"}
+    assert {p for p in chmodded if p.is_dir()} <= ours
+    for forbidden in (Path("/"), Path("/home"), Path("/tmp"), home, tmp_path):
+        assert forbidden not in chmodded, f"put chmod'd {forbidden}"
+
+
+def test_put_leaves_an_outside_cache_dir_to_its_owner(tmp_path, monkeypatch):
+    """A cache dir the caller placed elsewhere is not ours to widen."""
+    monkeypatch.setattr(cache_mod, "config_dir", lambda: tmp_path / "not-our-state")
+    outside = tmp_path / "somewhere" / "else"
+    outside.mkdir(parents=True)
+    os.chmod(outside.parent, 0o755)
+    os.chmod(outside, 0o755)
+    ResponseCache(cache_dir=outside, ttl=60).put("https://x/", "body", 200)
+    assert outside.stat().st_mode & 0o777 == 0o700
+    assert outside.parent.stat().st_mode & 0o777 == 0o755
+
+
 def test_cache_clear_removes_jwt_and_grades(tmp_path):
     c = ResponseCache(cache_dir=tmp_path, ttl=60)
     c.put("https://x.managebac.cn/jwt", "Bearer abc", 200)
@@ -802,3 +882,54 @@ def test_cache_clear_removes_jwt_and_grades(tmp_path):
     removed = c.clear()
     assert removed == 2
     assert list(tmp_path.glob("*.json")) == []
+
+
+# ── clear() must also sweep the temp files a concurrent put() creates ─────
+#
+# `put` writes through a `.cache_*.tmp` file and then `os.replace`s it into
+# place. Globbing only `*.json` left any temp file a concurrent `put` had
+# already created, so the replace could land *after* logout finished — a
+# "cleared" cache quietly gained a JWT-bearing entry.
+
+
+def test_clear_removes_an_in_flight_temp_file(tmp_path):
+    """A .cache_*.tmp holding a JWT must not survive `tahuti logout`."""
+    c = ResponseCache(cache_dir=tmp_path / "cd", ttl=60)
+    c.put("https://x.managebac.cn/jwt", "Bearer abc", 200)
+    tmp = c.cache_dir / ".cache_inflight.tmp"
+    tmp.write_text('{"body": "Bearer abc"}', encoding="utf-8")
+
+    assert c.clear() == 2
+    assert list((tmp_path / "cd").glob("*")) == []
+
+
+def test_clear_leaves_no_temp_file_for_a_racing_put_to_land(tmp_path):
+    """`os.replace` only succeeds while its temp file still exists."""
+    c = ResponseCache(cache_dir=tmp_path / "cd", ttl=60)
+    c.put("https://x.managebac.cn/a", "v1", 200)
+    # Stand in for a `put` that had already created its temp file when logout
+    # swept the directory.
+    fd, name = tempfile.mkstemp(dir=str(c.cache_dir), prefix=".cache_", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write('{"body": "Bearer abc"}')
+    racing = Path(name)
+
+    assert c.clear() == 2
+    assert not racing.exists()
+    with pytest.raises(FileNotFoundError):
+        os.replace(racing, c._path("https://x.managebac.cn/a"))
+
+
+def test_clear_reports_the_temp_files_it_removed(tmp_path):
+    c = ResponseCache(cache_dir=tmp_path, ttl=60)
+    c.put("https://x.managebac.cn/a", "v1", 200)
+    (c.cache_dir / ".cache_one.tmp").write_text("{}", encoding="utf-8")
+    (c.cache_dir / ".cache_two.tmp").write_text("{}", encoding="utf-8")
+    assert c.clear() == 3
+
+
+def test_clear_leaves_the_directory_itself(tmp_path):
+    c = ResponseCache(cache_dir=tmp_path / "cd", ttl=60)
+    c.put("https://x.managebac.cn/a", "v1", 200)
+    c.clear()
+    assert c.cache_dir.is_dir()

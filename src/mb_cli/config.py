@@ -1,4 +1,4 @@
-"""Configuration and session persistence for mb-cli."""
+"""Configuration and session persistence for tahuti."""
 
 from __future__ import annotations
 
@@ -6,12 +6,18 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import sys
 import tempfile
 
 CONFIG_ENV = "MB_CRAWLER_CONFIG"
 SESSION_ENV = "MB_CRAWLER_SESSION"
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "mb-crawler" / "config.json"
-DEFAULT_SESSION_PATH = Path.home() / ".config" / "mb-crawler" / "session.json"
+CREDS_ENV = "MB_CRAWLER_CREDS_PATH"
+# Escape hatch so scripts and CI can silence the loose-permission warning.
+PERM_WARN_ENV = "MB_CRAWLER_NO_PERM_WARN"
+
+# Permission floor for anything this package writes that can hold a secret.
+# Any group- or other-readable bit means every local user can read the file.
+SECURE_FILE_MODE = 0o600
 
 
 @dataclass
@@ -53,13 +59,39 @@ def _ensure_parent(path: Path) -> None:
     os.chmod(path.parent, 0o700)
 
 
+def config_dir() -> Path:
+    """Directory holding all persisted state.
+
+    Resolved on every call rather than captured at import. ``Path.home()``
+    reads ``$HOME``, so a module-level constant froze whatever the environment
+    was when :mod:`mb_cli.config` was first imported — and could then disagree
+    with :func:`resolve_creds_path` and its siblings, which re-resolve per call.
+    One code path would write to one directory while another read from a
+    different one, which is exactly how a saved password ends up invisible to
+    the code that goes looking for it.
+    """
+    return Path.home() / ".config" / "tahuti"
+
+
+def default_config_path() -> Path:
+    return config_dir() / "config.json"
+
+
+def default_session_path() -> Path:
+    return config_dir() / "session.json"
+
+
+def default_creds_path() -> Path:
+    return config_dir() / "creds.json"
+
+
 def resolve_config_path(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
     env_value = os.environ.get(CONFIG_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    return DEFAULT_CONFIG_PATH
+    return default_config_path()
 
 
 def resolve_session_path(explicit: str | None = None) -> Path:
@@ -68,7 +100,33 @@ def resolve_session_path(explicit: str | None = None) -> Path:
     env_value = os.environ.get(SESSION_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    return DEFAULT_SESSION_PATH
+    return default_session_path()
+
+
+def resolve_creds_path(explicit: str | None = None) -> Path:
+    """Resolve the file holding the saved password for silent re-login."""
+    if explicit:
+        return Path(explicit).expanduser()
+    env_value = os.environ.get(CREDS_ENV)
+    if env_value:
+        return Path(env_value).expanduser()
+    return default_creds_path()
+
+
+def clear_creds(path: str | Path) -> bool:
+    """Delete the saved password file.
+
+    Returns *True* when a file was actually removed, *False* when there was
+    nothing to delete or the unlink failed. Callers surface this so
+    ``tahuti logout`` can report honestly rather than claiming a deletion that
+    did not happen.
+    """
+    try:
+        Path(path).unlink()
+        return True
+    except OSError:
+        # FileNotFoundError lands here too — "nothing to delete" is not an error.
+        return False
 
 
 def _read_json(path: Path) -> dict:
@@ -91,7 +149,7 @@ def _write_json(path: Path, data: dict) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        os.chmod(tmp_name, 0o600)
+        os.chmod(tmp_name, SECURE_FILE_MODE)
         os.replace(tmp_name, path)
     except Exception:
         try:
@@ -225,3 +283,85 @@ def clear_session(state: AppState, all_profiles: bool = False) -> None:
         _write_json(state.session_path, session_data)
     elif state.session_path.exists():
         state.session_path.unlink()
+
+
+def file_mode(path: str | Path) -> int | None:
+    """Return the file's permission bits, or *None* if it cannot be stat'd."""
+    try:
+        return Path(path).stat().st_mode & 0o777
+    except OSError:
+        return None
+
+
+def is_too_permissive(path: str | Path) -> bool:
+    """True when *path* is readable or writable by group/other.
+
+    ``creds.json`` and ``session.json`` are written 0600 by this package, so a
+    looser mode means something outside `mb` changed it — a stray backup, a
+    `cp` that dropped modes, a config-management tool. Since file permissions
+    are the *only* barrier protecting a cleartext password here, silently
+    accepting a 0644 creds file would undercut the whole storage model.
+    """
+    mode = file_mode(path)
+    if mode is None:
+        return False
+    return bool(mode & 0o077)
+
+
+def insecure_state_files() -> list[Path]:
+    """Every existing credential-bearing state file with looser-than-0600 modes."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (
+        resolve_creds_path(),
+        resolve_session_path(),
+        resolve_config_path(),
+    ):
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if is_too_permissive(candidate):
+            found.append(candidate)
+    return found
+
+
+def warn_on_weak_permissions(stream=None) -> list[str]:
+    """Warn on stderr about any credential file readable by other local users.
+
+    Returns the warnings emitted. Writes to *stream* (stderr by default) rather
+    than using :mod:`logging` so the message survives a caller that has
+    reconfigured logging, and never contaminates ``--format json`` stdout.
+    """
+    stream = sys.stderr if stream is None else stream
+    insecure = insecure_state_files()
+    if not insecure:
+        return []
+    messages = [
+        f"{path} is mode {file_mode(path):04o} — readable by other users on this "
+        f"machine. Your ManageBac password or session cookie may be exposed; run "
+        f"`chmod 600 {path}`."
+        for path in insecure
+    ]
+    if not os.environ.get(PERM_WARN_ENV):
+        for message in messages:
+            print(f"warning: {message}", file=stream)
+    return messages
+
+
+#: The pre-lazy names, kept importable so out-of-tree callers do not break.
+#: Each resolves on attribute access, so unlike the module-level constants they
+#: replaced they cannot go stale when ``$HOME`` changes after import.
+_LEGACY_PATHS = {
+    "CONFIG_DIR": config_dir,
+    "DEFAULT_CONFIG_PATH": default_config_path,
+    "DEFAULT_SESSION_PATH": default_session_path,
+    "DEFAULT_CREDS_PATH": default_creds_path,
+}
+
+
+def __getattr__(name: str):
+    """Resolve ``CONFIG_DIR`` / ``DEFAULT_*_PATH`` on access, not at import."""
+    resolver = _LEGACY_PATHS.get(name)
+    if resolver is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return resolver()

@@ -13,15 +13,19 @@ from mb_cli.daemon import diff_index
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _make_client() -> ManageBacClient:
+def _make_client(cache_dir=None) -> ManageBacClient:
     import threading
-    from mb_cli.cache import ResponseCache
+    from mb_cli.cache import ResponseCache, DEFAULT_CACHE_DIR
     client = ManageBacClient.__new__(ManageBacClient)
     client.school = "testschool"
     client.domain = "managebac.cn"
     client.base = "https://testschool.managebac.cn"
     client.student_name = "Test Student"
-    client.cache = ResponseCache()
+    # Routed into the per-test tmp_path by the autouse `isolated_user_state`
+    # fixture in conftest.py, which patches DEFAULT_CACHE_DIR. Spelled out here
+    # so the dependency is visible at the call site: a bare ResponseCache()
+    # would otherwise read and write the operator's real ~/.config/tahuti/cache.
+    client.cache = ResponseCache(cache_dir=cache_dir or DEFAULT_CACHE_DIR)
     client.retry = 0
     client.request_delay = 0.0
     client._last_request_time = 0.0
@@ -334,9 +338,12 @@ def test_parse_feedback_page_with_modal_preview():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.text = fake_modal_js
-    client.session.get.return_value = mock_resp
+    mock_resp.url = "https://testschool.managebac.cn/document_previews/modal/token123"
+    # The modal fetch goes through the validated request wrapper, not the raw
+    # session, so stub at that seam; this test is about parsing the modal.
+    with patch.object(client, "_request_with_retry", return_value=mock_resp):
+        result = client._parse_feedback_page("https://s3.amazonaws.com/file/essay.pdf", preview_modal_url="/document_previews/modal/token123")
 
-    result = client._parse_feedback_page("https://s3.amazonaws.com/file/essay.pdf", preview_modal_url="/document_previews/modal/token123")
     assert result["annotated_download_url"] == "https://pspdfkit.example.com/annotated.pdf"
     assert len(result["attachments"]) >= 1
     assert any("annotated" in a["name"] for a in result["attachments"])

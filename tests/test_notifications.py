@@ -144,3 +144,46 @@ class TestMNNHubClient:
     def test_verify_false(self):
         hub = MNNHubClient("https://example.com", "tok", verify=False)
         assert hub.session.verify is False
+
+
+class TestHubTransportIsRestNotWebSocket:
+    """Guard rails recording that the MNN hub is REST, not a WebSocket.
+
+    ``data-mnn-hub-endpoint`` was once documented as a "WebSocket server URL".
+    It is an HTTPS origin used as a REST base. These tests fail loudly if anyone
+    reintroduces a socket assumption. See docs/events.md section 1.1.
+    """
+
+    def test_every_known_endpoint_is_https(self):
+        for endpoint in HUB_ENDPOINTS.values():
+            assert endpoint.startswith("https://"), endpoint
+
+    def test_no_endpoint_uses_a_websocket_scheme(self):
+        for endpoint in HUB_ENDPOINTS.values():
+            assert not endpoint.startswith(("ws://", "wss://")), endpoint
+
+    def test_scraped_endpoint_is_treated_as_rest_base(self):
+        """The scraped value is appended with /api/frontend/v2, proving HTTPS REST use."""
+        hub = MNNHubClient("https://mnn-hub.prod.faria.com", "tok")
+        assert hub.base == "https://mnn-hub.prod.faria.com/api/frontend/v2"
+        assert not hub.base.startswith(("ws://", "wss://"))
+
+    def test_source_declares_no_websocket_dependency(self):
+        """The package must not depend on a websocket library.
+
+        If a genuine push channel is ever confirmed, delete this test and update
+        docs/events.md section 1.1 with the evidence first.
+        """
+        import re
+        from pathlib import Path
+
+        pyproject = (
+            Path(__file__).resolve().parents[1] / "pyproject.toml"
+        ).read_text()
+        # Match a dependency *name* at the start of a quoted string, so that
+        # both `"websockets"` and `"websockets>=12"` are caught.
+        for forbidden in ("websockets", "websocket-client", "socketio", "socket.io"):
+            pattern = rf'"{re.escape(forbidden)}"|"{re.escape(forbidden)}[<>=!~;,\s]'
+            assert not re.search(
+                pattern, pyproject
+            ), f"{forbidden} declared as a dependency — is there now a real socket?"

@@ -11,12 +11,16 @@ import unicodedata
 from textwrap import indent
 
 from .task_status import (
+    as_naive,
     get_task_display_grade,
     get_task_display_status,
     is_task_completed,
-    is_task_submitted,
-    is_task_todo,
 )
+
+# Scripts that always want one shape can pin it here, so they never depend on
+# whether stdout happens to be a terminal (cron, CI, ``tee``, a pager).
+FORMAT_ENV = "MB_CLI_FORMAT"
+_FORMAT_ENV_VALUES = ("json", "pretty")
 
 
 def get_display_width(s: str) -> int:
@@ -42,17 +46,43 @@ def pad_string(s: str, width: int, align: str = "left") -> str:
 
 
 def resolve_format(requested_format: str | None) -> str:
+    """Return the output format to use.
+
+    Precedence, highest first:
+
+    1. An explicit ``--format`` (``requested_format``).
+    2. ``$MB_CLI_FORMAT`` set to ``json`` or ``pretty``.
+    3. The documented default: ``pretty`` on an interactive terminal, ``json``
+       when stdout is not a TTY.
+
+    Rule 3 is what makes ``mb list | jq .`` work without every caller having to
+    remember ``--format json``; see the "Output Formatting" section of the
+    README.
+    """
     if requested_format:
-        return requested_format
-    return "pretty"
+        return str(requested_format)
+
+    override = os.environ.get(FORMAT_ENV, "").strip().lower()
+    if override in _FORMAT_ENV_VALUES:
+        return override
+
+    try:
+        is_tty = bool(sys.stdout.isatty())
+    except Exception:
+        # A detached/closed stdout (or a test double without isatty) must not
+        # crash the command; treating it as non-interactive is the safe answer.
+        is_tty = False
+    return "pretty" if is_tty else "json"
 
 
 def render_pretty(payload: dict) -> str:
     if not payload.get("ok"):
-        error = payload.get("error", {})
+        # Not `error`: that is this module's payload-building helper, and a
+        # local of the same name would shadow it for the rest of the function.
+        err = payload.get("error", {})
         return (
-            f"ERROR [{error.get('code', 'unknown')}]: "
-            f"{error.get('message', 'Unknown error')}"
+            f"ERROR [{err.get('code', 'unknown')}]: "
+            f"{err.get('message', 'Unknown error')}"
         )
 
     command = payload.get("command", "unknown")
@@ -106,9 +136,17 @@ def render_pretty(payload: dict) -> str:
 
         from mb_cli.client import parse_due_date
         from datetime import datetime
-        def task_sort_key(t):
+
+        def task_sort_key(t) -> datetime:
+            # parse_due_date hands back an *aware* datetime for ISO input with
+            # an offset and a *naive* one for every textual format, so the keys
+            # are normalised to naive local time before sorting: mixing the two
+            # in one section raises TypeError out of this renderer, which the
+            # CLI does not catch.  Undated tasks sort last.
             dt = parse_due_date(t.get("due_date"))
-            return dt or datetime.max
+            if dt is None:
+                return datetime.max
+            return as_naive(dt)
 
         get_grade_display = get_task_display_grade
 
@@ -450,7 +488,9 @@ def print_payload(
     if output_path:
         # Payloads can contain grade data or (via daemon status) a webhook
         # secret, so the file is created 0600 from birth rather than at the
-        # umask default (0644).
+        # umask default (0644).  mkstemp already opens 0600; the explicit
+        # chmod pins it, and os.replace publishes the finished file in one
+        # atomic step, so the destination is never briefly world-readable.
         dest = Path(output_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(

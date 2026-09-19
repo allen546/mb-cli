@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import logging
@@ -13,10 +12,11 @@ import time
 from typing import Any
 
 from ..client import parse_due_date
+from ..config import config_dir
 
 log = logging.getLogger(__name__)
 
-DEFAULT_STATE_PATH = Path.home() / ".config" / "mb-crawler" / "daemon_state.json"
+DEFAULT_STATE_PATH = config_dir() / "daemon_state.json"
 
 
 def _ensure_parent(path: Path) -> None:
@@ -30,10 +30,18 @@ def _ensure_parent(path: Path) -> None:
 class DaemonStateManager:
     """Manages persistent state for notification deduplication and deadline tracking."""
 
-    def __init__(self, state_path: str | Path | None = None):
+    def __init__(
+        self, state_path: str | Path | None = None, *, persist: bool = True
+    ):
         self.path = (
             Path(state_path).expanduser() if state_path else DEFAULT_STATE_PATH
         )
+        # A non-persisting manager still tracks dedup in memory for the length of
+        # one run, so a single cycle cannot process the same notification twice —
+        # but nothing it records survives the process. `--dry-run` needs exactly
+        # that: it must be able to *show* the work it would do without consuming
+        # the very notifications the next real run is supposed to deliver.
+        self.persist = persist
         self.last_synced_at: str | None = None
         self.processed_notification_ids: set[int] = set()
         self.dispatched_reminders: dict[str, float] = {}
@@ -41,7 +49,12 @@ class DaemonStateManager:
         self.load()
 
     def load(self) -> None:
-        """Load state from disk if present."""
+        """Load state from disk if present.
+
+        Reads are never suppressed: a dry run should report the same alerts the
+        next real run would, which means deduplicating against what has already
+        been delivered rather than replaying the whole history.
+        """
         if not self.path.exists():
             return
         try:
@@ -65,7 +78,15 @@ class DaemonStateManager:
             log.warning("Failed to load daemon state from %s: %s", self.path, exc)
 
     def save(self) -> None:
-        """Persist state atomically to disk."""
+        """Persist state atomically to disk.
+
+        A no-op on a non-persisting manager, which is how ``--dry-run`` stays
+        side-effect-free: marking notifications processed is what makes them
+        invisible to the *next* run, so persisting that during a dry run would
+        silently swallow the real deliveries it was only supposed to preview.
+        """
+        if not self.persist:
+            return
         _ensure_parent(self.path)
         data = {
             "last_synced_at": self.last_synced_at,
@@ -174,7 +195,7 @@ class DaemonStateManager:
         """Hard-cap tasks_cache size, dropping oldest-cached entries first."""
         if len(self.tasks_cache) <= max_entries:
             return 0
-        def _sort_key(item):
+        def _sort_key(item) -> str:
             tid, task = item
             return str(task.get("_cached_at") or "")
         ordered = sorted(self.tasks_cache.items(), key=_sort_key)

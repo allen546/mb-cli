@@ -1,57 +1,27 @@
 # ManageBac Downstream Notifier Guide (Bark iOS)
 
-This guide documents the architecture, configuration, and operation of the standalone Bark push notification consumer (`extras/mb-notifier`) running alongside `mb-cli`.
+This guide documents the architecture, configuration, and operation of the standalone Bark push notification consumer (`extras/mb-notifier`) running alongside `tahuti`.
 
 ---
 
 ## 1. Architectural Overview
 
-`mb-cli` is architected as an **unopinionated event producer**. It handles authentication, ManageBac MNN notification polling, HTML delta crawling, and deadline countdown tracking. It dispatches standardized, typed event envelopes (`MBEvent`) over HTTP webhooks or through Python's `async for event in daemon.stream()`.
+`tahuti` is architected as an **unopinionated event producer**. It handles authentication, ManageBac MNN notification polling, HTML delta crawling, and deadline countdown tracking. It dispatches standardized, typed event envelopes (`MBEvent`) over HTTP webhooks or through Python's `async for event in daemon.stream()`.
 
-The standalone notifier in `extras/mb-notifier` acts as a **specialized downstream consumer**. It listens for webhook events from `mb-cli`, filters redundant alerts, maps course names to concise aliases, formats compact multi-line text optimized for iOS notification screens, and routes alerts to Apple devices via the Bark push notification service.
+The standalone notifier in `extras/mb-notifier` acts as a **specialized downstream consumer**. It listens for webhook events from `tahuti`, filters redundant alerts, maps course names to concise aliases, formats compact multi-line text optimized for iOS notification screens, and routes alerts to Apple devices via the Bark push notification service.
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ManageBac Cloud (managebac.com / .cn)                     │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTPS (Polling & HTML Scrape)
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       mb-cli (Core Event Producer)                          │
-│                                                                             │
-│  - Session Auth & Automated Token Refresh                                   │
-│  - Real-Time MNN Notification Polling & HTML Crawling                       │
-│  - Background Deadline Countdown Evaluator                                  │
-│  - State Tracking & Delta Detection                                         │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ HTTP POST /webhook (JSON MBEvent)
-                                       │ (Headers: X-MB-Event, X-MB-Signature)
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│             extras/mb-notifier (bark_webhook_receiver.py)                   │
-│                                                                             │
-│  - HTTP Webhook Server (Default port: 42617)                                │
-│  - Event De-duplication & State-Based Suppression                           │
-│  - Course Alias Translation (course_aliases.json, dynamic hot-reload)       │
-│  - Mobile Viewport Optimization (Strict 3-field / 4-line layout)            │
-│  - Event-Specific Sound & Priority Selection                                │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ CLI Execution / Local Subprocess
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Bark Push Client                               │
-│                                                                             │
-│  - Local CLI binary (/srv/data/tools/bark or custom path)                 │
-│  - Apple Push Notification service (APNs) Delivery                          │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ APNs Push
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       End-User iOS & macOS Devices                          │
-│                                                                             │
-│  - iPhone / iPad / Apple Watch / Mac (Bark App)                             │
-│  - Instant 1-click tap-through URL opening ManageBac task directly           │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    MB["<b>ManageBac Cloud</b><br/>managebac.com / .cn"]
+    PROD["<b>tahuti</b> — core event producer<br/>• Session auth &amp; automated token refresh<br/>• MNN notification polling + HTML crawling<br/>• Background deadline countdown evaluator<br/>• State tracking &amp; delta detection"]
+    NOT["<b>extras/mb-notifier</b><br/>bark_webhook_receiver.py<br/>• HTTP webhook server (default port 42617)<br/>• De-duplication &amp; state-based suppression<br/>• Course alias translation, hot-reloaded<br/>• Mobile viewport optimization (3-field / 4-line)<br/>• Event-specific sound &amp; priority selection"]
+    BARK["<b>Bark push client</b><br/>• Local CLI binary<br/>• APNs delivery"]
+    DEV["<b>End-user devices</b><br/>iPhone / iPad / Watch / Mac<br/>1-click tap-through to the task"]
+
+    MB -->|"HTTPS — polling &amp; HTML scrape"| PROD
+    PROD -->|"HTTP POST /webhook (JSON MBEvent)<br/>X-MB-Event, X-MB-Signature"| NOT
+    NOT -->|"CLI execution / local subprocess"| BARK
+    BARK -->|"APNs push"| DEV
 ```
 
 ---
@@ -156,7 +126,7 @@ When you add or edit a course alias in `course_aliases.json`:
 ### 4.1 Prerequisites
 
 - Python 3.10+
-- `mb-cli` installed and authenticated
+- `tahuti` installed and authenticated
 - Bark client (either the Bark CLI binary or a Bark server URL)
 - Bark iOS app installed on target devices
 
@@ -189,24 +159,24 @@ Response:
 {"status":"ok","service":"bark_webhook_receiver"}
 ```
 
-#### Step 3: Start the `mb-cli` Daemon
+#### Step 3: Start the `tahuti` Daemon
 
 In a second terminal:
 
 ```bash
-mb daemon run --webhook-url http://127.0.0.1:42617/webhook
+tahuti daemon run --webhook-url http://127.0.0.1:42617/webhook
 ```
 
 To test the channel immediately, trigger a test ping:
 ```bash
-mb daemon test-webhook http://127.0.0.1:42617/webhook
+tahuti daemon test-webhook http://127.0.0.1:42617/webhook
 ```
 
 ---
 
 ### 4.3 24/7 Remote Deployment (Raspberry Pi / Linux Server)
 
-For continuous, reliable background notifications, run both `mb daemon` and `bark_webhook_receiver.py` on an always-on host (such as a Raspberry Pi or home server) using user-level `systemd` services.
+For continuous, reliable background notifications, run both `tahuti daemon` and `bark_webhook_receiver.py` on an always-on host (such as a Raspberry Pi or home server) using user-level `systemd` services.
 
 #### Recommended File Locations
 
@@ -254,19 +224,19 @@ StandardError=journal
 WantedBy=default.target
 ```
 
-#### Step 3: Create Systemd Unit for Crawler Daemon
+#### Step 3: Create Systemd Unit for the tahuti Daemon
 
-Create `~/.config/systemd/user/mb-daemon.service`:
+Create `~/.config/systemd/user/tahuti-daemon.service`:
 
 ```ini
 [Unit]
-Description=ManageBac Crawler Daemon
+Description=tahuti ManageBac event daemon
 After=network.target mb-webhook-bark.service
 Wants=mb-webhook-bark.service
 
 [Service]
 Type=simple
-ExecStart=/opt/mb-tools/.venv/bin/mb daemon run \
+ExecStart=/opt/mb-tools/.venv/bin/tahuti daemon run \
     --webhook-url http://127.0.0.1:42617/webhook \
     --poll-interval 1800
 Restart=always
@@ -291,14 +261,14 @@ systemctl --user daemon-reload
 
 # Enable and start services
 systemctl --user enable --now mb-webhook-bark.service
-systemctl --user enable --now mb-daemon.service
+systemctl --user enable --now tahuti-daemon.service
 ```
 
 #### Step 5: Check Service Status & Logs
 
 Check operational status:
 ```bash
-systemctl --user status mb-webhook-bark.service mb-daemon.service --no-pager
+systemctl --user status mb-webhook-bark.service tahuti-daemon.service --no-pager
 ```
 
 Inspect real-time logs:

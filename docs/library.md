@@ -1,8 +1,14 @@
-# Python SDK & Library Reference (`mb-cli`)
+# Python SDK & Library Reference (`tahuti`)
 
-`mb-cli` provides an unopinionated, strongly-typed Python SDK for programmatic interaction with ManageBac instances (`managebac.com` and `managebac.cn`).
+`tahuti` provides an unopinionated, strongly-typed Python SDK for programmatic interaction with ManageBac instances (`managebac.com` and `managebac.cn`).
 
-It supports both **synchronous request-response operations** (fetching tasks, downloading resources, submitting assignments, inspecting grades) and **asynchronous real-time event streaming** (`async for event in daemon.stream()`).
+It supports both **synchronous request-response operations** (fetching tasks, downloading resources, submitting assignments, inspecting grades) and **asynchronous event streaming** (`async for event in daemon.stream()`).
+
+Note that "event streaming" here means *in-process* streaming: the daemon detects
+changes by **polling** ManageBac on a configurable interval (30 s by default, plus
+0–5 s of jitter). ManageBac exposes no push or WebSocket channel to a student
+account, so `stream()` yields what the poller finds rather than a live socket. See
+[events.md](events.md) for the transport details and the evidence for that.
 
 ---
 
@@ -15,9 +21,9 @@ It supports both **synchronous request-response operations** (fetching tasks, do
 5. [Submissions & Dropbox Operations](#5-submissions--dropbox-operations)
 6. [Teacher Feedback & Grades](#6-teacher-feedback--grades)
 7. [Calendar, Timetables & Schedules](#7-calendar-timetables--schedules)
-8. [Real-Time Event Streaming (`ManageBacDaemon`)](#8-real-time-event-streaming-managebacdaemon)
+8. [Event Streaming (`ManageBacDaemon`)](#8-real-time-event-streaming-managebacdaemon)
 9. [Event Model & Schema (`MBEvent`)](#9-event-model--schema-mbevent)
-10. [MNN Hub Push Notifications (`MNNHubClient`)](#10-mnn-hub-push-notifications-mnnhubclient)
+10. [MNN Hub Notifications (`MNNHubClient`)](#10-mnn-hub-push-notifications-mnnhubclient)
 11. [Status Enums & Classification](#11-status-enums--classification)
 12. [Caching & Performance Controls](#12-caching--performance-controls)
 13. [End-to-End Integration Recipes](#13-end-to-end-integration-recipes)
@@ -32,9 +38,22 @@ It supports both **synchronous request-response operations** (fetching tasks, do
 Install via pip or uv:
 
 ```bash
-pip install mb-cli
+pip install tahuti
 # or with uv
-uv pip install mb-cli
+uv pip install tahuti
+```
+
+The MCP server (`tahuti-mcp`) needs the optional `mcp` extra — a plain install
+does not pull it in, and the server fails to import without it:
+
+```bash
+pip install "tahuti[mcp]"
+```
+
+To run the test suite from a checkout, install the dev group instead:
+
+```bash
+uv sync --group dev
 ```
 
 Top-level library exports:
@@ -57,7 +76,9 @@ from mb_cli import (
 ```python
 from mb_cli import ManageBacClient
 
-# Initialize client using saved credentials from CLI (~/.config/mb-crawler/config.toml)
+# Initialize client using saved credentials from the CLI
+# (config.json / session.json under ~/.config/tahuti/, or wherever
+# MB_CRAWLER_CONFIG / MB_CRAWLER_SESSION point)
 client = ManageBacClient.from_config()
 
 # Fetch all upcoming coursework
@@ -66,7 +87,7 @@ for task in data.get("upcoming", []):
     print(f"[{task.get('due_date')}] {task.get('title')} ({task.get('class_name')})")
 ```
 
-### Asynchronous Real-Time Event Streaming
+### Asynchronous Event Streaming (polled)
 
 ```python
 import asyncio
@@ -76,7 +97,7 @@ async def main():
     client = ManageBacClient.from_config()
     daemon = ManageBacDaemon(client, poll_interval_seconds=60.0)
 
-    print("Subscribing to real-time ManageBac events...")
+    print("Subscribing to ManageBac events...")
     async for event in daemon.stream():
         print(f"[{event.event}] {event.data['title']} (Due: {event.data['due_date']})")
 
@@ -299,7 +320,7 @@ for day, periods in timetable.get("days", {}).items():
 
 ---
 
-## 8. Real-Time Event Streaming (`ManageBacDaemon`)
+## 8. Event Streaming (`ManageBacDaemon`)
 
 The `ManageBacDaemon` provides an in-process, non-blocking asynchronous event generator that polls ManageBac and yields typed `MBEvent` objects in real time.
 
@@ -391,9 +412,11 @@ event = MBEvent.from_task(
 
 ---
 
-## 10. MNN Hub Push Notifications (`MNNHubClient`)
+## 10. MNN Hub Notifications (`MNNHubClient`)
 
-ManageBac uses the ManageBac Notification Network (MNN) Hub for instant student activity notices.
+ManageBac uses the ManageBac Notification Network (MNN) Hub for student activity
+notices. This is a **REST** API (`/api/frontend/v2`) polled on an interval — it is
+not a push or WebSocket channel.
 
 ```python
 from mb_cli import ManageBacClient, MNNHubClient

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import logging
 import re
 from collections.abc import Callable
-from typing import Any
 
 from ..client import parse_due_date
-from ..task_status import is_task_submitted, is_task_submitted_or_graded
+from ..task_status import is_task_submitted_or_graded
 from .events import (
     DEFAULT_REMINDER_THRESHOLDS,
     MBEvent,

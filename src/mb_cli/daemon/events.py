@@ -334,6 +334,11 @@ class DaemonConfig:
     poll_interval_seconds: int = 30
     poll_jitter_seconds: int = 5
     full_sync_interval_minutes: int = 15
+    # Local-time ``[["HH:MM", "HH:MM"], ...]`` windows the loop may poll inside.
+    # Empty means "always active" — the daemon polls on its interval around the
+    # clock. A non-empty list gates the loop, so `--active-hours-start/--end`
+    # and `daemon.json`'s `active_windows` actually mean something.
+    active_windows: list[list[str]] = field(default_factory=list)
     reminders: list[ReminderThreshold] = field(
         default_factory=lambda: list(DEFAULT_REMINDER_THRESHOLDS)
     )
@@ -373,6 +378,11 @@ class DaemonConfig:
             full_sync_interval_minutes=int(
                 data.get("full_sync_interval_minutes", 15)
             ),
+            active_windows=[
+                list(window)
+                for window in (data.get("active_windows") or [])
+                if isinstance(window, (list, tuple)) and len(window) == 2
+            ],
             reminders=reminders,
             webhooks=webhooks,
             stealth=stealth,
@@ -386,6 +396,7 @@ class DaemonConfig:
             "poll_interval_seconds": self.poll_interval_seconds,
             "poll_jitter_seconds": self.poll_jitter_seconds,
             "full_sync_interval_minutes": self.full_sync_interval_minutes,
+            "active_windows": [list(w) for w in self.active_windows],
             "reminders": [r.to_dict() for r in self.reminders],
             "webhooks": [w.to_dict() for w in self.webhooks],
             "stealth": self.stealth.to_dict(),

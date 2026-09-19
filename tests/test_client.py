@@ -78,8 +78,56 @@ class TestManageBacClientInit:
             mock_build.assert_called_once_with(profile=None)
 
     def test_headers_set(self, client):
+        """Every static header must reach the session verbatim.
+
+        The User-Agent is checked separately, in
+        `test_user_agent_names_the_running_platform`: asserting it against
+        `HEADERS` here would be circular, since `HEADERS` is the very value
+        under test.
+        """
         for key, val in HEADERS.items():
+            if key == "User-Agent":
+                continue
             assert client.session.headers.get(key) == val
+
+    @pytest.mark.xfail(
+        reason="src/mb_cli/client.py:63-66 hardcodes a macOS User-Agent on every "
+        "platform, so on Linux/Windows the fingerprint names the wrong OS. "
+        "Test-only change: the src fix belongs to whoever owns client.py. "
+        "This mark reports XPASS once the UA follows sys.platform — delete it then.",
+        strict=False,
+    )
+    def test_user_agent_names_the_running_platform(self, client):
+        """The User-Agent must describe the OS it is actually running on.
+
+        `HEADERS` hardcodes a macOS fingerprint on every platform, so the old
+        assertion — `session.headers["User-Agent"] == HEADERS["User-Agent"]` —
+        could never fail: it compared the constant to itself. A crawler that
+        announces "Macintosh; Intel Mac OS X" from a Linux box or a Windows
+        Server is a trivially fingerprintable lie, and no test could see it.
+        """
+        user_agent = client.session.headers.get("User-Agent")
+        assert user_agent, "no User-Agent was set on the session"
+
+        # The OS token ManageBac would see, per platform.
+        expected_token = {
+            "darwin": "Macintosh",
+            "win32": "Windows NT",
+        }.get(sys.platform)
+        if expected_token is None:
+            # Linux and other POSIX: a real Linux UA names X11 or Linux.
+            assert (
+                "X11" in user_agent or "Linux" in user_agent
+            ), f"User-Agent does not name Linux: {user_agent!r}"
+        else:
+            assert expected_token in user_agent, (
+                f"on {sys.platform} the User-Agent must name {expected_token!r}, "
+                f"got {user_agent!r}"
+            )
+
+        # The rest of the fingerprint must stay a well-formed browser string.
+        assert "Mozilla/5.0" in user_agent
+        assert "AppleWebKit/537.36" in user_agent
 
     def test_initial_student_name_none(self, client):
         assert client.student_name is None
@@ -171,9 +219,20 @@ class TestGetTasksByView:
             tasks = client.get_tasks_by_view("upcoming", max_pages=10)
             assert tasks == []
 
-    def test_pagination(
-        self, client, sample_tasks_page_html, sample_tasks_page_html_no_next
-    ):
+    def test_pagination(self, client, sample_tasks_page_html):
+        # Page 2 carries a *different* task. A listing page never repeats page 1,
+        # and get_tasks_by_view now de-duplicates by task id, so reusing the same
+        # tile here would collapse the two pages into one.
+        page2 = """
+        <html><body>
+          <div class="f-task-tile">
+            <a class="f-tile__title-link" href="/student/classes/1000023/core_tasks/1000028">Lab Report</a>
+            <div class="f-tile__description">
+              <span>Apr 25</span><a href="/student/classes/1000023">Math HL</a>
+            </div>
+          </div>
+        </body></html>
+        """
         with rm.Mocker() as m:
             m.get(
                 re.compile(r"page=1"),
@@ -181,7 +240,7 @@ class TestGetTasksByView:
             )
             m.get(
                 re.compile(r"page=2"),
-                text=sample_tasks_page_html_no_next,
+                text=page2,
             )
             tasks = client.get_tasks_by_view("upcoming", max_pages=10)
             assert len(tasks) == 3  # 2 from page 1 + 1 from page 2
@@ -438,9 +497,18 @@ class TestCrawlAll:
                 re.compile(r"/student/classes/\d+/core_tasks/\d+$"),
                 text=sample_task_detail_html,
             )
+            # fetch_details goes through the event *hint* page, not the detail
+            # page. This route was previously unmatched, so get_task_detail
+            # swallowed the connection error and stored {"error": ...} as the
+            # "detail" — the assertion below passed on the error dict.
+            m.get(
+                re.compile(r"/student/classes/\d+/events/\d+/hint$"),
+                text=sample_task_detail_html,
+            )
             result = client.crawl_all(max_pages=1, fetch_details=True)
             assert len(result["upcoming"]) == 1
             assert "detail" in result["upcoming"][0]
+            assert "error" not in result["upcoming"][0]["detail"]
 
 
 class TestGetCalendarEvents:

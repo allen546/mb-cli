@@ -10,9 +10,190 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.auth import build_client
-from mb_cli.config import load_creds
+from mb_cli import auth
+from mb_cli.auth import build_client, hub_client, session_email
+from mb_cli.client import ManageBacClient
+from mb_cli.config import AppState, ProfileConfig, SessionConfig, load_creds
 from mb_cli.exceptions import CommandError
+
+
+# ── which email identifies this profile's on-disk state ───────────────────
+#
+# The response-cache directory is a hash of the email and the keychain item is
+# filed under it, so `build_client` and `logout` must pick the same one. They
+# used to disagree: build_client took `--email`, then the profile's, then the
+# session's; logout took the session's first. With profile and session emails
+# differing, logout deleted another profile's hash directory and left the
+# JWT-bearing entries in place while reporting success.
+
+
+def _state(profile_email=None, session_email_=None):
+    return AppState(
+        config_path=Path("config.json"),
+        session_path=Path("session.json"),
+        active_profile="default",
+        profile=ProfileConfig(name="default", email=profile_email),
+        session=SessionConfig(name="default", email=session_email_),
+    )
+
+
+class TestSessionEmail:
+    def test_explicit_override_wins(self):
+        state = _state(profile_email="profile@example.com", session_email_="session@example.com")
+        assert session_email(state, "flag@example.com") == "flag@example.com"
+
+    def test_profile_email_beats_session_email(self):
+        """The precedence logout got backwards."""
+        state = _state(profile_email="profile@example.com", session_email_="session@example.com")
+        assert session_email(state) == "profile@example.com"
+
+    def test_session_email_is_the_fallback(self):
+        state = _state(session_email_="session@example.com")
+        assert session_email(state) == "session@example.com"
+
+    def test_neither_set_is_empty(self):
+        assert session_email(_state()) == ""
+
+    @pytest.mark.parametrize("blank", ["", None])
+    def test_a_blank_value_does_not_shadow_a_real_one(self, blank):
+        """`or` semantics: an empty string must fall through, not win."""
+        state = _state(profile_email=blank, session_email_="session@example.com")
+        assert session_email(state) == "session@example.com"
+        assert session_email(state, blank) == "session@example.com"
+
+    def test_build_client_keys_its_cache_dir_by_the_same_email(self, tmp_path, monkeypatch):
+        """Proves the helper is what build_client actually uses.
+
+        `logout` has no `--email` of its own, so once it calls this helper the
+        cache directory it clears is the one build_client populated.
+        """
+        # Isolate the state dirs: without this build_client falls through to
+        # `_load_creds()`, which resolves to the developer's real creds.json.
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+        monkeypatch.setenv("MB_CRAWLER_CREDS_PATH", str(tmp_path / "creds.json"))
+
+        profile_email = "profile@example.com"
+        state = _state(profile_email=profile_email, session_email_="session@example.com")
+        with (
+            patch("mb_cli.auth.load_state", return_value=state),
+            patch("mb_cli.auth.ManageBacClient") as client_cls,
+            patch("mb_cli.auth._store_password") as store_password,
+        ):
+            client_cls.return_value.login.return_value = True
+            _, _, email = build_client(
+                school="myschool", email=profile_email, password="pw", remember=False
+            )
+
+        assert email == profile_email
+        assert store_password.assert_not_called() is None
+        import hashlib
+
+        expected = (
+            Path.home()
+            / ".config"
+            / "tahuti"
+            / "cache"
+            / hashlib.sha256(profile_email.encode()).hexdigest()[:16]
+        )
+        assert client_cls.call_args.kwargs["cache"].cache_dir == expected
+
+
+class TestLoginEmailAgreesWithSessionEmail:
+    """``logout`` must resolve the same account ``login`` acted on.
+
+    ``__main__._login_email`` restated the precedence rule that
+    ``auth.session_email`` owns, and the two copies disagreed about the order.
+    This pins them together, so a future edit to either fails here rather than
+    in someone's real cache directory.
+    """
+
+    @pytest.mark.parametrize(
+        "profile_email,session_email_,expected",
+        [
+            ("profile@example.com", "session@example.com", "profile@example.com"),
+            (None, "session@example.com", "session@example.com"),
+            ("profile@example.com", None, "profile@example.com"),
+            (None, None, None),
+            # An empty string is not a value: it must fall through.
+            ("", "session@example.com", "session@example.com"),
+        ],
+    )
+    def test_the_two_resolvers_agree(self, profile_email, session_email_, expected):
+        from mb_cli.__main__ import _login_email
+
+        state = _state(profile_email=profile_email, session_email_=session_email_)
+        assert _login_email(state) == expected
+
+    def test_the_keychain_item_and_cache_dir_are_keyed_by_one_email(self):
+        """The actual damage the duplication caused.
+
+        With profile and session emails set to different values, ``logout``
+        deleted a *different* profile's hash directory and left the JWT-bearing
+        entries in place while still reporting success. Both keys must come from
+        the same resolver for that to be impossible.
+        """
+        import hashlib
+
+        from mb_cli.__main__ import _cache_dir_for_email, _login_email
+
+        profile_email = "profile@example.com"
+        state = _state(profile_email=profile_email, session_email_="session@example.com")
+
+        resolved = _login_email(state)
+        # The cache dir logout clears is the hash of the email login used...
+        assert _cache_dir_for_email(resolved).name == hashlib.sha256(
+            profile_email.encode()
+        ).hexdigest()[:16]
+        # ...which is the profile's, not the session's. Before the two resolvers
+        # were unified, this was the disagreement that cost real cache entries.
+        assert resolved == profile_email
+
+
+# ── the hub must follow the client's TLS decision ─────────────────────────
+#
+# `MNNHubClient` defaults to `verify=True`, and four call sites built it
+# directly — client.py:1820, client.py:1931, __main__.py:1116 and
+# mcp_server.py:560/605 — so `--no-verify-tls` applied to ManageBac and not to
+# the hub. `hub_client()` is the one construction point; `verify` is
+# keyword-only with no default so the omission cannot come back silently.
+
+
+class TestHubClientHonoursTLS:
+    def test_verify_is_required(self):
+        """Omitting it must raise, not quietly mean `verify=True`."""
+        with pytest.raises(TypeError):
+            auth.hub_client("https://mnn-hub.example", "token")
+
+    @pytest.mark.parametrize(
+        "verify", [True, False, "/etc/ssl/certs/internal-ca.pem", ""]
+    )
+    def test_verify_reaches_the_session(self, verify):
+        """Whatever the caller decided, the hub uses it — including a bundle."""
+        hub = auth.hub_client("https://mnn-hub.example", "tok", verify=verify)
+        assert hub.session.verify == verify
+
+    def test_follows_the_managebac_clients_decision(self):
+        """The intended call: pass `client.session.verify` straight through."""
+        client = ManageBacClient("myschool", verify=False)
+        hub = auth.hub_client(
+            "https://mnn-hub.example", "tok", verify=client.session.verify
+        )
+        assert hub.session.verify is False
+        assert hub.session.verify == client.session.verify
+
+    def test_follows_a_ca_bundle_the_client_was_given(self):
+        bundle = "/etc/ssl/certs/internal-ca.pem"
+        client = ManageBacClient("myschool", verify=bundle)
+        hub = auth.hub_client(
+            "https://mnn-hub.example", "tok", verify=client.session.verify
+        )
+        assert hub.session.verify == bundle
+
+    def test_endpoint_and_token_are_still_forwarded(self):
+        hub = auth.hub_client("https://mnn-hub.example", "the-token", verify=True)
+        assert hub.base == "https://mnn-hub.example/api/frontend/v2"
+        assert hub.session.headers["Authorization"] == "Bearer the-token"
 
 
 def test_load_creds_reads_email_and_password():
@@ -327,7 +508,7 @@ class TestBuildClient:
 
         from pathlib import Path
         mock_load_creds.assert_called_once_with(
-            str(Path.home() / ".config" / "mb-crawler" / "creds.json")
+            str(Path.home() / ".config" / "tahuti" / "creds.json")
         )
         mock_client.login.assert_called_once_with(
             "allen@example.com", "pass123", remember=True

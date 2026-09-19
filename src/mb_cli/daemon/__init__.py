@@ -1,4 +1,4 @@
-"""Daemon package for mb-cli real-time notifications and deadline tracking."""
+"""Daemon package for tahuti real-time notifications and deadline tracking."""
 
 from __future__ import annotations
 
@@ -8,17 +8,13 @@ import json
 import logging
 import os
 from pathlib import Path
-import random
-import shutil
 import signal
 import subprocess
-import time
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..client import ManageBacClient
+from ..config import config_dir
 from .events import (
-    DEFAULT_REMINDER_THRESHOLDS,
     DaemonConfig,
     MBEvent,
     ReminderThreshold,
@@ -32,12 +28,12 @@ from .provider import (
 )
 from .scheduler import DDLScheduler
 from .service import DaemonService
-from .state import DEFAULT_STATE_PATH, DaemonStateManager
+from .state import DaemonStateManager
 from .stealth import StealthTaskCrawler
 from .stream import ManageBacDaemon
 from .system import DEFAULT_LOG_PATH, DEFAULT_PID_PATH, ServiceManager
 from .webhook import WebhookDispatcher
-from ..task_status import GradeStatus, get_grade_status, format_grade_display, is_task_graded
+from ..task_status import format_grade_display, is_task_graded
 
 __all__ = [
     "AbstractNotificationProvider",
@@ -59,15 +55,14 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DAEMON_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.json"
+DEFAULT_DAEMON_PATH = config_dir() / "daemon.json"
 DEFAULT_WEBHOOK_URL = "http://127.0.0.1:42617/webhook"
-DEFAULT_SNAPSHOT_PATH = Path.home() / ".config" / "mb-crawler" / "snapshot.json"
+DEFAULT_SNAPSHOT_PATH = config_dir() / "snapshot.json"
 
-DEFAULT_ACTIVE_WINDOWS: list[list[str]] = [
-    ["07:00", "07:30"],
-    ["11:30", "13:30"],
-    ["17:30", "23:00"],
-]
+# Empty means "no gating": the daemon polls on its interval around the clock.
+# Active hours are opt-in — either `--active-hours-start/--active-hours-end` or
+# an `active_windows` entry in daemon.json.
+DEFAULT_ACTIVE_WINDOWS: list[list[str]] = []
 
 
 def _ensure_parent(path: Path) -> None:
@@ -343,7 +338,7 @@ def _post_webhook(
     import requests
     message = "\n".join(alert["message"] for alert in alerts)
     footer = (
-        f"\n[mb-crawler daemon] student={result.get('student_name')} "
+        f"\n[tahuti daemon] student={result.get('student_name')} "
         f"upcoming={result.get('summary', {}).get('upcoming_count', '?')}"
     )
     payload = {"message": message + footer}
@@ -360,15 +355,29 @@ def run_daemon_once(
     old = load_snapshot(snapshot_path)
     result = client.crawl_all(max_pages=10, fetch_details=False)
     alerts = _diff_snapshots_full(old, result)
-    save_snapshot(snapshot_path, result)
 
     delivered = False
-    if alerts and not dry_run:
-        webhook_url = daemon_config.get("delivery", {}).get(
-            "webhook_url", DEFAULT_WEBHOOK_URL
+    if dry_run:
+        # The snapshot is the baseline every future diff is measured against, so
+        # advancing it here is the same class of bug as persisting dedup state:
+        # the dry run would report the alerts it found and then leave a baseline
+        # claiming they had already been seen. The next real run diffs against
+        # *that*, finds nothing, and delivers nothing — the dry run ate the
+        # delivery it was only meant to preview. The snapshot is also the user's
+        # own record of what was last delivered, and a dry run delivers nothing.
+        log.info(
+            "Dry run: %d alert(s) computed, snapshot left at %s unchanged",
+            len(alerts),
+            snapshot_path,
         )
-        verify = daemon_config.get("verify_tls", True)
-        delivered = _post_webhook(webhook_url, alerts, result, verify=verify)
+    else:
+        save_snapshot(snapshot_path, result)
+        if alerts:
+            webhook_url = daemon_config.get("delivery", {}).get(
+                "webhook_url", DEFAULT_WEBHOOK_URL
+            )
+            verify = daemon_config.get("verify_tls", True)
+            delivered = _post_webhook(webhook_url, alerts, result, verify=verify)
     return {
         "alerts": alerts,
         "alert_count": len(alerts),
@@ -397,7 +406,10 @@ def _is_in_window(now: dt_time, start: dt_time, end: dt_time) -> bool:
 
 
 def _next_active_window(daemon_config: dict) -> datetime:
-    windows = daemon_config.get("active_windows", DEFAULT_ACTIVE_WINDOWS)
+    windows = daemon_config.get("active_windows") or DEFAULT_ACTIVE_WINDOWS
+    if not windows:
+        # No gating configured: "now" is always inside a window.
+        return _now_local()
     now = _now_local()
     now_t = now.time()
 
@@ -426,7 +438,7 @@ def _time_until(target: datetime) -> float:
     return max(delta, 1.0)
 
 
-def _is_mb_cli_pid(pid: int) -> bool:
+def _is_tahuti_pid(pid: int) -> bool:
     try:
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -438,9 +450,10 @@ def _is_mb_cli_pid(pid: int) -> bool:
             return False
         cmdline = result.stdout.strip()
         # No bare "mb" here: it matches unrelated processes (systemd, etc.)
-        # and a stale pid file would then signal the wrong process.
+        # and a stale pid file would then signal the wrong process. `mb_cli`
+        # stays because that is the module the daemon child is spawned as.
         return any(
-            k in cmdline for k in ("mb-cli", "mb_cli", "mb_crawler", "mb.cli")
+            k in cmdline for k in ("tahuti", "mb_cli", "mb_crawler", "mb.cli")
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -479,13 +492,25 @@ def start_loop(
             old = load_snapshot(snapshot_path)
             index = client.crawl_index()
             alerts, changed_ids = diff_index(old, index)
-            save_snapshot(snapshot_path, index)
-            _log(
-                log_path,
-                f"check alert_count={len(alerts)} "
-                f"details_fetched={len(changed_ids)} "
-                f"delivered=False",
-            )
+            if dry_run:
+                # Same reason as `run_daemon_once`: the snapshot is the baseline
+                # the next run diffs against, so advancing it here would make the
+                # dry run report its alerts and then hide them from every
+                # subsequent real run.
+                _log(
+                    log_path,
+                    f"dry-run alert_count={len(alerts)} "
+                    f"details_fetched={len(changed_ids)} "
+                    f"snapshot={snapshot_path} left unchanged",
+                )
+            else:
+                save_snapshot(snapshot_path, index)
+                _log(
+                    log_path,
+                    f"check alert_count={len(alerts)} "
+                    f"details_fetched={len(changed_ids)} "
+                    f"delivered=False",
+                )
             return {
                 "alerts": alerts,
                 "alert_count": len(alerts),
@@ -493,9 +518,12 @@ def start_loop(
                 "delivered": False,
                 "snapshot_file": str(snapshot_path),
             }
-        # In multi-loop mode run DaemonService
+        # In multi-loop mode run DaemonService. `dry_run` used to stop at this
+        # branch: only the `once` path above ever consulted it, so
+        # `daemon start --dry-run` (without --once) POSTed real webhooks. It has
+        # to reach the service, which owns the dispatcher.
         config = DaemonConfig.from_dict(daemon_config)
-        service = DaemonService(client, config=config, on_start=on_start)
+        service = DaemonService(client, config=config, on_start=on_start, dry_run=dry_run)
         service.run_forever()
         return {"stopped": True}
     finally:
@@ -524,7 +552,7 @@ def stop_daemon(path: str | None = None) -> dict:
         pid_path.unlink(missing_ok=True)
         return {"stopped": False, "reason": "invalid_pid", "pid_file": str(pid_path)}
 
-    if not _is_mb_cli_pid(pid):
+    if not _is_tahuti_pid(pid):
         pid_path.unlink(missing_ok=True)
         return {
             "stopped": False,

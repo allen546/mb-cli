@@ -146,11 +146,45 @@ def is_task_completed(task: dict[str, Any]) -> bool:
     return not is_task_todo(task)
 
 
+def align_timezones(
+    due_dt: datetime, now: datetime
+) -> tuple[datetime, datetime]:
+    """Return *(due_dt, now)* made safe to compare with each other.
+
+    ``client.parse_due_date`` can return either an aware datetime (ISO input
+    carrying an offset, including a ``…Z`` suffix) or a naive one (every
+    textual ManageBac format).  Comparing the two raises ``TypeError: can't
+    compare offset-naive and offset-aware datetimes``, so every caller that
+    orders or compares a parsed due date against "now" funnels through here.
+
+    Aware values are converted to local wall-clock time and then stripped of
+    their ``tzinfo``; naive values are returned untouched.  Inputs are never
+    mutated.
+    """
+    if due_dt.tzinfo is not None:
+        due_dt = due_dt.astimezone().replace(tzinfo=None)
+    if now.tzinfo is not None:
+        now = now.astimezone().replace(tzinfo=None)
+    return due_dt, now
+
+
+def as_naive(dt: datetime) -> datetime:
+    """Return *dt* as a naive local datetime (no-op when already naive)."""
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 def classify_task_view(task: dict[str, Any], now_ref: datetime | None = None) -> str:
     """Classify a task into canonical timeline views: 'upcoming', 'overdue', 'past'."""
     from .client import parse_due_date
 
-    now = now_ref or datetime.now()
+    # Compare in naive local time throughout.  parse_due_date does its own
+    # year-wrapping arithmetic against now_ref, and an aware now_ref makes that
+    # subtraction raise (silently swallowed there, returning None); handing it
+    # a naive reference keeps that path working whichever way the parser comes
+    # back aware or naive.
+    now = as_naive(now_ref or datetime.now())
     due_date = task.get("due_date")
     if not due_date:
         return "past"
@@ -159,11 +193,7 @@ def classify_task_view(task: dict[str, Any], now_ref: datetime | None = None) ->
     if not due_dt:
         return "past"
 
-    # Ensure tzinfo compatibility without mutating inputs
-    if due_dt.tzinfo is not None and now.tzinfo is None:
-        due_dt = due_dt.astimezone().replace(tzinfo=None)
-    elif due_dt.tzinfo is None and now.tzinfo is not None:
-        now = now.astimezone().replace(tzinfo=None)
+    due_dt, now = align_timezones(due_dt, now)
 
     if due_dt >= now:
         return "upcoming"
@@ -181,7 +211,7 @@ def format_grade_display(
 ) -> str:
     """Format single unified grade display string.
 
-    If standalone is True (e.g. mb view), returns only the grade value
+    If standalone is True (e.g. tahuti view), returns only the grade value
     ('A', 'A (100 / 100 pts)', 'N/A', or 'None').
     """
     from .client import parse_due_date
@@ -221,14 +251,12 @@ def format_grade_display(
         return "Ungraded"
 
     # Unsubmitted / pending
-    now = now_ref or datetime.now()
+    # Naive local reference for the same reason as classify_task_view.
+    now = as_naive(now_ref or datetime.now())
     due_date = task.get("due_date")
     due_dt = parse_due_date(due_date, now_ref=now) if due_date else None
     if due_dt:
-        if due_dt.tzinfo is not None and now.tzinfo is None:
-            due_dt = due_dt.astimezone().replace(tzinfo=None)
-        elif due_dt.tzinfo is None and now.tzinfo is not None:
-            now = now.astimezone().replace(tzinfo=None)
+        due_dt, now = align_timezones(due_dt, now)
 
         if due_dt < now:
             return "⚠ Unsubmitted"
@@ -236,7 +264,7 @@ def format_grade_display(
 
 
 def get_task_display_status(task: dict[str, Any]) -> str:
-    """Format single unified status string (matching mb view status)."""
+    """Format single unified status string (matching tahuti view status)."""
     if is_task_todo(task):
         return "Incomplete (Todo)"
     if is_task_submitted(task):

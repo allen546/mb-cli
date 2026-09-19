@@ -9,18 +9,22 @@ import pytest
 from bs4 import BeautifulSoup
 
 from mb_cli.client import ManageBacClient
-from mb_cli.cache import ResponseCache
+from mb_cli.cache import DEFAULT_CACHE_DIR, ResponseCache
 from mb_cli.__main__ import build_parser, cmd_submissions
 from mb_cli import mcp_server
 
 
-def _make_client() -> ManageBacClient:
+def _make_client(cache_dir=None) -> ManageBacClient:
     client = ManageBacClient.__new__(ManageBacClient)
     client.school = "testschool"
     client.domain = "managebac.cn"
     client.base = "https://testschool.managebac.cn"
     client.student_name = "Test Student"
-    client.cache = ResponseCache()
+    # Routed into the per-test tmp_path by the autouse `isolated_user_state`
+    # fixture in conftest.py, which patches DEFAULT_CACHE_DIR. Spelled out here
+    # so the dependency is visible at the call site: a bare ResponseCache()
+    # would otherwise read and write the operator's real ~/.config/tahuti/cache.
+    client.cache = ResponseCache(cache_dir=cache_dir or DEFAULT_CACHE_DIR)
     client.retry = 0
     client.request_delay = 0.0
     client._last_request_time = 0.0
@@ -152,7 +156,13 @@ def test_delete_submission_success():
 
     # First call returns initial_soup; second call returns empty_soup (verification passes)
     with patch.object(client, "_get", side_effect=[initial_soup, initial_soup, empty_soup, empty_soup]):
-        client.session.request.return_value = MagicMock(status_code=200, text="Turbolinks.visit(...)")
+        # _request_with_retry validates the response URL, so the stub carries a
+        # real one. It is still the same DELETE on the same session.
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            text="Turbolinks.visit(...)",
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189817",
+        )
         res = client.delete_submission("101", "202", "82189817")
 
     assert res["ok"] is True
@@ -173,7 +183,10 @@ def test_delete_submission_by_filename():
     empty_soup = _soup(HTML_EMPTY_TASK)
 
     with patch.object(client, "_get", side_effect=[initial_soup, initial_soup, empty_soup, empty_soup]):
-        client.session.request.return_value = MagicMock(status_code=200)
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189817",
+        )
         res = client.delete_submission("101", "202", "Chapter-4-Homework.pdf")
 
     assert res["ok"] is True
@@ -193,7 +206,10 @@ def test_delete_submission_server_rollback_rejection():
 
     # Server returns 200, but file remains on page during verification
     with patch.object(client, "_get", return_value=past_soup):
-        client.session.request.return_value = MagicMock(status_code=200)
+        client.session.request.return_value = MagicMock(
+            status_code=200,
+            url="https://testschool.managebac.cn/student/dropboxes/17874401/destroy_asset?file_id=82189773",
+        )
         with pytest.raises(RuntimeError, match="task deadline has passed or ManageBac server locked the submission"):
             client.delete_submission("101", "202", "82189773")
 

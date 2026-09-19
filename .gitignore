@@ -148,6 +148,12 @@ cython_debug/
 !pyproject.toml
 .worktrees/
 
+# Claude Code agent workspace. .claude/worktrees/ holds complete clones of
+# this repo (each with its own .git), so it must never be committed, and must
+# never reach the sdist — hatchling's default sdist only skips what git ignores.
+.claude/
+.claude/worktrees/
+
 # Deployments and operational notes
 docs/deployments/
 
@@ -168,3 +174,8 @@ docs/deployments/
 course_aliases.json
 snapshot.json
 daemon_state.json
+
+# `mb download` default output dir (task_<id>_<title_slug>) when a test or a
+# manual run is invoked without --output-dir.
+/task_*
+

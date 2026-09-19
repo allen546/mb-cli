@@ -12,10 +12,7 @@ from typing import Any
 
 from ..client import ManageBacClient, parse_due_date
 from ..task_status import (
-    GradeStatus,
-    get_grade_status,
     format_grade_display,
-    is_task_submitted,
     is_task_graded,
     is_task_submitted_or_graded,
 )
@@ -24,7 +21,7 @@ from .provider import AbstractNotificationProvider, MNNHubProvider
 from .scheduler import DDLScheduler
 from .state import DaemonStateManager
 from .stealth import StealthTaskCrawler
-from .webhook import WebhookDispatcher
+from .webhook import WebhookDispatcher, retryable_results
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +44,26 @@ class DaemonService:
         provider: AbstractNotificationProvider | None = None,
         auth_refresh_fn: Callable[[], bool] | None = None,
         on_start: Callable[[DaemonService], None] | None = None,
+        dry_run: bool = False,
     ):
         self.client = client
         self.config = config or DaemonConfig()
-        self.state_manager = state_manager or DaemonStateManager()
+        # A dry run must not persist *anything*, not just webhooks. Two separate
+        # side effects make it observable: the dispatcher POSTing, and the state
+        # manager recording that a notification was handled. The second is the
+        # dangerous one — `mark_notification_processed` followed by `save()` is
+        # what makes a notification invisible to the *next* run, so a dry run
+        # that persisted it would silently swallow the real delivery it was only
+        # meant to preview. Suppressing only the POST left that hole open.
+        self.dry_run = dry_run
+        # Also cleared on an injected manager, so the guarantee holds whatever
+        # the caller built: `persist` is what `save()` consults, and nothing else
+        # in the daemon writes to that file.
+        if state_manager is not None:
+            state_manager.persist = not dry_run
+        self.state_manager = state_manager or DaemonStateManager(
+            persist=not self.dry_run
+        )
         self.auth_refresh_fn = auth_refresh_fn
         self.provider = provider or MNNHubProvider(
             self.client, auth_refresh_fn=self.auth_refresh_fn
@@ -61,14 +74,57 @@ class DaemonService:
             self.config.reminders,
             submission_checker=self._check_is_task_submitted_or_graded,
         )
+        # `--dry-run` has to reach the dispatcher too: the loop only computes
+        # what it *would* POST, so a dry run that still POSTed would be worse
+        # than no flag at all. An empty webhook list makes `dispatch` a no-op
+        # that still reports success, which is the other half of the dry-run
+        # contract.
         self.dispatcher = WebhookDispatcher(
-            webhooks=self.config.webhooks, verify_tls=self.config.verify_tls
+            webhooks=[] if self.dry_run else self.config.webhooks,
+            verify_tls=self.config.verify_tls,
         )
         self.on_start: Callable[[DaemonService], None] = on_start or (
             lambda svc: svc.sync_upcoming_tasks()
         )
         self._running = False
         self._last_full_sync: float = 0.0
+
+    def _in_active_window(self) -> bool:
+        """Whether local time is inside one of the configured active windows.
+
+        No windows configured means always active. A malformed window fails
+        *open* — a notifier that keeps polling is a better failure mode than one
+        that silently stops because of a typo in daemon.json.
+        """
+        windows = self.config.active_windows
+        if not windows:
+            return True
+        # Imported at call time: the package's `__init__` imports this module, so
+        # a module-level import would be circular.
+        from . import _is_in_window, _now_local, _parse_window
+
+        now = _now_local().time()
+        try:
+            return any(_is_in_window(now, *_parse_window(w)) for w in windows)
+        except (ValueError, TypeError, IndexError) as exc:
+            log.warning(
+                "Ignoring malformed active_windows %r (%s) — polling continuously",
+                windows,
+                exc,
+            )
+            return True
+
+    def _sleep_until_active_window(self) -> None:
+        """Sleep, in slices, until the next active window opens."""
+        from . import _next_active_window, _time_until
+
+        window_config = {"active_windows": self.config.active_windows}
+        while self._running and not self._in_active_window():
+            wait = _time_until(_next_active_window(window_config))
+            log.info("Outside active hours — sleeping %.0fs until the next window", wait)
+            deadline = time.time() + min(wait, 600)
+            while self._running and time.time() < deadline:
+                time.sleep(min(1.0, deadline - time.time()))
 
     def sync_upcoming_tasks(self) -> int:
         """Fetch all upcoming tasks and populate in-memory deadline state."""
@@ -310,8 +366,14 @@ class DaemonService:
                 dispatched_events.append(event)
                 new_notifications_count += 1
 
-                # Only mark processed if delivery succeeded on at least one endpoint or no endpoints configured
-                if notif_id and (not self.config.webhooks or any(r.get("success") for r in results)):
+                # Mark processed only when no endpoint still owes the event.
+                # `any(r.get("success"))` was wrong: one success plus one
+                # transiently-failed endpoint marked the notification handled,
+                # so the endpoint that failed was silently abandoned — the
+                # `retryable_results` primitive existed for exactly this and
+                # nothing called it. A *permanently* failed endpoint is not
+                # retryable, so it does not re-poll forever.
+                if notif_id and (not self.config.webhooks or not retryable_results(results)):
                     self.state_manager.mark_notification_processed(int(notif_id))
 
         except Exception as exc:
@@ -327,7 +389,7 @@ class DaemonService:
 
                 t_id = ddl_event.data.get("task_id")
                 threshold = ddl_event.data.get("reminder_threshold")
-                if t_id and threshold and (not self.config.webhooks or any(r.get("success") for r in results)):
+                if t_id and threshold and (not self.config.webhooks or not retryable_results(results)):
                     self.state_manager.mark_reminder_dispatched(t_id, threshold)
         except Exception as exc:
             log.warning("Deadline evaluation error: %s", exc)
@@ -349,7 +411,7 @@ class DaemonService:
         """Start the background daemon loop."""
         self._running = True
 
-        def _handle_signal(sig, frame):
+        def _handle_signal(sig, frame) -> None:
             log.info("Signal %s received — initiating graceful shutdown...", sig)
             self._running = False
 
@@ -369,10 +431,22 @@ class DaemonService:
         except Exception as exc:
             log.warning("Daemon on-start callback encountered error: %s", exc)
 
+        if self.config.active_windows:
+            log.info(
+                "Active hours in force: %s (local time) — no polling outside them",
+                ", ".join(f"{w[0]}-{w[1]}" for w in self.config.active_windows),
+            )
+
         full_sync_interval_sec = self.config.full_sync_interval_minutes * 60
 
         while self._running:
-            start_time = time.time()
+            # Active-hours gate. Outside the window the daemon sleeps instead of
+            # polling, which is what `--active-hours-start/--active-hours-end`
+            # and daemon.json's `active_windows` promise. `--once` never reaches
+            # this loop — one cycle always runs, whatever the clock says.
+            if not self._in_active_window():
+                self._sleep_until_active_window()
+                continue
 
             # Only fallback recrawl if cache became empty or long fallback interval (12h) elapsed
             if not self.state_manager.tasks_cache or (

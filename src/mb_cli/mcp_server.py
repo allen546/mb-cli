@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from .auth import build_client
-from .client import ManageBacClient, parse_task_url
+from .auth import build_client, hub_client
+from .client import parse_task_url
+from .filters import InvalidViewError, normalize_view
 from .notifications import MNNHubClient, hub_for_domain
 
 log = logging.getLogger(__name__)
 
 mcp = FastMCP(
-    "mb-cli",
+    "tahuti",
     instructions=(
         "ManageBac MCP server. Provides tools to interact with ManageBac: "
         "list/view tasks, submit files, view notifications, calendar events, "
@@ -54,6 +57,107 @@ def _error_payload(exc: Exception) -> str:
     return json.dumps({"error": _sanitize_error(exc)})
 
 
+# ── Input validation ───────────────────────────────────────────────────
+# Tool arguments come from a model, not a human reading an error message, so a
+# malformed value must produce a short, actionable error rather than a 404 from
+# ManageBac or a confusing traceback.  Every validator returns the coerced
+# value and raises :class:`InvalidToolInput` otherwise.
+
+
+class InvalidToolInput(Exception):
+    """Raised when an MCP tool argument fails validation."""
+
+
+# ManageBac object ids are plain integers.
+_ID_RE = re.compile(r"^\d+$")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _require_numeric_id(value: object, field: str, example: str) -> str:
+    """Return *value* as a bare numeric id string, or raise."""
+    text = str(value or "").strip()
+    if not _ID_RE.match(text):
+        raise InvalidToolInput(
+            f"{field} must be a numeric ManageBac id (e.g. {example!r}), got {text[:60]!r}"
+        )
+    return text
+
+
+def _require_iso_date(value: object, field: str) -> str:
+    """Return *value* as a valid ``YYYY-MM-DD`` date string, or raise."""
+    text = str(value or "").strip()
+    if not _ISO_DATE_RE.match(text):
+        raise InvalidToolInput(
+            f"{field} must be a YYYY-MM-DD date, got {text[:60]!r}"
+        )
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise InvalidToolInput(f"{field} is not a real calendar date: {text!r}") from exc
+    return text
+
+
+def _require_readable_file(value: object, field: str = "file_path") -> str:
+    """Return the absolute path of an existing regular file, or raise.
+
+    Symlinks are followed so the check applies to whatever would actually be
+    uploaded, but nothing outside an existing regular file is accepted: this
+    keeps a confused tool call from pointing at ``/dev/…``, a directory, or a
+    FIFO.
+    """
+    text = str(value or "").strip()
+    if not text:
+        raise InvalidToolInput(f"{field} is required and must be a local file path")
+    if "\x00" in text:
+        raise InvalidToolInput(f"{field} contains a NUL byte")
+    try:
+        path = Path(text).expanduser()
+        resolved = path.resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise InvalidToolInput(f"{field} is not a usable path: {text[:60]!r}") from exc
+
+    if not resolved.exists():
+        raise InvalidToolInput(f"{field} does not exist: {text[:120]!r}")
+    if not resolved.is_file():
+        raise InvalidToolInput(
+            f"{field} is not a regular file: {text[:120]!r}"
+        )
+    if not os.access(resolved, os.R_OK):
+        raise InvalidToolInput(f"{field} is not readable: {text[:120]!r}")
+    return str(resolved)
+
+
+def _invalid_input(exc: InvalidToolInput) -> str:
+    """Return the JSON error payload for a failed argument check."""
+    return json.dumps({"error": str(exc)})
+
+
+def _resolve_task_id(target: str) -> str:
+    """Extract the task id from a task id or a full ManageBac task URL.
+
+    Two shapes are accepted, matching the documented contract: a bare numeric
+    id, or a URL/path carrying ``/core_tasks/<id>``.  Anything else used to
+    yield the *entire* input as the "id" (``"https://…".split("core_tasks/")[-1]``
+    with no separator present), and ``parse_task_url``'s "last path segment"
+    fallback would happily return a *class* id for a class URL.
+    """
+    text = str(target or "").strip()
+    if not text:
+        raise InvalidToolInput("Provide task_id or task_url")
+    if _ID_RE.match(text):
+        return text
+    _cid, tid = parse_task_url(text)
+    # parse_task_url falls back to "last path segment", which may be a *class*
+    # id, so a URL target must really be a core_tasks URL.
+    if tid and _ID_RE.match(tid) and "/core_tasks/" in text:
+        return tid
+    raise InvalidToolInput(
+        "Could not read a numeric task id from "
+        f"{text[:120]!r}; pass a numeric id or a full task URL containing "
+        "'/core_tasks/<id>'"
+    )
+
+
 # ── Tasks ───────────────────────────────────────────────────────────────
 
 
@@ -65,6 +169,7 @@ def list_tasks(
     submitted: bool | None = None,
     grade: str | None = None,
     tag: str | None = None,
+    completed: bool | None = None,
     details: bool = False,
     pages: int = 10,
     school: str | None = None,
@@ -82,6 +187,8 @@ def list_tasks(
         graded: Filter by graded status (True=graded only, False=not graded only)
         submitted: Filter by submission status (True=submitted only, False=not submitted only)
         grade: Filter by specific grade letter or GPA (e.g. 'B', 'B-', '4.0')
+        tag: Filter by label/tag query (supports 'a,b' OR and 'a+b' AND forms)
+        completed: Filter by completion status (True=completed only, False=todo only)
         details: Fetch task detail pages (slower, one request per task)
         pages: Max pages per view (default 10)
         school: School subdomain (e.g. "myschool")
@@ -91,6 +198,14 @@ def list_tasks(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
+    # Validate before any network call: an unrecognised view used to match none
+    # of the three section checks below, so the tool answered with three empty
+    # lists and total_count 0 — a valid-looking "you have no homework".
+    try:
+        canonical_view = normalize_view(view)
+    except InvalidViewError as exc:
+        return json.dumps({"error": exc.message})
+
     _state, client, _email = build_client(
         school=school,
         domain=domain,
@@ -99,20 +214,23 @@ def list_tasks(
         verify=verify_tls,
         retry=retry,
     )
-    
+
     upcoming = []
     past = []
     overdue = []
 
-    if view in ("upcoming", "all"):
-        log.info("Crawling upcoming tasks...")
-        upcoming = client.get_tasks_by_view("upcoming", max_pages=pages)
-    if view in ("past", "all"):
-        log.info("Crawling past tasks...")
-        past = client.get_tasks_by_view("past", max_pages=pages)
-    if view in ("overdue", "all"):
-        log.info("Crawling overdue tasks...")
-        overdue = client.get_tasks_by_view("overdue", max_pages=pages)
+    # One canonical view drives which sections are crawled, so the MCP tool and
+    # filters.result_views can no longer disagree about what a view means.
+    sections: dict[str, list] = {"upcoming": [], "past": [], "overdue": []}
+    for name in sections:
+        if canonical_view not in ("all", name):
+            continue
+        log.info("Crawling %s tasks...", name)
+        sections[name] = client.get_tasks_by_view(name, max_pages=pages)
+
+    upcoming = sections["upcoming"]
+    past = sections["past"]
+    overdue = sections["overdue"]
 
     if details:
         items = [t for t in upcoming + past + overdue if t.get("link")]
@@ -127,7 +245,7 @@ def list_tasks(
                 time.sleep(random.uniform(0.5, 2.0))
 
     if subject:
-        def _match(task, s):
+        def _match(task, s) -> bool:
             cn = task.get("class_name", "")
             return s.lower() in cn.lower() if cn else False
 
@@ -158,7 +276,15 @@ def list_tasks(
         past = [t for t in past if matches_tag(t, tag)]
         overdue = [t for t in overdue if matches_tag(t, tag)]
 
-    from datetime import datetime
+    # Same `completed`/`todo` pair the CLI's `list` command exposes; MCP folds
+    # both into one tri-state so callers keep the "completed only / todo only"
+    # semantics rather than having to know which helper to reach for.
+    if completed is not None:
+        from .filters import matches_completed
+        upcoming = [t for t in upcoming if matches_completed(t, completed)]
+        past = [t for t in past if matches_completed(t, completed)]
+        overdue = [t for t in overdue if matches_completed(t, completed)]
+
     result = {
         "student_name": client.student_name,
         "school": client.school,
@@ -171,6 +297,7 @@ def list_tasks(
             "upcoming_count": len(upcoming),
             "past_count": len(past),
             "overdue_count": len(overdue),
+            "total_count": len(upcoming) + len(past) + len(overdue),
         },
     }
 
@@ -216,8 +343,14 @@ def view_task(
     if not target:
         return json.dumps({"error": "Provide task_id or task_url"})
 
+    # Without this, a URL lacking "/core_tasks/" made the whole string the "id".
+    try:
+        resolved_id = _resolve_task_id(target)
+    except InvalidToolInput as exc:
+        return _invalid_input(exc)
+
     detail = client.get_task_detail(target)
-    task = {"id": target.split("core_tasks/")[-1].split("/")[0], "link": target}
+    task = {"id": resolved_id, "link": target}
     return json.dumps({"task": task, "detail": detail}, indent=2, ensure_ascii=False)
 
 
@@ -250,6 +383,14 @@ def submit_file(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
+    # The CLI's _safe_filename containment (__main__.py) guards *downloads*;
+    # nothing checked the upload path, so a confused tool call could name a
+    # directory, /dev/null, or a typo'd path and only fail inside the upload.
+    try:
+        safe_path = _require_readable_file(file_path)
+    except InvalidToolInput as exc:
+        return _invalid_input(exc)
+
     _state, client, _email = build_client(
         school=school,
         domain=domain,
@@ -302,7 +443,7 @@ def submit_file(
             return json.dumps({"error": f"Task {task_id} not found"})
 
     try:
-        result = client.submit_file(class_id, tid, file_path)
+        result = client.submit_file(class_id, tid, safe_path)
         # Eagerly refresh snapshot
         try:
             from .__main__ import (
@@ -544,7 +685,7 @@ def get_notifications(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
 
     stats = hub.stats()
     filter_ = "unread" if unread_only else "all"
@@ -590,7 +731,7 @@ def mark_notification(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
 
     actions = {
         "read": hub.mark_read,
@@ -638,7 +779,7 @@ def mark_all_notifications_read(
     hub_endpoint, token = client.get_notification_token()
     if not hub_endpoint:
         hub_endpoint = hub_for_domain(client.domain)
-    hub = MNNHubClient(hub_endpoint, token)
+    hub = hub_client(hub_endpoint, token, verify=client.session.verify)
     ok = hub.mark_all_read()
     return json.dumps({"ok": ok, "action": "mark_all_read"})
 
@@ -671,6 +812,14 @@ def get_calendar_events(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
+    # These land straight in ManageBac query params, so validate the shape
+    # rather than letting the server 404 on whatever the model sent.
+    try:
+        start = _require_iso_date(start_date, "start_date") if start_date else date.today().isoformat()
+        end = _require_iso_date(end_date, "end_date") if end_date else (date.today() + timedelta(days=6)).isoformat()
+    except InvalidToolInput as exc:
+        return _invalid_input(exc)
+
     _state, client, _email = build_client(
         school=school,
         domain=domain,
@@ -679,9 +828,6 @@ def get_calendar_events(
         verify=verify_tls,
         retry=retry,
     )
-    today = date.today()
-    start = start_date or today.isoformat()
-    end = end_date or (today + timedelta(days=6)).isoformat()
     events = client.get_calendar_events(start, end)
     return json.dumps(
         {"start": start, "end": end, "events": events}, indent=2, ensure_ascii=False
@@ -744,6 +890,11 @@ def get_timetable(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
+    try:
+        week_of = _require_iso_date(date_str, "date_str") if date_str else None
+    except InvalidToolInput as exc:
+        return _invalid_input(exc)
+
     _state, client, _email = build_client(
         school=school,
         domain=domain,
@@ -752,7 +903,7 @@ def get_timetable(
         verify=verify_tls,
         retry=retry,
     )
-    result = client.get_timetable(date_str)
+    result = client.get_timetable(week_of)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -825,6 +976,15 @@ def get_class_grades(
         verify_tls: Set to False to disable TLS certificate verification
         retry: Max retries with exponential backoff (default 3, 0=off)
     """
+    # class_id is interpolated into f"/student/classes/{class_id}/core_tasks"
+    # inside client.get_class_grades, so a non-numeric value would reach the
+    # server as a raw path component.
+    if class_id:
+        try:
+            class_id = _require_numeric_id(class_id, "class_id", "1000023")
+        except InvalidToolInput as exc:
+            return _invalid_input(exc)
+
     _state, client, _email = build_client(
         school=school,
         domain=domain,

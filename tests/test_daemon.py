@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from mb_cli.daemon import (
     DEFAULT_WEBHOOK_URL,
     _diff_snapshots_full,
+    _is_tahuti_pid,
     configure_webhook,
     load_daemon_config,
     run_daemon_once,
@@ -258,10 +260,57 @@ class TestRunDaemonOnce:
 
         with rm.Mocker() as m:
             m.post("http://localhost:9999/webhook", status_code=200)
-            run_daemon_once(mock_client, daemon_config, dry_run=True)
+            run_daemon_once(mock_client, daemon_config, dry_run=False)
             assert snapshot_path.exists()
             saved = json.loads(snapshot_path.read_text())
             assert saved["upcoming"][0]["id"] == "1"
+
+    def test_dry_run_leaves_the_snapshot_baseline_alone(
+        self, tmp_path: Path, make_crawl_result
+    ):
+        """A dry run must not advance the baseline the next real run diffs against.
+
+        `save_snapshot` used to run unconditionally, before the `dry_run` check.
+        The dry run then reported the alerts it found while leaving a snapshot
+        claiming they had already been seen — so the next real run diffed against
+        the dry run's own output, found nothing, and delivered nothing. The dry
+        run ate the delivery it was only meant to preview.
+        """
+        snapshot_path = tmp_path / "snapshot.json"
+        # A pre-existing baseline, as there always is on a real deployment.
+        snapshot_path.write_text(json.dumps({"upcoming": [], "past": [], "overdue": []}))
+        daemon_config = {
+            "delivery": {"mode": "webhook", "webhook_url": "http://localhost:9999/webhook"},
+            "snapshot_file": str(snapshot_path),
+            "verify_tls": True,
+        }
+
+        mock_client = MagicMock()
+        mock_client.crawl_all.return_value = make_crawl_result(
+            upcoming=[{"id": "1", "title": "T1", "class_name": "Math"}],
+        )
+
+        with rm.Mocker() as m:
+            # No POST is registered: a dry run that tried to deliver would fail
+            # the request rather than silently succeed.
+            result = run_daemon_once(mock_client, daemon_config, dry_run=True)
+
+        # The alerts were still computed — a dry run has to show the work.
+        assert result["delivered"] is False
+        assert result["alert_count"] >= 1
+        # ...but the baseline is byte-for-byte what it was before.
+        assert json.loads(snapshot_path.read_text()) == {
+            "upcoming": [],
+            "past": [],
+            "overdue": [],
+        }
+
+        # The payoff: the next *real* run still sees the alert.
+        with rm.Mocker() as m:
+            m.post("http://localhost:9999/webhook", status_code=200)
+            real = run_daemon_once(mock_client, daemon_config, dry_run=False)
+        assert real["delivered"] is True
+        assert real["alert_count"] >= 1
 
 
 class TestStartLoop:
@@ -289,6 +338,50 @@ class TestStartLoop:
             result = start_loop(mock_client, daemon_config, dry_run=True, once=True)
         assert "alerts" in result
         assert result["alert_count"] == 0
+
+    def test_once_mode_dry_run_leaves_the_snapshot_baseline_alone(
+        self, tmp_path: Path, make_crawl_result
+    ):
+        """`start_loop`'s `once` branch advanced the snapshot unconditionally.
+
+        `save_snapshot` ran before any `dry_run` check, so
+        `daemon start --once --dry-run` reported the alerts it found and left a
+        baseline claiming they had already been seen. Every later real run
+        diffed against that and delivered nothing.
+        """
+        snapshot_path = tmp_path / "snapshot.json"
+        snapshot_path.write_text(json.dumps({"upcoming": [], "past": [], "overdue": []}))
+        daemon_config = self._make_daemon_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.crawl_index.return_value = make_crawl_result(
+            upcoming=[{"id": "1", "title": "T1", "class_name": "Math"}]
+        )
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        with (
+            patch("mb_cli.daemon._next_active_window", return_value=now),
+            patch("mb_cli.daemon._time_until", return_value=0.0),
+        ):
+            result = start_loop(mock_client, daemon_config, dry_run=True, once=True)
+
+        # The alerts were still computed — that is the point of a dry run.
+        assert result["alert_count"] >= 1
+        assert json.loads(snapshot_path.read_text()) == {
+            "upcoming": [],
+            "past": [],
+            "overdue": [],
+        }
+
+        # And the real run that follows still sees them.
+        with (
+            patch("mb_cli.daemon._next_active_window", return_value=now),
+            patch("mb_cli.daemon._time_until", return_value=0.0),
+        ):
+            real = start_loop(mock_client, daemon_config, dry_run=False, once=True)
+        assert real["alert_count"] >= 1
+        assert len(json.loads(snapshot_path.read_text())["upcoming"]) == 1
 
     def test_once_mode_cleans_pid(self, tmp_path: Path, make_crawl_result):
         pid_path = tmp_path / "daemon.pid"
@@ -328,12 +421,44 @@ class TestStartLoop:
 
 class TestStopDaemon:
     def test_no_pid_file(self, tmp_path: Path):
-        daemon_config = {
-            "pid_file": str(tmp_path / "nonexistent.pid"),
-        }
-        result = stop_daemon(str(tmp_path / "nonexistent.json"))
-        # stop_daemon loads daemon config from the path, not from daemon_config
-        # Need to use the actual daemon config loading
+        """`stop` on a config whose pid file is absent must report, not crash.
+
+        This had no assertion at all, and built a `daemon_config` dict it then
+        ignored — `stop_daemon` reads its config from the path it is given, so
+        the local dict never reached it. Passing a nonexistent config path made
+        `load_daemon_config` fall back to `DEFAULT_PID_PATH`, i.e. the real
+        ~/.config/tahuti/daemon.pid, so the test also probed the operator's
+        home directory. Writing the config makes the pid path explicit.
+        """
+        missing_pid = tmp_path / "nonexistent.pid"
+        assert not missing_pid.exists()
+
+        config_path = tmp_path / "daemon.json"
+        config_path.write_text(json.dumps({"pid_file": str(missing_pid)}))
+
+        result = stop_daemon(str(config_path))
+
+        assert result["stopped"] is False
+        assert result["reason"] == "pid_file_missing"
+        assert Path(result["pid_file"]) == missing_pid, (
+            "stop_daemon reported a different pid file than the config names"
+        )
+        # Nothing to kill, and the missing pid file must not be conjured up.
+        assert not missing_pid.exists()
+
+    def test_no_pid_file_is_reported_when_config_is_absent(self, tmp_path: Path):
+        """Same outcome when daemon.json itself is missing.
+
+        `load_daemon_config` substitutes defaults, so this must still resolve to
+        a pid path inside the test sandbox rather than the operator's home.
+        """
+        result = stop_daemon(str(tmp_path / "absent.json"))
+
+        assert result["stopped"] is False
+        assert result["reason"] == "pid_file_missing"
+        assert tmp_path in Path(result["pid_file"]).parents, (
+            f"{result['pid_file']} escaped the test sandbox"
+        )
 
     def test_invalid_pid_content(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
@@ -356,13 +481,13 @@ class TestStopDaemon:
         assert result["stopped"] is False
         assert result["reason"] == "invalid_pid"
 
-    def test_non_mb_cli_process(self, tmp_path: Path):
+    def test_non_tahuti_process(self, tmp_path: Path):
         pid_path = tmp_path / "daemon.pid"
         pid_path.write_text("99999")
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=False):
+        with patch("mb_cli.daemon._is_tahuti_pid", return_value=False):
             result = stop_daemon(str(config_path))
             assert result["stopped"] is False
             assert result["reason"] == "not_mb_cli_process"
@@ -373,10 +498,37 @@ class TestStopDaemon:
         config_path = tmp_path / "daemon.json"
         config_path.write_text(json.dumps({"pid_file": str(pid_path)}))
 
-        with patch("mb_cli.daemon._is_mb_cli_pid", return_value=True):
+        with patch("mb_cli.daemon._is_tahuti_pid", return_value=True):
             with patch("mb_cli.daemon.os.kill") as mock_kill:
                 result = stop_daemon(str(config_path))
                 assert result["stopped"] is True
                 assert result["pid"] == 12345
                 mock_kill.assert_called_once_with(12345, signal.SIGTERM)
                 assert not pid_path.exists()
+
+
+class TestIsTahutiPid:
+    """The package-level guard mirrors the one in daemon/system.py."""
+
+    @staticmethod
+    def _ps(cmdline: str, returncode: int = 0):
+        return SimpleNamespace(returncode=returncode, stdout=cmdline + "\n")
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            f"{sys.executable} -m mb_cli daemon run",
+            "/opt/homebrew/bin/tahuti daemon run",
+            "/usr/bin/python -m mb_crawler daemon run",
+        ],
+    )
+    def test_accepts_a_tahuti_daemon(self, cmdline: str):
+        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+            assert _is_tahuti_pid(4242) is True, cmdline
+
+    @pytest.mark.parametrize(
+        "cmdline", ["/lib/systemd/systemd --user", "/usr/sbin/cfprefsd daemon"]
+    )
+    def test_rejects_unrelated_processes(self, cmdline: str):
+        with patch("mb_cli.daemon.subprocess.run", return_value=self._ps(cmdline)):
+            assert _is_tahuti_pid(4242) is False, cmdline

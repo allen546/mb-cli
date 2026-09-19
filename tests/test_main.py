@@ -497,7 +497,7 @@ class TestMainNotifications:
             mock_bc.return_value = _mock_build_client_result(mock_client)
             with patch("mb_cli.__main__.save_profile"):
                 with patch("mb_cli.__main__.save_session"):
-                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
+                    with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.stats.return_value = {"unread_messages": 2}
                         mock_hub.list.return_value = {
@@ -520,7 +520,7 @@ class TestMainNotifications:
             mock_bc.return_value = _mock_build_client_result(mock_client)
             with patch("mb_cli.__main__.save_profile"):
                 with patch("mb_cli.__main__.save_session"):
-                    with patch("mb_cli.__main__.MNNHubClient") as MockHub:
+                    with patch("mb_cli.__main__.hub_client") as MockHub:
                         mock_hub = MockHub.return_value
                         mock_hub.mark_read.return_value = True
                         with patch("builtins.print"):
@@ -538,16 +538,51 @@ class TestMainNotifications:
 
 
 class TestMainDaemon:
-    def test_daemon_stop(self, tmp_path: Path, monkeypatch):
+    def test_daemon_stop_that_stopped_nothing_exits_nonzero(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A stop request that stopped nothing is a failure, not a success.
+
+        This test previously asserted ``code == 0`` on exactly this payload,
+        pinning the defect: a stop-then-start script could not tell that the
+        stop never happened and would end up supervising two daemons.
+        """
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
         monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
 
-        with patch("mb_cli.__main__.stop_daemon") as mock_stop:
-            mock_stop.return_value = {"stopped": False, "reason": "pid_file_missing"}
+        nothing_stopped = {"stopped": False, "reason": "pid_file_missing"}
+        with (
+            patch("mb_cli.__main__.ServiceManager") as MockMgr,
+            patch("mb_cli.__main__.stop_daemon", return_value=nothing_stopped),
+        ):
+            MockMgr.return_value.stop_background.return_value = {
+                "stopped": False,
+                "reason": "not_running",
+            }
+            with patch("builtins.print"):
+                with pytest.raises(SystemExit) as exc_info:
+                    main(["daemon", "stop", "--format", "json"])
+                assert exc_info.value.code == 1
+
+    def test_daemon_stop_that_stopped_a_process_exits_zero(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setenv("MB_CRAWLER_SESSION", str(tmp_path / "session.json"))
+
+        with (
+            patch("mb_cli.__main__.ServiceManager") as MockMgr,
+            patch("mb_cli.__main__.stop_daemon") as mock_stop,
+        ):
+            MockMgr.return_value.stop_background.return_value = {
+                "stopped": True,
+                "pid": 4242,
+            }
             with patch("builtins.print"):
                 with pytest.raises(SystemExit) as exc_info:
                     main(["daemon", "stop", "--format", "json"])
                 assert exc_info.value.code == 0
+            mock_stop.assert_not_called()
 
     def test_daemon_configure_webhook(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("MB_CRAWLER_CONFIG", str(tmp_path / "config.json"))

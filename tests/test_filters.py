@@ -11,9 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pytest
 
 from mb_cli.filters import (
+    InvalidViewError,
+    filter_result_by_status,
     filter_result_by_subject,
     find_task_by_id,
+    matches_grade_query,
     matches_subject,
+    normalize_view,
     result_views,
 )
 
@@ -81,6 +85,190 @@ class TestFilterResultBySubject:
         assert filtered["summary"]["total_count"] == 0
 
 
+class TestNormalizeView:
+    """One validated view vocabulary shared by the CLI and MCP list_tasks."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("all", "all"),
+            ("ALL", "all"),
+            ("  All  ", "all"),
+            ("all tasks", "all"),
+            ("everything", "all"),
+            ("upcoming", "upcoming"),
+            # Case-insensitive and natural-language spellings an LLM produces.
+            ("Upcoming", "upcoming"),
+            ("upcoming tasks", "upcoming"),
+            ("upcoming task", "upcoming"),
+            ("upcomings", "upcoming"),
+            ("future", "upcoming"),
+            ("past", "past"),
+            ("PAST", "past"),
+            ("past tasks", "past"),
+            ("previous", "past"),
+            ("overdue", "overdue"),
+            ("overdue tasks", "overdue"),
+            ("late", "overdue"),
+            ("missed", "overdue"),
+        ],
+    )
+    def test_recognised(self, raw, expected):
+        assert normalize_view(raw) == expected
+
+    @pytest.mark.parametrize("raw", ["", None, "  ", "default", "none"])
+    def test_unspecified_falls_back_to_default(self, raw):
+        assert normalize_view(raw) == "all"
+        assert normalize_view(raw, default="upcoming") == "upcoming"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            # A misspelled "all" must not silently mean "all".
+            "al",
+            "alll",
+            "upcomingg",
+            "everythinggg",
+            "todo",
+            "homework",
+            "1",
+        ],
+    )
+    def test_unrecognised_raises(self, raw):
+        with pytest.raises(InvalidViewError) as excinfo:
+            normalize_view(raw)
+        # Machine-readable code, so a CLI caller gets a payload not a traceback.
+        assert excinfo.value.code == "invalid_view"
+        assert "upcoming" in excinfo.value.message
+
+    def test_error_message_names_valid_views(self):
+        with pytest.raises(InvalidViewError) as excinfo:
+            normalize_view("al")
+        for view in ("all", "upcoming", "past", "overdue"):
+            assert view in excinfo.value.message
+
+
+class TestMatchesGradeQuery:
+    """Grade-letter / GPA query matching, incl. score-only grade cards.
+
+    ``matches_grade_query`` had no coverage at all, which is how the broken
+    ``^([A-F][+-]?)\\b`` anchor went unnoticed: ``\\b`` can never sit between a
+    ``+``/``-`` and a following space, so the modifier group always backtracked
+    to empty and "A+ (95/100)" matched the query "A" instead of "A+".
+    """
+
+    # ── score-only cards (no separate grade_letter) ────────────────────
+    @pytest.mark.parametrize(
+        "score,query",
+        [
+            ("A+ (95/100)", "A+"),
+            ("B- (80/100)", "B-"),
+            ("A+", "A+"),
+            ("B+", "B+"),
+            ("A", "A"),
+            ("B (80/100)", "B"),
+            ("F", "F"),
+        ],
+    )
+    def test_modifier_survives_extraction(self, score, query):
+        assert matches_grade_query({"grade_score": score}, query) is True
+
+    def test_a_plus_score_does_not_match_a_minus_query(self):
+        assert matches_grade_query({"grade_score": "A+ (95/100)"}, "A-") is False
+
+    def test_bare_a_plus_string(self):
+        # The bare "A+" case the docstring's own example depends on.
+        assert matches_grade_query({"grade_score": "A+"}, "A") is True
+        assert matches_grade_query({"grade_score": "A+"}, "A+") is True
+
+    def test_letter_only_query_matches_any_modifier(self):
+        assert matches_grade_query({"grade_score": "A- (90/100)"}, "A") is True
+        assert matches_grade_query({"grade_score": "B+ (88/100)"}, "B") is True
+
+    # ── grade_letter cards ─────────────────────────────────────────────
+    def test_exact_letter(self):
+        assert matches_grade_query({"grade_letter": "A"}, "A") is True
+        assert matches_grade_query({"grade_letter": "B+"}, "B+") is True
+
+    def test_letter_preferred_over_score(self):
+        task = {"grade_letter": "C", "grade_score": "A+ (95/100)"}
+        assert matches_grade_query(task, "C") is True
+        assert matches_grade_query(task, "A+") is False
+
+    def test_exact_query_requires_exact_match(self):
+        assert matches_grade_query({"grade_letter": "A"}, "A+") is False
+        assert matches_grade_query({"grade_letter": "A-"}, "A") is True
+
+    # ── non-letter scores ──────────────────────────────────────────────
+    def test_numeric_score_is_not_a_letter(self):
+        task = {"grade_score": "95/100"}
+        assert matches_grade_query(task, "A") is False
+        assert matches_grade_query(task, "B") is False
+
+    def test_percentage_score_is_not_a_letter(self):
+        task = {"grade_score": "87%"}
+        assert matches_grade_query(task, "A") is False
+        assert matches_grade_query(task, "B") is False
+
+    def test_word_starting_with_a_grade_letter_is_not_a_grade(self):
+        # "Absent"/"Formative" must not be read as an A / an F.
+        assert matches_grade_query({"grade_score": "Absent"}, "A") is False
+        assert matches_grade_query({"grade_score": "Formative"}, "F") is False
+
+    def test_not_applicable(self):
+        assert matches_grade_query({"grade_letter": "N/A"}, "A") is False
+        assert matches_grade_query({"grade_score": "N/A"}, "A") is False
+
+    def test_empty_task(self):
+        assert matches_grade_query({}, "A") is False
+        assert matches_grade_query({"grade_letter": "", "grade_score": ""}, "A") is False
+
+    def test_mismatched_query(self):
+        assert matches_grade_query({"grade_letter": "A"}, "Physics") is False
+        assert matches_grade_query({"grade_letter": "A"}, "") is False
+
+    # ── GPA mappings ───────────────────────────────────────────────────
+    @pytest.mark.parametrize(
+        "letter,gpa",
+        [
+            ("A", "4.0"),
+            ("A+", "4.0"),
+            ("A-", "3.7"),
+            ("B+", "3.3"),
+            ("B", "3.0"),
+            ("B-", "2.7"),
+            ("C+", "2.3"),
+            ("C", "2.0"),
+            ("C-", "1.7"),
+            ("D+", "1.3"),
+            ("D", "1.0"),
+            ("F", "0.0"),
+        ],
+    )
+    def test_gpa_mapping(self, letter, gpa):
+        assert matches_grade_query({"grade_letter": letter}, gpa) is True
+
+    def test_gpa_mapping_is_exclusive(self):
+        assert matches_grade_query({"grade_letter": "A-"}, "4.0") is False
+        assert matches_grade_query({"grade_letter": "A"}, "3.7") is False
+        assert matches_grade_query({"grade_score": "F (20/100)"}, "4.0") is False
+
+    # ── tolerance ──────────────────────────────────────────────────────
+    def test_case_and_whitespace_insensitive(self):
+        assert matches_grade_query({"grade_score": "a+ (95/100)"}, "a+") is True
+        assert matches_grade_query({"grade_letter": " b- "}, " B- ") is True
+
+    def test_filter_result_by_status_uses_the_same_matching(self, make_crawl_result):
+        result = make_crawl_result(
+            upcoming=[
+                {"id": "1", "grade_score": "A+ (95/100)"},
+                {"id": "2", "grade_score": "B- (80/100)"},
+            ]
+        )
+        filtered = filter_result_by_status(result, grade="A+")
+        assert [t["id"] for t in filtered["upcoming"]] == ["1"]
+
+
 class TestResultViews:
     def test_all_view(self, make_crawl_result):
         result = make_crawl_result(
@@ -92,6 +280,25 @@ class TestResultViews:
         assert len(views["upcoming"]) == 1
         assert len(views["past"]) == 1
         assert len(views["overdue"]) == 1
+
+    def test_capitalised_view(self, make_crawl_result):
+        result = make_crawl_result(upcoming=[{"t": 1}], past=[{"t": 2}])
+        views = result_views(result, "Upcoming")
+        assert len(views["upcoming"]) == 1
+        assert views["past"] == []
+
+    def test_alias_view(self, make_crawl_result):
+        result = make_crawl_result(upcoming=[{"t": 1}], overdue=[{"t": 2}])
+        views = result_views(result, "overdue tasks")
+        assert views["upcoming"] == []
+        assert len(views["overdue"]) == 1
+
+    def test_unknown_view_raises_instead_of_returning_all(self, make_crawl_result):
+        # Previously an unrecognised view fell through to "all", so a config
+        # typo quietly widened the query instead of failing.
+        result = make_crawl_result(upcoming=[{"t": 1}], past=[{"t": 2}])
+        with pytest.raises(InvalidViewError):
+            result_views(result, "al")
 
     def test_upcoming_only(self, make_crawl_result):
         result = make_crawl_result(

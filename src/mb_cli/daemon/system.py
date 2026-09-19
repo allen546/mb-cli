@@ -13,10 +13,12 @@ import sys
 import time
 from typing import Any
 
+from ..config import config_dir
+
 log = logging.getLogger(__name__)
 
-DEFAULT_PID_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.pid"
-DEFAULT_LOG_PATH = Path.home() / ".config" / "mb-crawler" / "daemon.log"
+DEFAULT_PID_PATH = config_dir() / "daemon.pid"
+DEFAULT_LOG_PATH = config_dir() / "daemon.log"
 
 
 def _harden_dir(path: Path) -> None:
@@ -27,14 +29,20 @@ def _harden_dir(path: Path) -> None:
         pass
 
 
-def _is_mb_cli_process(pid: int) -> bool:
-    """Verify PID corresponds to an mb-cli process to prevent terminating recycled PIDs.
+def _is_tahuti_process(pid: int) -> bool:
+    """Verify PID corresponds to a tahuti process to prevent terminating recycled PIDs.
 
     The bare ``"mb"`` substring is deliberately absent: it matches any process
     whose command line merely contains those two letters (``systemd``,
     ``kubelet``, ``Kubernetes``…), which would let a stale PID file cause a
     signal to be delivered to an unrelated process.  Only the full module and
     package names are accepted.
+
+    ``mb_cli`` stays in the list because it is what ``start_background``
+    actually spawns (``python -m mb_cli daemon run``) and what the generated
+    launchd plist and systemd unit exec — the import path is deliberately not
+    renamed.  ``tahuti`` covers a daemon started from the console script;
+    ``mb_crawler`` and ``mb.cli`` cover pre-rename installs.
     """
     try:
         result = subprocess.run(
@@ -48,7 +56,7 @@ def _is_mb_cli_process(pid: int) -> bool:
         cmdline = result.stdout.strip()
         return any(
             k in cmdline
-            for k in ("mb-cli", "mb_cli", "mb_crawler", "mb.cli")
+            for k in ("tahuti", "mb_cli", "mb_crawler", "mb.cli")
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -164,7 +172,7 @@ class ServiceManager:
             self.clean_pid()
             return {"stopped": False, "reason": "not_running"}
 
-        if verify_process and not _is_mb_cli_process(pid):
+        if verify_process and not _is_tahuti_process(pid):
             self.clean_pid()
             return {
                 "stopped": False,
@@ -215,7 +223,7 @@ class ServiceManager:
         else:
             return {
                 "installed": False,
-                "reason": f"Unsupported platform for auto-service: {system}. Use 'mb daemon run' or 'mb daemon start'.",
+                "reason": f"Unsupported platform for auto-service: {system}. Use 'tahuti daemon run' or 'tahuti daemon start'.",
             }
 
     def uninstall_service(self) -> dict[str, Any]:
@@ -232,12 +240,11 @@ class ServiceManager:
             }
 
     def _install_macos_launchd(self) -> dict[str, Any]:
-        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.managebac.crawler.plist"
+        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.tahuti.daemon.plist"
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         python_bin = sys.executable
-        mb_bin = shutil.which("mb") or f"{python_bin} -m mb_cli"
 
         args_xml = f"""    <string>{python_bin}</string>
     <string>-m</string>
@@ -250,7 +257,7 @@ class ServiceManager:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.managebac.crawler</string>
+    <string>com.tahuti.daemon</string>
     <key>ProgramArguments</key>
     <array>
 {args_xml}
@@ -276,7 +283,7 @@ class ServiceManager:
         }
 
     def _uninstall_macos_launchd(self) -> dict[str, Any]:
-        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.managebac.crawler.plist"
+        plist_path = Path.home() / "Library" / "LaunchAgents" / "com.tahuti.daemon.plist"
         if plist_path.exists():
             subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
             plist_path.unlink()
@@ -287,7 +294,7 @@ class ServiceManager:
         unit_dir = Path.home() / ".config" / "systemd" / "user"
         unit_dir.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        service_path = unit_dir / "mb-daemon.service"
+        service_path = unit_dir / "tahuti-daemon.service"
 
         python_bin = sys.executable
         content = f"""[Unit]
@@ -307,7 +314,7 @@ WantedBy=default.target
 """
         service_path.write_text(content, encoding="utf-8")
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-        res = subprocess.run(["systemctl", "--user", "enable", "--now", "mb-daemon"], capture_output=True, text=True)
+        res = subprocess.run(["systemctl", "--user", "enable", "--now", "tahuti-daemon"], capture_output=True, text=True)
         return {
             "installed": res.returncode == 0,
             "service_file": str(service_path),
@@ -315,9 +322,9 @@ WantedBy=default.target
         }
 
     def _uninstall_linux_systemd(self) -> dict[str, Any]:
-        service_path = Path.home() / ".config" / "systemd" / "user" / "mb-daemon.service"
+        service_path = Path.home() / ".config" / "systemd" / "user" / "tahuti-daemon.service"
         if service_path.exists():
-            subprocess.run(["systemctl", "--user", "disable", "--now", "mb-daemon"], capture_output=True)
+            subprocess.run(["systemctl", "--user", "disable", "--now", "tahuti-daemon"], capture_output=True)
             service_path.unlink()
             subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
             return {"uninstalled": True, "service_file": str(service_path)}

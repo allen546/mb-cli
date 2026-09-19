@@ -1,4 +1,4 @@
-"""Shared fixtures for mb-cli tests."""
+"""Shared fixtures for tahuti tests."""
 
 from __future__ import annotations
 
@@ -8,6 +8,123 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ── Global user-state isolation ──────────────────────────────────────────
+#
+# Running this suite used to be able to destroy the operator's live
+# credentials. `test_main.TestMainLogout.test_logout` redirected
+# MB_CRAWLER_CONFIG and MB_CRAWLER_SESSION into a tmp_path but not
+# MB_CRAWLER_CREDS_PATH, so `cmd_logout`'s `resolve_creds_path()` call fell
+# through to the real ~/.config/tahuti/creds.json and `clear_creds()` unlinked
+# the operator's ManageBac password. A test run must never be able to reach
+# the real ~/.config/tahuti/, so every test gets the isolation below whether it
+# asks for it or not.
+#
+# Two kinds of path need redirecting, and the environment alone reaches only
+# one of them:
+#
+# 1. Read at *call* time by `config.resolve_*_path()`. Setting the variable is
+#    sufficient.
+# 2. Bound at *import* time. `DEFAULT_CACHE_DIR`, `DEFAULT_SNAPSHOT_PATH`,
+#    `DEFAULT_STATE_PATH`, `DEFAULT_PID_PATH`, `DEFAULT_LOG_PATH` and
+#    `DEFAULT_DAEMON_PATH` are module-level constants computed from
+#    `config_dir()` when their module is first imported. No environment
+#    variable can reach them, so each one is patched in place. Note that
+#    `daemon/__init__.py` does `from .system import DEFAULT_PID_PATH`, which
+#    creates a *second*, independent binding for the same value — both
+#    namespaces are listed, or half the daemon paths would stay pointed at the
+#    operator's home directory.
+#
+# The redirect target keeps the real on-disk layout (`~/.config/tahuti/...`)
+# and `HOME` is pointed at the same tmp_path, so tests that legitimately
+# assert "this default lives under the user's config directory" keep passing
+# against the sandbox instead of having to be weakened into tautologies.
+
+# Captured at import time, before any fixture can redirect it. Read-only: this
+# is the location the tests below must prove they never touch, so it is
+# deliberately never stat'd, written, or unlinked.
+_REAL_HOME = Path.home()
+REAL_CONFIG_DIR = _REAL_HOME / ".config" / "tahuti"
+
+# (env var, filename under the redirected config dir) — read at call time.
+_CALL_TIME_PATH_ENV_VARS: tuple[tuple[str, str], ...] = (
+    ("MB_CRAWLER_CONFIG", "config.json"),
+    ("MB_CRAWLER_SESSION", "session.json"),
+    ("MB_CRAWLER_CREDS_PATH", "creds.json"),
+)
+
+# Credential/behaviour switches that a developer's shell may leak into the
+# suite. Cleared rather than set, so tests that want one can opt back in.
+_CREDENTIAL_ENV_VARS: tuple[str, ...] = (
+    "MB_CRAWLER_PASSWORD",
+    "MB_CRAWLER_COOKIE",
+    "MB_CRAWLER_KEYCHAIN",
+    "MB_CRAWLER_NO_PERM_WARN",
+)
+
+
+def _redirected_paths(config_dir: Path) -> dict[str, Path]:
+    """Every import-time path constant, mapped to its sandboxed value."""
+    return {
+        "mb_cli.config.CONFIG_DIR": config_dir,
+        "mb_cli.config.DEFAULT_CONFIG_PATH": config_dir / "config.json",
+        "mb_cli.config.DEFAULT_SESSION_PATH": config_dir / "session.json",
+        "mb_cli.config.DEFAULT_CREDS_PATH": config_dir / "creds.json",
+        "mb_cli.cache.DEFAULT_CACHE_DIR": config_dir / "cache",
+        "mb_cli.__main__.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
+        "mb_cli.daemon.DEFAULT_DAEMON_PATH": config_dir / "daemon.json",
+        "mb_cli.daemon.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
+        "mb_cli.daemon.state.DEFAULT_STATE_PATH": config_dir / "daemon_state.json",
+        "mb_cli.daemon.system.DEFAULT_PID_PATH": config_dir / "daemon.pid",
+        "mb_cli.daemon.system.DEFAULT_LOG_PATH": config_dir / "daemon.log",
+        # `daemon/__init__.py` re-exports these two under its own names.
+        "mb_cli.daemon.DEFAULT_PID_PATH": config_dir / "daemon.pid",
+        "mb_cli.daemon.DEFAULT_LOG_PATH": config_dir / "daemon.log",
+    }
+
+
+@pytest.fixture()
+def real_user_config_dir() -> Path:
+    """The operator's real config dir, for asserting a test never touched it."""
+    return REAL_CONFIG_DIR
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_state(tmp_path: Path, monkeypatch):
+    """Sandbox every path this package persists to, for every test.
+
+    Autouse and unconditional so no test can forget it and no test can opt out
+    by omission. A test that *wants* a different location can still have one:
+    its own ``monkeypatch.setenv`` / ``setattr`` runs after this fixture, so a
+    per-test override always wins over the sandbox default.
+    """
+    config_dir = tmp_path / ".config" / "tahuti"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    for var, filename in _CALL_TIME_PATH_ENV_VARS:
+        monkeypatch.setenv(var, str(config_dir / filename))
+    for var in _CREDENTIAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    for target, value in _redirected_paths(config_dir).items():
+        # Dotted-string form: imports the module on demand and fails loudly if
+        # a constant is ever renamed, instead of silently leaving it live.
+        monkeypatch.setattr(target, value)
+
+    # Redirecting HOME catches the `Path.home()` calls that no constant covers
+    # — the launchd plist and the systemd user unit in daemon/system.py — and
+    # keeps `Path.home() / ".config" / "tahuti"` agreeing with the constants
+    # above. Windows resolves the profile from these instead of HOME.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    # No test may reach a real OS credential store. `keychain.available()` is
+    # the fallback `_load_creds()` consults when creds.json is missing, so a
+    # helper that happens to be installed on the dev box would otherwise be
+    # queried for the operator's password.
+    monkeypatch.setattr("mb_cli.keychain._tool", lambda: None)
+
+    yield config_dir
 
 
 @pytest.fixture()

@@ -1,5 +1,6 @@
 """Tests for main daemon service orchestration."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 from mb_cli.daemon.events import DaemonConfig, MBEvent, WebhookConfig
@@ -74,7 +75,10 @@ def test_daemon_service_live_submission_check(tmp_path: Path):
         "task_id": "777",
         "class_id": "1000014",
         "title": "Calculus Worksheet",
-        "due_date": due_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        # isoformat() keeps the offset: parse_due_date returns aware datetimes,
+        # and a strftime'd string carrying no offset would be read as the host's
+        # local time rather than this test's UTC frame.
+        "due_date": due_dt.isoformat(),
         "status": "not-submitted",
         "has_submit_button": True,
     }
@@ -286,3 +290,207 @@ def test_daemon_service_standardizes_emitted_task_events(tmp_path: Path):
     assert ev.data["grade_letter"] is None
     assert ev.data["grade_score"] is None
     assert ev.data["url"] == "https://school.managebac.cn/student/classes/77777/core_tasks/55555"
+
+
+# ── Active-hours gating ──────────────────────────────────────────────────
+
+from datetime import datetime
+from unittest.mock import patch
+
+
+def _service(tmp_path: Path, **config_kwargs) -> DaemonService:
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    return DaemonService(
+        client=mock_client,
+        config=DaemonConfig(**config_kwargs),
+        state_manager=DaemonStateManager(tmp_path / "state.json"),
+        provider=MockProvider([]),
+    )
+
+
+def test_no_windows_means_always_active(tmp_path: Path):
+    """The default must stay poll-every-interval: gating is opt-in."""
+    service = _service(tmp_path)
+    assert service.config.active_windows == []
+    assert service._in_active_window() is True
+
+
+def test_window_excluding_now_blocks_polling(tmp_path: Path):
+    # A window that already closed today (09:00-10:00 against a frozen 12:00).
+    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+        service = _service(tmp_path, active_windows=[["09:00", "10:00"]])
+        assert service._in_active_window() is False
+
+
+def test_window_containing_now_allows_polling(tmp_path: Path):
+    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+        service = _service(tmp_path, active_windows=[["09:00", "17:00"]])
+        assert service._in_active_window() is True
+
+
+def test_malformed_window_fails_open(tmp_path: Path):
+    """A typo in daemon.json must not silently stop the notifier."""
+    service = _service(tmp_path, active_windows=[["not-a-time", "23:00"]])
+    assert service._in_active_window() is True
+
+
+def test_start_does_not_poll_outside_active_window(tmp_path: Path):
+    """`--active-hours-*` used to be accepted and then ignored by the loop."""
+    polls: list[int] = []
+
+    class _CountingProvider(MockProvider):
+        def poll_events(self):
+            polls.append(1)
+            return []
+
+    mock_client = MagicMock()
+    mock_client.get_tasks_by_view.return_value = []
+    service = DaemonService(
+        client=mock_client,
+        config=DaemonConfig(active_windows=[["09:00", "10:00"]]),
+        state_manager=DaemonStateManager(tmp_path / "state.json"),
+        provider=_CountingProvider([]),
+    )
+
+    def _sleep(seconds):
+        # A real daemon would sleep for hours here; stop the test instead.
+        service._running = False
+
+    with (
+        patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)),
+        patch("mb_cli.daemon.service.time.sleep", side_effect=_sleep),
+    ):
+        service.start()
+
+    assert polls == []
+
+
+def test_active_windows_round_trip_through_the_config():
+    from mb_cli.daemon.events import DaemonConfig
+
+    config = DaemonConfig.from_dict({"active_windows": [["09:00", "17:00"]]})
+    assert config.active_windows == [["09:00", "17:00"]]
+    assert config.to_dict()["active_windows"] == [["09:00", "17:00"]]
+    # A missing or junk value means "no gating", not a crash.
+    assert DaemonConfig.from_dict({}).active_windows == []
+    assert DaemonConfig.from_dict({"active_windows": None}).active_windows == []
+    assert DaemonConfig.from_dict({"active_windows": ["nonsense"]}).active_windows == []
+
+
+# ── `--dry-run` must not persist dedup state ────────────────────────────────
+
+
+def test_dry_run_does_not_persist_the_notifications_it_handled(tmp_path: Path):
+    """A dry run must not consume the notifications it only previewed.
+
+    `dry_run` used to reach the dispatcher and nothing else, so
+    `run_check_cycle` still called `mark_notification_processed` followed by
+    `state_manager.save()`. Marking a notification processed is precisely what
+    makes it invisible to the *next* run, so one dry run silently swallowed the
+    real delivery of every notification it looked at.
+    """
+    state_path = tmp_path / "state.json"
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=DaemonStateManager(state_path),
+        provider=MockProvider(
+            [
+                MBEvent(
+                    event="task_created",
+                    data={"notification_id": 5150, "title": "Real assignment"},
+                )
+            ]
+        ),
+        dry_run=True,
+    )
+    # The alert is still computed and dispatched in-memory — a dry run's whole
+    # job is to show that work.
+    service.dispatcher.dispatch = MagicMock(return_value=[])
+    res = service.run_check_cycle()
+    assert res["new_notifications"] == 1
+
+    # In-memory dedup works for the length of the run, so one cycle cannot
+    # process the same notification twice...
+    assert service.state_manager.is_notification_processed(5150)
+    # ...but nothing reached disk.
+    assert not state_path.exists(), "a dry run must not write daemon state"
+
+    # The payoff: a real run over the same notification still delivers it.
+    real = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=DaemonStateManager(state_path),
+        provider=MockProvider(
+            [
+                MBEvent(
+                    event="task_created",
+                    data={"notification_id": 5150, "title": "Real assignment"},
+                )
+            ]
+        ),
+        dry_run=False,
+    )
+    delivered = MagicMock(return_value=[{"success": True, "retryable": False}])
+    real.dispatcher.dispatch = delivered
+    assert real.run_check_cycle()["new_notifications"] == 1
+    delivered.assert_called_once()
+    assert 5150 in json.loads(state_path.read_text())["processed_notification_ids"]
+
+
+def test_dry_run_silences_an_injected_state_manager_too(tmp_path: Path):
+    """The guarantee cannot depend on who built the manager.
+
+    `start_loop` injects its own `DaemonStateManager`, so gating only the
+    default-constructed one would leave the daemon's real entry point exposed.
+    """
+    injected = DaemonStateManager(tmp_path / "state.json")
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=injected,
+        provider=MockProvider(
+            [MBEvent(event="task_created", data={"notification_id": 6, "title": "T"})]
+        ),
+        dry_run=True,
+    )
+    service.dispatcher.dispatch = MagicMock(return_value=[])
+    service.run_check_cycle()
+
+    assert injected.persist is False
+    assert not (tmp_path / "state.json").exists()
+    # Dedup within the single dry run is unaffected.
+    assert injected.is_notification_processed(6)
+
+
+def test_real_run_still_persists_state(tmp_path: Path):
+    """Control: without `dry_run`, state must still reach disk, or the daemon
+    would re-deliver every notification on every poll."""
+    state_path = tmp_path / "state.json"
+    config = DaemonConfig(
+        webhooks=[WebhookConfig(url="https://webhook.example.invalid/hook")]
+    )
+    manager = DaemonStateManager(state_path)
+    service = DaemonService(
+        client=MagicMock(),
+        config=config,
+        state_manager=manager,
+        provider=MockProvider(
+            [MBEvent(event="task_created", data={"notification_id": 7, "title": "T"})]
+        ),
+        dry_run=False,
+    )
+    service.dispatcher.dispatch = MagicMock(
+        return_value=[{"success": True, "retryable": False}]
+    )
+    service.run_check_cycle()
+
+    assert manager.persist is True
+    assert 7 in json.loads(state_path.read_text())["processed_notification_ids"]
