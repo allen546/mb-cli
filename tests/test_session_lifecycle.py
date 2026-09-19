@@ -29,12 +29,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli import auth, keychain
-from mb_cli import client as client_module
-from mb_cli import __main__ as main_module
-from mb_cli.auth import build_client
-from mb_cli.__main__ import build_parser, main
-from mb_cli.config import (
+from tahuti import auth, keychain
+from tahuti import client as client_module
+from tahuti import __main__ as main_module
+from tahuti.auth import build_client
+from tahuti.__main__ import build_parser, main
+from tahuti.config import (
     all_creds_paths,
     creds_filename,
     creds_paths,
@@ -47,7 +47,7 @@ from mb_cli.config import (
     save_creds,
     warn_on_weak_permissions,
 )
-from mb_cli.exceptions import CommandError
+from tahuti.exceptions import CommandError
 
 # Both spellings of every path variable, so neither a current one nor a leaked
 # pre-rename one from the developer's shell can reach these tests.
@@ -110,9 +110,9 @@ class FakeManageBac:
 def _client_classes() -> tuple[type, ...]:
     """Every distinct class object currently named ``ManageBacClient``.
 
-    ``tests/test_client.py`` reloads ``mb_cli.client`` at import time so the
+    ``tests/test_client.py`` reloads ``tahuti.client`` at import time so the
     worktree's ``src`` wins over an editable install. A reload rebinds the
-    module attribute to a *new* class object while ``mb_cli.auth`` keeps the one
+    module attribute to a *new* class object while ``tahuti.auth`` keeps the one
     it bound when it was first imported, so in a full run the name refers to two
     different classes. Patching only the one imported here would leave the class
     ``build_client`` instantiates talking to the real network — invisible when
@@ -414,7 +414,7 @@ class TestNoRememberMe:
         _write_session(cookie="dead-cookie")
         save_creds(default_creds_path(), EMAIL, PASSWORD)
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
+        with patch("tahuti.auth._is_session_alive", return_value=False):
             build_client(school=SCHOOL, password=None, remember_me=None)
 
         assert "remember_me" not in managebac.last_body
@@ -430,7 +430,7 @@ class TestDeadCookieWithoutAPassword:
         before = resolve_session_path().read_text(encoding="utf-8")
 
         with (
-            patch("mb_cli.auth._is_session_alive", return_value=False),
+            patch("tahuti.auth._is_session_alive", return_value=False),
             pytest.raises(CommandError) as exc_info,
         ):
             build_client(school=SCHOOL, password=None)
@@ -448,7 +448,7 @@ class TestDeadCookieWithoutAPassword:
         _write_session(cookie="dead-cookie", profile="school")
 
         with (
-            patch("mb_cli.auth._is_session_alive", return_value=False),
+            patch("tahuti.auth._is_session_alive", return_value=False),
             pytest.raises(CommandError) as exc_info,
         ):
             build_client(school=SCHOOL, profile="school", password=None)
@@ -463,9 +463,9 @@ class TestDeadCookieWithoutAPassword:
         _write_session(cookie="dead-cookie")
         state, client, _email = build_client(school=SCHOOL, cookie="live-cookie")
 
-        from mb_cli.__main__ import _build_client  # noqa: F401  (import sanity)
+        from tahuti.__main__ import _build_client  # noqa: F401  (import sanity)
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
+        with patch("tahuti.auth._is_session_alive", return_value=False):
             with pytest.raises(CommandError) as exc_info:
                 auth.refresh_session(client, state)
         assert "tahuti login --keep-credentials" in exc_info.value.message
@@ -479,7 +479,7 @@ class TestDeadCookieWithAPassword:
         _write_session(cookie="dead-cookie")
         save_creds(default_creds_path(), EMAIL, PASSWORD)
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
+        with patch("tahuti.auth._is_session_alive", return_value=False):
             state, client, email = build_client(school=SCHOOL, password=None)
 
         assert email == EMAIL
@@ -492,7 +492,7 @@ class TestDeadCookieWithAPassword:
         _write_session(cookie="dead-cookie")
         save_creds(default_creds_path(), EMAIL, PASSWORD)
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
+        with patch("tahuti.auth._is_session_alive", return_value=False):
             state, client, _email = build_client(school=SCHOOL, password=None)
         _write_session(cookie="dead-again")  # another expiry, later
 
@@ -516,8 +516,8 @@ class TestDeadCookieWithAPassword:
         # `login()` reports rejected credentials.
         managebac.reject_next_login()
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
-            with patch("mb_cli.auth.save_session") as save_session:
+        with patch("tahuti.auth._is_session_alive", return_value=False):
+            with patch("tahuti.auth.save_session") as save_session:
                 with pytest.raises(CommandError) as exc_info:
                     build_client(school=SCHOOL, password=None)
 
@@ -716,7 +716,7 @@ class TestLegacyCredsFallback:
         _write_session(cookie="dead-cookie", profile="school")
         save_creds(legacy_creds_path(), "legacy@example.com", PASSWORD)
 
-        with patch("mb_cli.auth._is_session_alive", return_value=False):
+        with patch("tahuti.auth._is_session_alive", return_value=False):
             state, client, email = build_client(
                 school=SCHOOL, profile="school", password=None
             )
@@ -846,13 +846,13 @@ class TestEnvVarRename:
         assert captured["cookie"] == "env-new"
 
     def test_the_daemon_child_receives_the_new_name(self, state_dir):
-        from mb_cli.__main__ import cmd_daemon_start
+        from tahuti.__main__ import cmd_daemon_start
 
         args = build_parser().parse_args(
             ["daemon", "start", "-b", "--password", "pw123", "--cookie", "cookieval"]
         )
         with patch(
-            "mb_cli.daemon.system.ServiceManager.start_background",
+            "tahuti.daemon.system.ServiceManager.start_background",
             return_value={"started": True},
         ) as start:
             assert cmd_daemon_start(args) == 0
@@ -875,7 +875,7 @@ def _loose_session(tmp_path, monkeypatch) -> Path:
 
 def _read_secret_env(monkeypatch, values: dict) -> dict:
     """What ``_build_client`` resolves the password/cookie environment to."""
-    from mb_cli.__main__ import _build_client
+    from tahuti.__main__ import _build_client
 
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -899,8 +899,8 @@ def _read_secret_env(monkeypatch, values: dict) -> dict:
     state = MagicMock()
     state.session.cookie = None
     with (
-        patch("mb_cli.__main__.build_client", fake_build),
-        patch("mb_cli.__main__.load_state", return_value=state),
+        patch("tahuti.__main__.build_client", fake_build),
+        patch("tahuti.__main__.load_state", return_value=state),
     ):
         with pytest.raises(SystemExit):
             _build_client(args, "list")

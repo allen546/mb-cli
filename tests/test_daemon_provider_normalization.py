@@ -12,7 +12,7 @@ The second block covers the ``notif_id`` defect: ``MNNHubProvider`` put
 ``item["id"]`` straight into ``event_id`` and ``data["notification_id"]`` without
 validating it, and ``DaemonService.run_check_cycle`` calls ``int()`` on that
 value at three places inside one ``try`` that wraps the whole event loop
-(``src/mb_cli/daemon/service.py:217``, ``:308``, ``:356``).
+(``src/tahuti/daemon/service.py:217``, ``:308``, ``:356``).
 
 Everything is mocked; nothing touches the network or the filesystem outside a
 ``tmp_path`` state file.
@@ -28,11 +28,11 @@ import requests
 import requests_mock
 from bs4 import BeautifulSoup
 
-from mb_cli.client import ManageBacClient
-from mb_cli.daemon.events import MBEvent
-from mb_cli.daemon.provider import MNNHubProvider
-from mb_cli.daemon.service import DaemonService
-from mb_cli.daemon.state import DaemonStateManager
+from tahuti.client import ManageBacClient
+from tahuti.daemon.events import MBEvent
+from tahuti.daemon.provider import MNNHubProvider
+from tahuti.daemon.service import DaemonService
+from tahuti.daemon.state import DaemonStateManager
 
 
 HUB = "https://mnn-hub.prod.faria.cn"
@@ -314,8 +314,8 @@ def _run_cycle(tmp_path: Path, events: list[MBEvent]) -> dict:
     swallows the resulting ValueError, so a provider-level test cannot see the
     damage it does.
     """
-    from mb_cli.daemon.events import DaemonConfig
-    from mb_cli.daemon.provider import AbstractNotificationProvider
+    from tahuti.daemon.events import DaemonConfig
+    from tahuti.daemon.provider import AbstractNotificationProvider
 
     class StubProvider(AbstractNotificationProvider):
         def __init__(self):

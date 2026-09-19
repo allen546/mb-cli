@@ -3,10 +3,10 @@
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
-from mb_cli.daemon.events import DaemonConfig, MBEvent, WebhookConfig
-from mb_cli.daemon.provider import AbstractNotificationProvider
-from mb_cli.daemon.service import DaemonService
-from mb_cli.daemon.state import DaemonStateManager
+from tahuti.daemon.events import DaemonConfig, MBEvent, WebhookConfig
+from tahuti.daemon.provider import AbstractNotificationProvider
+from tahuti.daemon.service import DaemonService
+from tahuti.daemon.state import DaemonStateManager
 
 
 class MockProvider(AbstractNotificationProvider):
@@ -224,7 +224,7 @@ def test_daemon_service_protects_task_title_against_class_name(tmp_path: Path):
 
 
 def test_daemon_service_standardizes_emitted_task_events(tmp_path: Path):
-    from mb_cli.daemon.events import STANDARD_TASK_FIELDS
+    from tahuti.daemon.events import STANDARD_TASK_FIELDS
 
     mock_client = MagicMock()
     mock_client.base = "https://school.managebac.cn"
@@ -318,13 +318,13 @@ def test_no_windows_means_always_active(tmp_path: Path):
 
 def test_window_excluding_now_blocks_polling(tmp_path: Path):
     # A window that already closed today (09:00-10:00 against a frozen 12:00).
-    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+    with patch("tahuti.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
         service = _service(tmp_path, active_windows=[["09:00", "10:00"]])
         assert service._in_active_window() is False
 
 
 def test_window_containing_now_allows_polling(tmp_path: Path):
-    with patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
+    with patch("tahuti.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)):
         service = _service(tmp_path, active_windows=[["09:00", "17:00"]])
         assert service._in_active_window() is True
 
@@ -358,8 +358,8 @@ def test_start_does_not_poll_outside_active_window(tmp_path: Path):
         service._running = False
 
     with (
-        patch("mb_cli.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)),
-        patch("mb_cli.daemon.service.time.sleep", side_effect=_sleep),
+        patch("tahuti.daemon._now_local", return_value=datetime(2026, 9, 18, 12, 0)),
+        patch("tahuti.daemon.service.time.sleep", side_effect=_sleep),
     ):
         service.start()
 
@@ -367,7 +367,7 @@ def test_start_does_not_poll_outside_active_window(tmp_path: Path):
 
 
 def test_active_windows_round_trip_through_the_config():
-    from mb_cli.daemon.events import DaemonConfig
+    from tahuti.daemon.events import DaemonConfig
 
     config = DaemonConfig.from_dict({"active_windows": [["09:00", "17:00"]]})
     assert config.active_windows == [["09:00", "17:00"]]

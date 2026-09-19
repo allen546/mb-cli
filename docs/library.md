@@ -59,7 +59,7 @@ uv sync --group dev
 Top-level library exports:
 
 ```python
-from mb_cli import (
+from tahuti import (
     ManageBacClient,
     ManageBacDaemon,
     MBEvent,
@@ -74,7 +74,7 @@ from mb_cli import (
 ### Synchronous Task Inspection
 
 ```python
-from mb_cli import ManageBacClient
+from tahuti import ManageBacClient
 
 # Initialize client using saved credentials from the CLI
 # (config.json / session.json under ~/.config/tahuti/, or wherever
@@ -91,7 +91,7 @@ for task in data.get("upcoming", []):
 
 ```python
 import asyncio
-from mb_cli import ManageBacClient, ManageBacDaemon
+from tahuti import ManageBacClient, ManageBacDaemon
 
 async def main():
     client = ManageBacClient.from_config()
@@ -328,7 +328,7 @@ The `ManageBacDaemon` provides an in-process, non-blocking asynchronous event ge
 
 ```python
 import asyncio
-from mb_cli import ManageBacClient, ManageBacDaemon
+from tahuti import ManageBacClient, ManageBacDaemon
 
 async def event_listener():
     client = ManageBacClient.from_config()
@@ -419,7 +419,7 @@ notices. This is a **REST** API (`/api/frontend/v2`) polled on an interval — i
 not a push or WebSocket channel.
 
 ```python
-from mb_cli import ManageBacClient, MNNHubClient
+from tahuti import ManageBacClient, MNNHubClient
 
 client = ManageBacClient.from_config()
 
@@ -447,10 +447,10 @@ mnn.mark_all_read()
 
 ## 11. Status Enums & Classification
 
-`mb_cli.task_status` provides standard enums to classify tasks reliably:
+`tahuti.task_status` provides standard enums to classify tasks reliably:
 
 ```python
-from mb_cli.task_status import (
+from tahuti.task_status import (
     SubmissionStatus,
     GradeStatus,
     LifecycleStatus,
@@ -459,7 +459,7 @@ from mb_cli.task_status import (
 )
 
 # Check if a task is submitted or has an offline submission
-from mb_cli.filters import is_task_submitted
+from tahuti.filters import is_task_submitted
 
 if is_task_submitted(task_dict):
     print("Work already submitted!")
@@ -496,7 +496,7 @@ grades = client.get_class_grades(class_id="1000023", bypass_cache=True)
 
 ```python
 import asyncio
-from mb_cli import ManageBacClient, ManageBacDaemon
+from tahuti import ManageBacClient, ManageBacDaemon
 
 async def sync_loop():
     client = ManageBacClient.from_config()
@@ -526,7 +526,7 @@ if __name__ == "__main__":
 ### Recipe 2: Automated Homework Submission Pipeline
 
 ```python
-from mb_cli import ManageBacClient
+from tahuti import ManageBacClient
 
 client = ManageBacClient.from_config()
 

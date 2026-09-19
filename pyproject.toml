@@ -51,10 +51,10 @@ dev = [
 ]
 
 [project.scripts]
-tahuti = "mb_cli.__main__:main"
-tahuti-mcp = "mb_cli.mcp_server:main"
-mb = "mb_cli.__main__:main"        # alias (pre-rename command, still supported)
-mb-mcp = "mb_cli.mcp_server:main"  # alias
+tahuti = "tahuti.__main__:main"
+tahuti-mcp = "tahuti.mcp_server:main"
+mb = "tahuti.__main__:main"        # alias (pre-rename command, still supported)
+mb-mcp = "tahuti.mcp_server:main"  # alias
 
 [project.urls]
 Homepage = "https://github.com/allen546/tahuti"
@@ -101,4 +101,4 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["/src/mb_cli"]
+packages = ["/src/tahuti"]

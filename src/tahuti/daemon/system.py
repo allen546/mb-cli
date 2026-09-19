@@ -175,11 +175,12 @@ def _is_tahuti_process(pid: int) -> bool:
     signal to be delivered to an unrelated process.  Only the full module and
     package names are accepted.
 
-    ``mb_cli`` stays in the list because it is what ``start_background``
-    actually spawns (``python -m mb_cli daemon run``) and what the generated
-    launchd plist and systemd unit exec — the import path is deliberately not
-    renamed.  ``tahuti`` covers a daemon started from the console script;
-    ``mb_crawler`` and ``mb.cli`` cover pre-rename installs.
+    ``tahuti`` is first because it is what ``start_background`` actually spawns
+    (``python -m tahuti daemon run``) and what the generated launchd plist and
+    systemd unit exec. The rest are the names an older install may still be
+    running under, so a daemon started before an upgrade is still recognised as
+    ours rather than being reported as a foreign process holding the PID file:
+    ``mb_cli`` (the import path before 0.4.2), ``mb_crawler`` and ``mb.cli``.
     """
     try:
         result = subprocess.run(
@@ -299,7 +300,7 @@ class ServiceManager:
             child_env = os.environ.copy()
             child_env.update(env)
 
-        cmd = [sys.executable, "-m", "mb_cli", "daemon", "run"]
+        cmd = [sys.executable, "-m", "tahuti", "daemon", "run"]
         if extra_args:
             cmd.extend(extra_args)
 
@@ -375,7 +376,7 @@ class ServiceManager:
             self.clean_pid(expected_pid=pid)
             return {
                 "stopped": False,
-                "reason": "not_mb_cli_process",
+                "reason": "not_tahuti_process",
                 "pid": pid,
             }
 
@@ -438,7 +439,7 @@ class ServiceManager:
 
         args_xml = f"""    <string>{python_bin}</string>
     <string>-m</string>
-    <string>mb_cli</string>
+    <string>tahuti</string>
     <string>daemon</string>
     <string>run</string>"""
 
@@ -493,7 +494,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={python_bin} -m mb_cli daemon run
+ExecStart={python_bin} -m tahuti daemon run
 Restart=on-failure
 RestartSec=30
 StandardOutput=append:{self.log_path}

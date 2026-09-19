@@ -41,7 +41,7 @@ Currently, task status and completion are evaluated in multiple places using div
 
 ### 3.1 Architecture Overview
 
-We introduce a dedicated domain module: `src/mb_cli/task_status.py`.
+We introduce a dedicated domain module: `src/tahuti/task_status.py`.
 
 ```
                   ┌────────────────────────────────────────────────────────┐
@@ -51,7 +51,7 @@ We introduce a dedicated domain module: `src/mb_cli/task_status.py`.
                                              │
                                              ▼
                   ┌────────────────────────────────────────────────────────┐
-                  │            src/mb_cli/task_status.py                   │
+                  │            src/tahuti/task_status.py                   │
                   │            (Single Source of Truth)                    │
                   ├────────────────────────────────────────────────────────┤
                   │ 1. SubmissionStatus: SUBMITTED | PENDING | NONE        │
@@ -68,7 +68,7 @@ We introduce a dedicated domain module: `src/mb_cli/task_status.py`.
                  └────────────────────────┘        └───────────────────────┘
 ```
 
-### 3.2 Domain Model (`src/mb_cli/task_status.py`)
+### 3.2 Domain Model (`src/tahuti/task_status.py`)
 
 #### Enums
 ```python
@@ -137,7 +137,7 @@ class GradeStatus(str, Enum):
 
 ---
 
-## 4. Ingestion Fixes (`src/mb_cli/client.py`)
+## 4. Ingestion Fixes (`src/tahuti/client.py`)
 
 1. **Submit Button Detection**:
    In `client.py:get_class_grades` and `get_task_detail`:
@@ -165,15 +165,15 @@ class GradeStatus(str, Enum):
 
 ## 5. Consumer Refactoring
 
-1. **`src/mb_cli/formatters.py`**:
+1. **`src/tahuti/formatters.py`**:
    - `cmd_list`: replace local `get_grade_display` with `get_task_display_grade`.
    - `cmd_view`: use `get_task_display_grade` for grade, and `get_task_display_status` for status.
    - `cmd_grades` & `cmd_grades_all`: use `get_task_display_grade`.
-2. **`src/mb_cli/filters.py`**:
+2. **`src/tahuti/filters.py`**:
    - Re-export `is_task_submitted`, `is_task_completed`, `classify_task_view`, and alias `is_task_unfinished = is_task_todo` to preserve full backward compatibility for any existing code or tests.
    - Update `matches_graded(task, graded)`: check `get_grade_status(task) == GradeStatus.GRADED`.
    - Update `matches_completed(task, completed)`: check `is_task_completed(task) == completed`.
-3. **`src/mb_cli/daemon/`**:
+3. **`src/tahuti/daemon/`**:
    - Use `is_task_submitted(task)` and `is_task_todo(task)` in `service.py` and `scheduler.py`.
 
 ---

@@ -25,9 +25,9 @@ import pytest
 import requests
 import requests_mock
 
-from mb_cli.daemon import webhook as webhook_module
-from mb_cli.daemon.events import MBEvent, WebhookConfig
-from mb_cli.daemon.webhook import (
+from tahuti.daemon import webhook as webhook_module
+from tahuti.daemon.events import MBEvent, WebhookConfig
+from tahuti.daemon.webhook import (
     OUTCOME_PERMANENT_FAILURE,
     OUTCOME_SUCCESS,
     OUTCOME_TRANSIENT_FAILURE,
@@ -319,7 +319,7 @@ def test_slack_token_is_never_written_to_the_log(caplog):
 
     with requests_mock.Mocker() as m:
         m.post(SLACK_URL, status_code=200)
-        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+        with caplog.at_level(logging.DEBUG, logger="tahuti.daemon.webhook"):
             dispatcher.dispatch(_event())
 
     logged = caplog.text
@@ -337,7 +337,7 @@ def test_credential_is_not_logged_on_failure_or_refusal(caplog):
 
     with requests_mock.Mocker() as m:
         m.post(BARK_URL, status_code=503, text="upstream down")
-        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+        with caplog.at_level(logging.DEBUG, logger="tahuti.daemon.webhook"):
             dispatcher.dispatch(_event())
 
     assert "ctAbCdEfGhIjKlMnOpQrSt" not in caplog.text
@@ -346,7 +346,7 @@ def test_credential_is_not_logged_on_failure_or_refusal(caplog):
         url="ftp://api.day.app/ctAbCdEfGhIjKlMnOpQrSt/hook", secret=FAKE_SECRET
     )
     with requests_mock.Mocker() as m:
-        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+        with caplog.at_level(logging.DEBUG, logger="tahuti.daemon.webhook"):
             WebhookDispatcher(webhooks=[bad]).dispatch(_event())
     assert "ctAbCdEfGhIjKlMnOpQrSt" not in caplog.text
 
@@ -685,7 +685,7 @@ def test_missing_secret_is_reported_not_silent(caplog):
 
     with requests_mock.Mocker() as m:
         m.post(wh.url, status_code=200)
-        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+        with caplog.at_level(logging.DEBUG, logger="tahuti.daemon.webhook"):
             results = dispatcher.dispatch(_event())
 
     assert results[0]["success"] is True
@@ -704,7 +704,7 @@ def test_missing_secret_is_warned_about_once_per_endpoint(caplog):
 
     with requests_mock.Mocker() as m:
         m.post(wh.url, status_code=200)
-        with caplog.at_level(logging.DEBUG, logger="mb_cli.daemon.webhook"):
+        with caplog.at_level(logging.DEBUG, logger="tahuti.daemon.webhook"):
             for _ in range(3):
                 results = dispatcher.dispatch(_event())
 

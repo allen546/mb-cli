@@ -81,7 +81,7 @@ jobs:
               tag_version=${tag_version#v}
               if [ "$tag_version" != "$py_version" ]; then
                 echo "::error::tag v$tag_version does not match pyproject version $py_version"
-                echo "::error::bump pyproject.toml and mb_cli.__version__, then re-tag"
+                echo "::error::bump pyproject.toml and tahuti.__version__, then re-tag"
                 exit 1
               fi
               echo "tag matches: v$tag_version"

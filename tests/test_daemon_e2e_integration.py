@@ -18,20 +18,20 @@ from unittest.mock import MagicMock, patch
 from bs4 import BeautifulSoup
 import pytest
 
-from mb_cli.__main__ import main
-from mb_cli.daemon.events import (
+from tahuti.__main__ import main
+from tahuti.daemon.events import (
     DaemonConfig,
     MBEvent,
     ReminderThreshold,
     StealthConfig,
     WebhookConfig,
 )
-from mb_cli.daemon.provider import MNNHubProvider
-from mb_cli.daemon.scheduler import DDLScheduler
-from mb_cli.daemon.service import DaemonService
-from mb_cli.daemon.state import DaemonStateManager
-from mb_cli.daemon.system import ServiceManager
-from mb_cli.daemon.webhook import WebhookDispatcher, signed_material
+from tahuti.daemon.provider import MNNHubProvider
+from tahuti.daemon.scheduler import DDLScheduler
+from tahuti.daemon.service import DaemonService
+from tahuti.daemon.state import DaemonStateManager
+from tahuti.daemon.system import ServiceManager
+from tahuti.daemon.webhook import WebhookDispatcher, signed_material
 
 
 class WebhookRecordingServer:
@@ -358,7 +358,7 @@ def test_e2e_cli_commands_subprocess(tmp_path: Path):
         cmd_cfg = [
             sys.executable,
             "-m",
-            "mb_cli",
+            "tahuti",
             "daemon",
             "configure-webhook",
             server.url,
@@ -377,7 +377,7 @@ def test_e2e_cli_commands_subprocess(tmp_path: Path):
         cmd_test = [
             sys.executable,
             "-m",
-            "mb_cli",
+            "tahuti",
             "daemon",
             "test-webhook",
             server.url,

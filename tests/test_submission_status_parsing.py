@@ -15,7 +15,7 @@ The contract this file pins:
 * ``status`` carries ManageBac's own spelling, verbatim.  The unsubmitted state
   is ``<span class="cell not-submitted">`` whose *text* is "Not Submitted" —
   capital N, capital S, a space where the token has a hyphen.
-* :func:`~mb_cli.task_status.get_submission_status` compares ``status`` by
+* :func:`~tahuti.task_status.get_submission_status` compares ``status`` by
   **exact lowercased string equality**.  So "not submitted" never matches
   "not-submitted", and on the class path PENDING is reached through
   ``has_submit_btn`` alone.  That asymmetry is load-bearing; see §"Why the
@@ -42,14 +42,14 @@ if sys.path[0] != worktree_src:
 
 import importlib
 
-import mb_cli
+import tahuti
 
-mb_cli_pkg_dir = str(Path(worktree_src) / "mb_cli")
-if hasattr(mb_cli, "__path__") and mb_cli_pkg_dir not in mb_cli.__path__:
-    mb_cli.__path__.insert(0, mb_cli_pkg_dir)
+tahuti_pkg_dir = str(Path(worktree_src) / "tahuti")
+if hasattr(tahuti, "__path__") and tahuti_pkg_dir not in tahuti.__path__:
+    tahuti.__path__.insert(0, tahuti_pkg_dir)
 
-if "mb_cli.client" in sys.modules:
-    importlib.reload(sys.modules["mb_cli.client"])
+if "tahuti.client" in sys.modules:
+    importlib.reload(sys.modules["tahuti.client"])
 
 from unittest.mock import patch
 
@@ -57,9 +57,9 @@ import pytest
 import requests_mock as rm
 from bs4 import BeautifulSoup
 
-from mb_cli.cache import ResponseCache
-from mb_cli.client import ManageBacClient, _is_submit_control
-from mb_cli.task_status import (
+from tahuti.cache import ResponseCache
+from tahuti.client import ManageBacClient, _is_submit_control
+from tahuti.task_status import (
     SUBMISSION_NOT_SUBMITTED,
     SUBMISSION_SUBMITTED,
     SubmissionStatus,

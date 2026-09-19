@@ -1,11 +1,11 @@
-"""Tests for mb_cli.notifications."""
+"""Tests for tahuti.notifications."""
 
 from __future__ import annotations
 
 import pytest
 import requests_mock
 
-from mb_cli.notifications import HUB_ENDPOINTS, MNNHubClient, hub_for_domain
+from tahuti.notifications import HUB_ENDPOINTS, MNNHubClient, hub_for_domain
 
 
 class TestHubForDomain:

@@ -11,6 +11,19 @@ never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 ## [Unreleased]
 
 ### Changed
+- **The Python import package is `tahuti`.** `0.4.1` renamed the distribution,
+  the CLI command and the repository but deliberately left the import path as
+  `mb_cli`, so `pip install tahuti` followed by `import tahuti` raised
+  `ModuleNotFoundError`. The package directory is now `src/tahuti/` and both
+  `import tahuti` and `python -m tahuti` work; `python -m mb_cli` and
+  `import mb_cli` no longer do.
+- **`TAHUTI_FORMAT` replaces `MB_CLI_FORMAT`** as the documented name for the
+  output-shape override. The old spelling is still read as a fallback and the
+  new one wins when both are set, matching how every `MB_CRAWLER_*` variable
+  already behaves — so an existing script does not break on upgrade.
+- The daemon's stop-status reason string for a reclaimed PID is now
+  `not_tahuti_process`, matching the `_is_tahuti_process` guard it reports on.
+
 - **`tahuti login` asks for the domain, school and email before the password.**
   A fresh device no longer has to know that `--school` and `--domain` exist:
   it is asked, in the order those values are actually used. The domain is

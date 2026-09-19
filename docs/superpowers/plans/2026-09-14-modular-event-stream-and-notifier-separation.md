@@ -14,7 +14,7 @@
 
 ```text
 mb-crawler/
-├── src/mb_cli/
+├── src/tahuti/
 │   ├── __init__.py                     # Modify: Export ManageBacDaemon alongside ManageBacClient
 │   ├── daemon/
 │   │   ├── __init__.py                 # Modify: Export ManageBacDaemon
@@ -107,8 +107,8 @@ git commit -m "refactor: extract bark webhook receiver and personal config to ex
 ### Task 2: Standardize `MBEvent` and Cleanse Daemon Event Generation
 
 **Files:**
-- Modify: `src/mb_cli/daemon/events.py`
-- Modify: `src/mb_cli/daemon/service.py`
+- Modify: `src/tahuti/daemon/events.py`
+- Modify: `src/tahuti/daemon/service.py`
 - Create: `tests/test_daemon_events.py`
 
 - [ ] **Step 1: Write tests for standard `MBEvent` factory and validation**
@@ -117,7 +117,7 @@ Create `tests/test_daemon_events.py`:
 ```python
 """Tests for standard MBEvent schema and factory methods."""
 
-from mb_cli.daemon.events import MBEvent
+from tahuti.daemon.events import MBEvent
 
 
 def test_standard_mbevent_serialization():
@@ -153,9 +153,9 @@ def test_standard_mbevent_serialization():
 Run: `pytest tests/test_daemon_events.py -v`
 Expected: PASS
 
-- [ ] **Step 3: Ensure `src/mb_cli/daemon/service.py` populates standard event data**
+- [ ] **Step 3: Ensure `src/tahuti/daemon/service.py` populates standard event data**
 
-Inspect `src/mb_cli/daemon/service.py` around event dispatch and ensure all events (`task_created`, `task_updated`, `task_graded`, `deadline_approaching`) populate `task_id`, `class_id`, `class_name`, `title`, `due_date`, `due_iso`, `has_submit_button`, `category`, `status`, `grade_letter`, `grade_score`, and `url` without opinionated Bark formatting.
+Inspect `src/tahuti/daemon/service.py` around event dispatch and ensure all events (`task_created`, `task_updated`, `task_graded`, `deadline_approaching`) populate `task_id`, `class_id`, `class_name`, `title`, `due_date`, `due_iso`, `has_submit_button`, `category`, `status`, `grade_letter`, `grade_score`, and `url` without opinionated Bark formatting.
 
 - [ ] **Step 4: Run tests to ensure no regressions**
 
@@ -165,7 +165,7 @@ Expected: PASS
 - [ ] **Step 5: Commit changes**
 
 ```bash
-git add src/mb_cli/daemon/ tests/test_daemon_events.py
+git add src/tahuti/daemon/ tests/test_daemon_events.py
 git commit -m "feat(daemon): standardize MBEvent payload schema"
 ```
 
@@ -174,9 +174,9 @@ git commit -m "feat(daemon): standardize MBEvent payload schema"
 ### Task 3: Implement `ManageBacDaemon.stream()` Async Generator SDK
 
 **Files:**
-- Create: `src/mb_cli/daemon/stream.py`
-- Modify: `src/mb_cli/daemon/__init__.py`
-- Modify: `src/mb_cli/__init__.py`
+- Create: `src/tahuti/daemon/stream.py`
+- Modify: `src/tahuti/daemon/__init__.py`
+- Modify: `src/tahuti/__init__.py`
 - Create: `tests/test_daemon_stream.py`
 
 - [ ] **Step 1: Write tests for `ManageBacDaemon.stream()`**
@@ -189,8 +189,8 @@ import asyncio
 from unittest.mock import MagicMock
 import pytest
 
-from mb_cli.daemon import ManageBacDaemon
-from mb_cli.daemon.events import MBEvent
+from tahuti.daemon import ManageBacDaemon
+from tahuti.daemon.events import MBEvent
 
 
 @pytest.mark.asyncio
@@ -228,11 +228,11 @@ async def test_daemon_stream_yields_events_and_terminates():
 - [ ] **Step 2: Run test to verify failure**
 
 Run: `pytest tests/test_daemon_stream.py -v`
-Expected: FAIL with `ImportError: cannot import name 'ManageBacDaemon' from 'mb_cli.daemon'`
+Expected: FAIL with `ImportError: cannot import name 'ManageBacDaemon' from 'tahuti.daemon'`
 
-- [ ] **Step 3: Implement `src/mb_cli/daemon/stream.py`**
+- [ ] **Step 3: Implement `src/tahuti/daemon/stream.py`**
 
-Create `src/mb_cli/daemon/stream.py`:
+Create `src/tahuti/daemon/stream.py`:
 ```python
 """Async stream interface for ManageBacDaemon."""
 
@@ -305,16 +305,16 @@ class ManageBacDaemon:
             await asyncio.gather(worker, return_exceptions=True)
 ```
 
-- [ ] **Step 4: Export `ManageBacDaemon` from `src/mb_cli/daemon/__init__.py` and `src/mb_cli/__init__.py`**
+- [ ] **Step 4: Export `ManageBacDaemon` from `src/tahuti/daemon/__init__.py` and `src/tahuti/__init__.py`**
 
-In `src/mb_cli/daemon/__init__.py`:
+In `src/tahuti/daemon/__init__.py`:
 Add:
 ```python
 from .stream import ManageBacDaemon
 ```
 And add `"ManageBacDaemon"` to `__all__`.
 
-In `src/mb_cli/__init__.py`:
+In `src/tahuti/__init__.py`:
 Add:
 ```python
 from .daemon.stream import ManageBacDaemon
@@ -329,7 +329,7 @@ Expected: PASS
 - [ ] **Step 6: Commit changes**
 
 ```bash
-git add src/mb_cli/ tests/test_daemon_stream.py
+git add src/tahuti/ tests/test_daemon_stream.py
 git commit -m "feat(daemon): implement ManageBacDaemon.stream() async event generator"
 ```
 
@@ -406,8 +406,8 @@ Expected: All tests PASS.
 
 Run:
 ```bash
-python -m mb_cli --help
-python -m mb_cli daemon --help
+python -m tahuti --help
+python -m tahuti daemon --help
 ```
 Expected: Help outputs render cleanly without import errors or warnings.
 

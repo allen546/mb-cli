@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.__main__ import cmd_download
+from tahuti.__main__ import cmd_download
 
 
 class _Args:
@@ -80,9 +80,9 @@ def _run(tmp_path, args, client, snapshot_tasks=None):
         captured["format"] = fmt
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.print_payload", side_effect=_capture),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.print_payload", side_effect=_capture),
     ):
         rc = cmd_download(args)
     return rc, captured
@@ -316,12 +316,12 @@ def test_download_default_output_dir_uses_task_title_slug(tmp_path, monkeypatch)
     args = _Args(tmp_path, output_dir=None)
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(MagicMock(config_path=tmp_path / "config" / "config.json"), client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={
+        patch("tahuti.__main__._build_client", return_value=(MagicMock(config_path=tmp_path / "config" / "config.json"), client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={
             "upcoming": snapshot_tasks, "past": [], "overdue": []
         }),
-        patch("mb_cli.__main__.print_payload"),
+        patch("tahuti.__main__.print_payload"),
     ):
         rc = cmd_download(args)
 
@@ -368,7 +368,7 @@ def test_download_skips_entries_without_name_or_url(tmp_path):
 )
 def test_download_payload_shape_end_to_end(tmp_path, argv, expected_rc_key):
     """`tahuti download` reaches print_payload with the format argparse gives it."""
-    from mb_cli.__main__ import build_parser, cmd_download as handler
+    from tahuti.__main__ import build_parser, cmd_download as handler
 
     parser = build_parser()
     args = parser.parse_args(argv)

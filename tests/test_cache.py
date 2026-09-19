@@ -1,4 +1,4 @@
-"""Tests for mb_cli.cache — aggressive edge-case coverage."""
+"""Tests for tahuti.cache — aggressive edge-case coverage."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import mb_cli.cache as cache_mod
-from mb_cli.cache import ResponseCache
+import tahuti.cache as cache_mod
+from tahuti.cache import ResponseCache
 
 
 # ── Basic CRUD ────────────────────────────────────────────────────────────
@@ -697,12 +697,12 @@ class TestStateTransitions:
 
 class TestDefaults:
     def test_default_ttl(self):
-        from mb_cli.cache import DEFAULT_TTL
+        from tahuti.cache import DEFAULT_TTL
 
         assert DEFAULT_TTL == 900
 
     def test_default_cache_dir(self):
-        from mb_cli.cache import DEFAULT_CACHE_DIR
+        from tahuti.cache import DEFAULT_CACHE_DIR
 
         assert DEFAULT_CACHE_DIR == Path.home() / ".config" / "tahuti" / "cache"
 

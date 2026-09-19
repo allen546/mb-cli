@@ -1,6 +1,6 @@
-"""Tests for mb_cli.exceptions."""
+"""Tests for tahuti.exceptions."""
 
-from mb_cli.exceptions import CommandError
+from tahuti.exceptions import CommandError
 
 
 class TestCommandError:

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests_mock
 
-from mb_cli.__main__ import main
+from tahuti.__main__ import main
 
 
 def test_cli_daemon_status_not_running_exits_three(tmp_path):
@@ -16,7 +16,7 @@ def test_cli_daemon_status_not_running_exits_three(tmp_path):
     whether a daemon was actually there. It is now pinned in both directions.
     """
     status = {"running": False, "pid": None, "pid_file": "x", "log_file": "y"}
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         MockMgr.return_value.status.return_value = status
         with patch("builtins.print"):
             with pytest.raises(SystemExit) as exc_info:
@@ -26,7 +26,7 @@ def test_cli_daemon_status_not_running_exits_three(tmp_path):
 
 def test_cli_daemon_status_running_exits_zero(tmp_path):
     status = {"running": True, "pid": 4242, "pid_file": "x", "log_file": "y"}
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         MockMgr.return_value.status.return_value = status
         with patch("builtins.print"):
             with pytest.raises(SystemExit) as exc_info:
@@ -54,10 +54,10 @@ def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
     mock_state = MagicMock()
     mock_state.active_profile = "default"
 
-    with patch("mb_cli.__main__._build_client") as mock_bc:
+    with patch("tahuti.__main__._build_client") as mock_bc:
         mock_bc.return_value = (mock_state, mock_client, "test@example.com")
-        with patch("mb_cli.__main__._authenticate_client"):
-            with patch("mb_cli.daemon.service.MNNHubProvider") as MockProv:
+        with patch("tahuti.__main__._authenticate_client"):
+            with patch("tahuti.daemon.service.MNNHubProvider") as MockProv:
                 prov_inst = MockProv.return_value
                 prov_inst.poll_events.return_value = []
                 with patch("builtins.print"):
@@ -67,7 +67,7 @@ def test_cli_daemon_run_once(tmp_path: Path, monkeypatch):
 
 
 def test_cli_daemon_start_background_arg_forwarding():
-    with patch("mb_cli.__main__.ServiceManager") as MockMgr:
+    with patch("tahuti.__main__.ServiceManager") as MockMgr:
         mgr_instance = MockMgr.return_value
         mgr_instance.start_background.return_value = {"started": True, "pid": 12345}
         with patch("builtins.print"):

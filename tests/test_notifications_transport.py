@@ -21,7 +21,7 @@ import time
 import pytest
 import requests_mock
 
-from mb_cli.notifications import MNNHubClient
+from tahuti.notifications import MNNHubClient
 
 ENDPOINT = "https://mnn-hub.prod.faria.com"
 STATS_URL = f"{ENDPOINT}/api/frontend/v2/notifications/stats"
@@ -56,7 +56,7 @@ def test_read_path_does_not_sleep(hub, monkeypatch, call):
 
     Pacing belongs to the daemon scheduler (``DaemonConfig.poll_jitter_seconds``),
     not inside the transport: a poll loop that sleeps inside its own client
-    cannot poll tightly. See the module docstring in ``mb_cli/notifications.py``.
+    cannot poll tightly. See the module docstring in ``tahuti/notifications.py``.
     """
     monkeypatch.setattr(time, "sleep", _explode)
 

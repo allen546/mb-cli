@@ -2,9 +2,9 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from mb_cli import __main__ as m
-from mb_cli.client import ManageBacClient, _validate_school_domain
-from mb_cli.exceptions import CommandError
+from tahuti import __main__ as m
+from tahuti.client import ManageBacClient, _validate_school_domain
+from tahuti.exceptions import CommandError
 
 
 class TestSchoolDomainValidation:
@@ -55,16 +55,16 @@ class TestCrossHostRedirectGuard:
 
 class TestSafeFilename:
     def test_blocks_traversal(self):
-        from mb_cli.__main__ import _safe_filename
+        from tahuti.__main__ import _safe_filename
         assert _safe_filename("../../../../etc/passwd") == "passwd"
         assert "/" not in _safe_filename("a/b/c.pdf")
 
     def test_strips_dots(self):
-        from mb_cli.__main__ import _safe_filename
+        from tahuti.__main__ import _safe_filename
         assert _safe_filename("..") == "download"
 
     def test_keeps_normal_name(self):
-        from mb_cli.__main__ import _safe_filename
+        from tahuti.__main__ import _safe_filename
         assert _safe_filename("homework 1.pdf") == "homework 1.pdf"
 
 
@@ -87,7 +87,7 @@ class TestStateEvictionOrder:
         sorted order agree — see `test_eviction_is_not_a_lexicographic_sort`,
         which uses ids where they disagree.
         """
-        from mb_cli.daemon.state import DaemonStateManager
+        from tahuti.daemon.state import DaemonStateManager
 
         manager = DaemonStateManager(state_path=tmp_path / "state.json")
         cap = self._CAP
@@ -122,7 +122,7 @@ class TestStateEvictionOrder:
         the new key and drops the entry the test just added. Fails if state.py's
         eviction line is changed to a lexicographic sort.
         """
-        from mb_cli.daemon.state import DaemonStateManager
+        from tahuti.daemon.state import DaemonStateManager
 
         manager = DaemonStateManager(state_path=tmp_path / "state.json")
         cap = self._CAP
@@ -146,7 +146,7 @@ class TestStateEvictionOrder:
 
     def test_legacy_list_format_migrates(self, tmp_path):
         import json
-        from mb_cli.daemon.state import DaemonStateManager
+        from tahuti.daemon.state import DaemonStateManager
         p = tmp_path / "s.json"
         p.write_text(json.dumps({"dispatched_reminders": ["task_1:ddl_1h"]}))
         m = DaemonStateManager(state_path=p)
@@ -166,7 +166,7 @@ class TestBackgroundDaemonSecretEnv:
     """
 
     def _start(self, args):
-        with patch("mb_cli.daemon.system.ServiceManager.start_background") as start:
+        with patch("tahuti.daemon.system.ServiceManager.start_background") as start:
             start.return_value = {"started": True}
             m.cmd_daemon_start(args)
         assert start.called, "start_background was not called"
@@ -253,7 +253,7 @@ class TestWebhookSecretFromEnv:
     def test_resolve_secret_prefers_cli_then_env(self):
         import os
 
-        from mb_cli.daemon import _resolve_secret
+        from tahuti.daemon import _resolve_secret
 
         with patch.dict("os.environ", {"MB_WEBHOOK_SECRET": "env-secret"}):
             assert _resolve_secret("cli-secret") == "cli-secret"

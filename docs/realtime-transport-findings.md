@@ -68,7 +68,7 @@ removes the normal objection to tight polling.
 ## The blocker in the current code
 
 `MNNHubClient._jitter()` sleeps a uniform 1–3 s on *every* call
-(`src/mb_cli/notifications.py:37-38`):
+(`src/tahuti/notifications.py:37-38`):
 
 ```python
 def _jitter(self) -> None:

@@ -19,18 +19,18 @@ from pathlib import Path
 
 import pytest
 
-from mb_cli import cache, daemon, keychain
-from mb_cli import config
-from mb_cli.config import (
+from tahuti import cache, daemon, keychain
+from tahuti import config
+from tahuti.config import (
     resolve_config_path,
     resolve_creds_path,
     resolve_session_path,
 )
 from tests.conftest import _redirected_paths
 
-_MAIN = "mb_cli.__main__"
-_DAEMON_STATE = "mb_cli.daemon.state"
-_DAEMON_SYSTEM = "mb_cli.daemon.system"
+_MAIN = "tahuti.__main__"
+_DAEMON_STATE = "tahuti.daemon.state"
+_DAEMON_SYSTEM = "tahuti.daemon.system"
 
 
 def _const(module_name: str, attr: str) -> Path:
@@ -54,8 +54,8 @@ def _every_persisted_path() -> list[Path]:
         # Bound at import time — unreachable by any environment variable.
         cache.DEFAULT_CACHE_DIR,
         _const(_MAIN, "DEFAULT_SNAPSHOT_PATH"),
-        _const("mb_cli.daemon", "DEFAULT_SNAPSHOT_PATH"),
-        _const("mb_cli.daemon", "DEFAULT_DAEMON_PATH"),
+        _const("tahuti.daemon", "DEFAULT_SNAPSHOT_PATH"),
+        _const("tahuti.daemon", "DEFAULT_DAEMON_PATH"),
         _const(_DAEMON_STATE, "DEFAULT_STATE_PATH"),
         _const(_DAEMON_SYSTEM, "DEFAULT_PID_PATH"),
         _const(_DAEMON_SYSTEM, "DEFAULT_LOG_PATH"),
@@ -176,7 +176,7 @@ class TestLogoutCannotReachTheRealCredentialFile:
 
         import json
 
-        from mb_cli.__main__ import main
+        from tahuti.__main__ import main
 
         canary = resolve_creds_path()
         canary.write_text(

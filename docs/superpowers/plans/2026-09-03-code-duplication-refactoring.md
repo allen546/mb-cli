@@ -4,16 +4,16 @@
 
 **Goal:** Eliminate redundant task classification, URL parsing, dropbox scraping, and snapshot diffing logic across the codebase to ensure consistency and single-source-of-truth maintainability.
 
-**Architecture:** Centralize task status/completion/view evaluation in `src/mb_cli/filters.py`, URL and identifier resolution in `src/mb_cli/client.py`, reuse existing client dropbox inspection in `src/mb_cli/daemon/stealth.py`, and consolidate snapshot loading/diffing between `src/mb_cli/__main__.py` and `src/mb_cli/daemon/__init__.py`.
+**Architecture:** Centralize task status/completion/view evaluation in `src/tahuti/filters.py`, URL and identifier resolution in `src/tahuti/client.py`, reuse existing client dropbox inspection in `src/tahuti/daemon/stealth.py`, and consolidate snapshot loading/diffing between `src/tahuti/__main__.py` and `src/tahuti/daemon/__init__.py`.
 
 **Tech Stack:** Python 3.14, BeautifulSoup4, pytest
 
 ---
 
-### Task 1: Centralize Task Evaluation in `src/mb_cli/filters.py`
+### Task 1: Centralize Task Evaluation in `src/tahuti/filters.py`
 
 **Files:**
-- Modify: `src/mb_cli/filters.py:30-185`
+- Modify: `src/tahuti/filters.py:30-185`
 - Test: `tests/test_filters.py`
 
 - [ ] **Step 1: Write failing tests for canonical task evaluation helpers**
@@ -22,7 +22,7 @@ Add tests for `is_submitted_badge`, `is_task_submitted`, `is_task_unfinished`, `
 
 ```python
 def test_is_submitted_badge():
-    from mb_cli.filters import is_submitted_badge
+    from tahuti.filters import is_submitted_badge
     assert is_submitted_badge("Submitted") is True
     assert is_submitted_badge("submitted") is True
     assert is_submitted_badge("Not Submitted") is False
@@ -31,7 +31,7 @@ def test_is_submitted_badge():
 
 
 def test_is_task_submitted():
-    from mb_cli.filters import is_task_submitted
+    from tahuti.filters import is_task_submitted
     assert is_task_submitted({"status": "submitted"}) is True
     assert is_task_submitted({"labels": ["Submitted"]}) is True
     assert is_task_submitted({"labels": ["Not Submitted"]}) is False
@@ -40,7 +40,7 @@ def test_is_task_submitted():
 
 
 def test_is_task_unfinished_and_completed():
-    from mb_cli.filters import is_task_completed, is_task_unfinished
+    from tahuti.filters import is_task_completed, is_task_unfinished
 
     # Incomplete task: has submit button, not submitted, no passing grade, assessed
     task_todo = {
@@ -71,7 +71,7 @@ def test_is_task_unfinished_and_completed():
 
 def test_classify_task_view():
     from datetime import datetime, timedelta
-    from mb_cli.filters import classify_task_view
+    from tahuti.filters import classify_task_view
 
     now = datetime(2026, 9, 10, 12, 0, 0)
 
@@ -103,11 +103,11 @@ def test_classify_task_view():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/pytest tests/test_filters.py -k "test_is_submitted_badge" -v`
-Expected: FAIL with `ImportError: cannot import name 'is_submitted_badge' from 'mb_cli.filters'`
+Expected: FAIL with `ImportError: cannot import name 'is_submitted_badge' from 'tahuti.filters'`
 
-- [ ] **Step 3: Implement canonical helpers in `src/mb_cli/filters.py`**
+- [ ] **Step 3: Implement canonical helpers in `src/tahuti/filters.py`**
 
-Add canonical functions to `src/mb_cli/filters.py` and fix `matches_submitted()`:
+Add canonical functions to `src/tahuti/filters.py` and fix `matches_submitted()`:
 
 ```python
 def is_submitted_badge(badge: str) -> bool:
@@ -187,7 +187,7 @@ def classify_task_view(task: dict, now_ref: datetime | None = None) -> str:
     return "past"
 ```
 
-Update `matches_submitted()` and `matches_completed()` in `src/mb_cli/filters.py`:
+Update `matches_submitted()` and `matches_completed()` in `src/tahuti/filters.py`:
 
 ```python
 def matches_submitted(task: dict, submitted: bool) -> bool:
@@ -208,7 +208,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/mb_cli/filters.py tests/test_filters.py
+git add src/tahuti/filters.py tests/test_filters.py
 git commit -m "refactor: centralize task submission, completion and classification logic in filters.py"
 ```
 
@@ -217,9 +217,9 @@ git commit -m "refactor: centralize task submission, completion and classificati
 ### Task 2: Deduplicate Task Classification in `__main__.py`, `client.py`, and `formatters.py`
 
 **Files:**
-- Modify: `src/mb_cli/__main__.py:165-210`
-- Modify: `src/mb_cli/client.py:1280-1335`
-- Modify: `src/mb_cli/formatters.py:175-207`
+- Modify: `src/tahuti/__main__.py:165-210`
+- Modify: `src/tahuti/client.py:1280-1335`
+- Modify: `src/tahuti/formatters.py:175-207`
 - Test: `tests/test_main.py`
 - Test: `tests/test_formatters.py`
 
@@ -230,7 +230,7 @@ Ensure existing snapshot merging and formatters maintain identical output:
 ```python
 def test_reclassify_tasks_uses_canonical_classifier(tmp_path: Path):
     from datetime import datetime
-    from mb_cli.__main__ import _reclassify_tasks
+    from tahuti.__main__ import _reclassify_tasks
     now = datetime(2026, 9, 10, 12, 0, 0)
     merged_map = {
         "1": {"id": "1", "due_date": "2026-09-20 12:00:00", "has_submit_button": True, "status": "not-submitted"},
@@ -243,9 +243,9 @@ def test_reclassify_tasks_uses_canonical_classifier(tmp_path: Path):
     assert [t["id"] for t in res["past"]] == ["3"]
 ```
 
-- [ ] **Step 2: Replace duplicated block in `src/mb_cli/__main__.py`**
+- [ ] **Step 2: Replace duplicated block in `src/tahuti/__main__.py`**
 
-In `src/mb_cli/__main__.py`:
+In `src/tahuti/__main__.py`:
 Extract `_reclassify_tasks(merged_map, now_ref)` using `classify_task_view`:
 
 ```python
@@ -260,9 +260,9 @@ Extract `_reclassify_tasks(merged_map, now_ref)` using `classify_task_view`:
             past.append(t)
 ```
 
-- [ ] **Step 3: Replace duplicated block in `src/mb_cli/client.py`**
+- [ ] **Step 3: Replace duplicated block in `src/tahuti/client.py`**
 
-In `src/mb_cli/client.py:1283-1331` (in `crawl_all`):
+In `src/tahuti/client.py:1283-1331` (in `crawl_all`):
 Replace the 30-line duplicate block with calls to `is_task_submitted` and `classify_task_view`:
 
 ```python
@@ -289,9 +289,9 @@ Replace the 30-line duplicate block with calls to `is_task_submitted` and `class
         past.append(reconstructed_task)
 ```
 
-- [ ] **Step 4: Replace duplicated block in `src/mb_cli/formatters.py`**
+- [ ] **Step 4: Replace duplicated block in `src/tahuti/formatters.py`**
 
-In `src/mb_cli/formatters.py:177-207`:
+In `src/tahuti/formatters.py:177-207`:
 Replace duplicate manual checks with:
 
 ```python
@@ -318,7 +318,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/mb_cli/__main__.py src/mb_cli/client.py src/mb_cli/formatters.py
+git add src/tahuti/__main__.py src/tahuti/client.py src/tahuti/formatters.py
 git commit -m "refactor: eliminate duplicated task classification logic across main, client, and formatters"
 ```
 
@@ -327,10 +327,10 @@ git commit -m "refactor: eliminate duplicated task classification logic across m
 ### Task 3: Unify URL and Identifier Parsing (`parse_task_url`)
 
 **Files:**
-- Modify: `src/mb_cli/client.py:40-60`
-- Modify: `src/mb_cli/__main__.py:621-643`
-- Modify: `src/mb_cli/mcp_server.py:235-265`
-- Modify: `src/mb_cli/daemon/provider.py:155-165`
+- Modify: `src/tahuti/client.py:40-60`
+- Modify: `src/tahuti/__main__.py:621-643`
+- Modify: `src/tahuti/mcp_server.py:235-265`
+- Modify: `src/tahuti/daemon/provider.py:155-165`
 - Test: `tests/test_client.py`
 
 - [ ] **Step 1: Write unit test for `parse_task_url`**
@@ -339,7 +339,7 @@ In `tests/test_client.py`:
 
 ```python
 def test_parse_task_url():
-    from mb_cli.client import parse_task_url
+    from tahuti.client import parse_task_url
     assert parse_task_url("https://school.managebac.cn/student/classes/1000012/core_tasks/1000099") == ("1000012", "1000099")
     assert parse_task_url("/student/classes/1000012/core_tasks/1000099/dropbox") == ("1000012", "1000099")
     assert parse_task_url("1000099") == (None, "1000099")
@@ -351,9 +351,9 @@ def test_parse_task_url():
 Run: `./.venv/bin/pytest tests/test_client.py -k "test_parse_task_url" -v`
 Expected: FAIL with `ImportError: cannot import name 'parse_task_url'`
 
-- [ ] **Step 3: Implement `parse_task_url` in `src/mb_cli/client.py`**
+- [ ] **Step 3: Implement `parse_task_url` in `src/tahuti/client.py`**
 
-Add to `src/mb_cli/client.py`:
+Add to `src/tahuti/client.py`:
 
 ```python
 def parse_task_url(target: str) -> tuple[str | None, str | None]:
@@ -369,20 +369,20 @@ def parse_task_url(target: str) -> tuple[str | None, str | None]:
 
 - [ ] **Step 4: Adopt `parse_task_url` across consumers**
 
-- In `src/mb_cli/__main__.py:_resolve_task_ids`:
+- In `src/tahuti/__main__.py:_resolve_task_ids`:
   ```python
   cid, tid = parse_task_url(target)
   if cid and tid:
       return cid, tid
   task_id = tid or target
   ```
-- In `src/mb_cli/mcp_server.py:submit_file`:
+- In `src/tahuti/mcp_server.py:submit_file`:
   ```python
   cid, tid = parse_task_url(task_id)
   if cid and tid:
       class_id = cid
   ```
-- In `src/mb_cli/daemon/provider.py:normalize_notification`:
+- In `src/tahuti/daemon/provider.py:normalize_notification`:
   ```python
   cid, tid = parse_task_url(href)
   if cid and tid:
@@ -397,7 +397,7 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/mb_cli/client.py src/mb_cli/__main__.py src/mb_cli/mcp_server.py src/mb_cli/daemon/provider.py tests/test_client.py
+git add src/tahuti/client.py src/tahuti/__main__.py src/tahuti/mcp_server.py src/tahuti/daemon/provider.py tests/test_client.py
 git commit -m "refactor: unify task URL parsing with parse_task_url"
 ```
 
@@ -406,7 +406,7 @@ git commit -m "refactor: unify task URL parsing with parse_task_url"
 ### Task 4: Deduplicate Dropbox Scraping in `StealthTaskCrawler`
 
 **Files:**
-- Modify: `src/mb_cli/daemon/stealth.py:80-115`
+- Modify: `src/tahuti/daemon/stealth.py:80-115`
 - Test: `tests/test_daemon_stealth.py`
 
 - [ ] **Step 1: Write test verifying stealth crawler delegates dropbox checks**
@@ -433,9 +433,9 @@ def test_stealth_crawler_uses_client_get_submissions():
     mock_client.get_submissions.assert_called_once_with("101", "202")
 ```
 
-- [ ] **Step 2: Update `src/mb_cli/daemon/stealth.py` to reuse `client.get_submissions` and `is_submitted_badge`**
+- [ ] **Step 2: Update `src/tahuti/daemon/stealth.py` to reuse `client.get_submissions` and `is_submitted_badge`**
 
-Replace manual dropbox page parsing in `src/mb_cli/daemon/stealth.py`:
+Replace manual dropbox page parsing in `src/tahuti/daemon/stealth.py`:
 
 ```python
         from ..filters import is_submitted_badge
@@ -462,17 +462,17 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/mb_cli/daemon/stealth.py tests/test_daemon_stealth.py
+git add src/tahuti/daemon/stealth.py tests/test_daemon_stealth.py
 git commit -m "refactor: reuse client.get_submissions in stealth crawler"
 ```
 
 ---
 
-### Task 5: Deduplicate Snapshot IO & Diffing in `src/mb_cli/daemon/__init__.py`
+### Task 5: Deduplicate Snapshot IO & Diffing in `src/tahuti/daemon/__init__.py`
 
 **Files:**
-- Modify: `src/mb_cli/daemon/__init__.py:133-260`
-- Modify: `src/mb_cli/__main__.py:85-105`
+- Modify: `src/tahuti/daemon/__init__.py:133-260`
+- Modify: `src/tahuti/__main__.py:85-105`
 - Test: `tests/test_daemon.py`
 
 - [ ] **Step 1: Write test verifying canonical snapshot IO and diffing**
@@ -481,8 +481,8 @@ In `tests/test_daemon.py`:
 
 ```python
 def test_canonical_snapshot_io_and_diff(tmp_path: Path):
-    from mb_cli.__main__ import load_snapshot, save_snapshot
-    from mb_cli.daemon import diff_index
+    from tahuti.__main__ import load_snapshot, save_snapshot
+    from tahuti.daemon import diff_index
 
     snap_file = tmp_path / "snap.json"
     save_snapshot(snap_file, {"upcoming": [{"id": "10", "title": "Math"}]})
@@ -499,7 +499,7 @@ def test_canonical_snapshot_io_and_diff(tmp_path: Path):
 
 - [ ] **Step 2: Consolidate `_load_snapshot` / `_save_snapshot` and diff functions**
 
-In `src/mb_cli/daemon/__init__.py`:
+In `src/tahuti/daemon/__init__.py`:
 - Replace private `_load_snapshot` and `_save_snapshot` with imports from `..__main__ import load_snapshot, save_snapshot` (or shared module).
 - Unify `_diff_snapshots_full` into `diff_index`: Make `_diff_snapshots_full` a thin wrapper around `diff_index(old, new)[0]` to maintain full backward compatibility while eliminating the duplicate diff loop logic.
 
@@ -511,7 +511,7 @@ Expected: PASS
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/mb_cli/daemon/__init__.py tests/test_daemon.py
+git add src/tahuti/daemon/__init__.py tests/test_daemon.py
 git commit -m "refactor: consolidate snapshot IO and diffing in daemon package"
 ```
 

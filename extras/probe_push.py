@@ -21,8 +21,8 @@ import sys
 
 import requests
 
-from mb_cli.auth import build_client
-from mb_cli.notifications import hub_for_domain
+from tahuti.auth import build_client
+from tahuti.notifications import hub_for_domain
 
 # Never let this script see or touch real credentials.
 assert os.environ.get("MB_CRAWLER_CREDS_PATH"), "set MB_CRAWLER_CREDS_PATH=/nonexistent"

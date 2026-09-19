@@ -8,10 +8,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from mb_cli.client import ManageBacClient
-from mb_cli.cache import DEFAULT_CACHE_DIR, ResponseCache
-from mb_cli.__main__ import build_parser, cmd_submissions
-from mb_cli import mcp_server
+from tahuti.client import ManageBacClient
+from tahuti.cache import DEFAULT_CACHE_DIR, ResponseCache
+from tahuti.__main__ import build_parser, cmd_submissions
+from tahuti import mcp_server
 
 
 def _make_client(cache_dir=None) -> ManageBacClient:
@@ -239,10 +239,10 @@ def test_cli_submissions_parser():
     assert args_fb_id.check_feedback == "82189817"
 
 
-@patch("mb_cli.__main__._build_client")
-@patch("mb_cli.__main__._authenticate_client")
-@patch("mb_cli.__main__._resolve_task_ids", return_value=("101", "202"))
-@patch("mb_cli.__main__.print_payload")
+@patch("tahuti.__main__._build_client")
+@patch("tahuti.__main__._authenticate_client")
+@patch("tahuti.__main__._resolve_task_ids", return_value=("101", "202"))
+@patch("tahuti.__main__.print_payload")
 def test_cli_submissions_list_default(mock_print, mock_resolve, mock_auth, mock_build):
     client = _make_client()
     mock_build.return_value = (MagicMock(active_profile="default", config_path=MagicMock()), client, "test@example.com")
@@ -257,10 +257,10 @@ def test_cli_submissions_list_default(mock_print, mock_resolve, mock_auth, mock_
         assert len(payload["data"]["submissions"]) == 1
 
 
-@patch("mb_cli.__main__._build_client")
-@patch("mb_cli.__main__._authenticate_client")
-@patch("mb_cli.__main__._resolve_task_ids", return_value=("101", "202"))
-@patch("mb_cli.__main__.print_payload")
+@patch("tahuti.__main__._build_client")
+@patch("tahuti.__main__._authenticate_client")
+@patch("tahuti.__main__._resolve_task_ids", return_value=("101", "202"))
+@patch("tahuti.__main__.print_payload")
 def test_cli_submissions_delete(mock_print, mock_resolve, mock_auth, mock_build):
     client = _make_client()
     mock_build.return_value = (MagicMock(active_profile="default", config_path=MagicMock()), client, "test@example.com")
@@ -274,9 +274,9 @@ def test_cli_submissions_delete(mock_print, mock_resolve, mock_auth, mock_build)
         assert payload["data"]["action"] == "delete"
 
 
-@patch("mb_cli.__main__._build_client")
-@patch("mb_cli.__main__._authenticate_client")
-@patch("mb_cli.__main__.print_payload")
+@patch("tahuti.__main__._build_client")
+@patch("tahuti.__main__._authenticate_client")
+@patch("tahuti.__main__.print_payload")
 def test_cli_submissions_missing_target(mock_print, mock_auth, mock_build):
     mock_build.return_value = (MagicMock(active_profile="default"), _make_client(), "test@example.com")
     parser = build_parser()
@@ -291,8 +291,8 @@ def test_cli_submissions_missing_target(mock_print, mock_auth, mock_build):
 # ── MCP Server Tests ────────────────────────────────────────────────────
 
 
-@patch("mb_cli.mcp_server.build_client")
-@patch("mb_cli.mcp_server.parse_task_url", return_value=("101", "202"))
+@patch("tahuti.mcp_server.build_client")
+@patch("tahuti.mcp_server.parse_task_url", return_value=("101", "202"))
 def test_mcp_delete_submission(mock_parse, mock_build):
     client = _make_client()
     mock_build.return_value = (MagicMock(), client, "test@example.com")

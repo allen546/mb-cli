@@ -1,4 +1,4 @@
-"""Tests for mb_cli.config."""
+"""Tests for tahuti.config."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from mb_cli.config import (
+from tahuti.config import (
     AppState,
     ProfileConfig,
     SessionConfig,
@@ -252,7 +252,7 @@ class TestClearSession:
 
 def test_write_json_is_atomic_and_0600(tmp_path):
     """Credential/session files must never exist world-readable."""
-    from mb_cli.config import _write_json
+    from tahuti.config import _write_json
     target = tmp_path / "creds.json"
     _write_json(target, {"email": "a@b.c", "password": "s3cret"})
     mode = target.stat().st_mode & 0o777
@@ -262,7 +262,7 @@ def test_write_json_is_atomic_and_0600(tmp_path):
 
 
 def test_write_json_replaces_existing_content(tmp_path):
-    from mb_cli.config import _write_json
+    from tahuti.config import _write_json
     target = tmp_path / "session.json"
     _write_json(target, {"v": 1})
     _write_json(target, {"v": 2})

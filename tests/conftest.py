@@ -73,20 +73,20 @@ _CREDENTIAL_ENV_VARS: tuple[str, ...] = (
 def _redirected_paths(config_dir: Path) -> dict[str, Path]:
     """Every import-time path constant, mapped to its sandboxed value."""
     return {
-        "mb_cli.config.CONFIG_DIR": config_dir,
-        "mb_cli.config.DEFAULT_CONFIG_PATH": config_dir / "config.json",
-        "mb_cli.config.DEFAULT_SESSION_PATH": config_dir / "session.json",
-        "mb_cli.config.DEFAULT_CREDS_PATH": config_dir / "creds.json",
-        "mb_cli.cache.DEFAULT_CACHE_DIR": config_dir / "cache",
-        "mb_cli.__main__.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
-        "mb_cli.daemon.DEFAULT_DAEMON_PATH": config_dir / "daemon.json",
-        "mb_cli.daemon.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
-        "mb_cli.daemon.state.DEFAULT_STATE_PATH": config_dir / "daemon_state.json",
-        "mb_cli.daemon.system.DEFAULT_PID_PATH": config_dir / "daemon.pid",
-        "mb_cli.daemon.system.DEFAULT_LOG_PATH": config_dir / "daemon.log",
+        "tahuti.config.CONFIG_DIR": config_dir,
+        "tahuti.config.DEFAULT_CONFIG_PATH": config_dir / "config.json",
+        "tahuti.config.DEFAULT_SESSION_PATH": config_dir / "session.json",
+        "tahuti.config.DEFAULT_CREDS_PATH": config_dir / "creds.json",
+        "tahuti.cache.DEFAULT_CACHE_DIR": config_dir / "cache",
+        "tahuti.__main__.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
+        "tahuti.daemon.DEFAULT_DAEMON_PATH": config_dir / "daemon.json",
+        "tahuti.daemon.DEFAULT_SNAPSHOT_PATH": config_dir / "snapshot.json",
+        "tahuti.daemon.state.DEFAULT_STATE_PATH": config_dir / "daemon_state.json",
+        "tahuti.daemon.system.DEFAULT_PID_PATH": config_dir / "daemon.pid",
+        "tahuti.daemon.system.DEFAULT_LOG_PATH": config_dir / "daemon.log",
         # `daemon/__init__.py` re-exports these two under its own names.
-        "mb_cli.daemon.DEFAULT_PID_PATH": config_dir / "daemon.pid",
-        "mb_cli.daemon.DEFAULT_LOG_PATH": config_dir / "daemon.log",
+        "tahuti.daemon.DEFAULT_PID_PATH": config_dir / "daemon.pid",
+        "tahuti.daemon.DEFAULT_LOG_PATH": config_dir / "daemon.log",
     }
 
 
@@ -129,7 +129,7 @@ def isolated_user_state(tmp_path: Path, monkeypatch):
     # the fallback `_load_creds()` consults when creds.json is missing, so a
     # helper that happens to be installed on the dev box would otherwise be
     # queried for the operator's password.
-    monkeypatch.setattr("mb_cli.keychain._tool", lambda: None)
+    monkeypatch.setattr("tahuti.keychain._tool", lambda: None)
 
     yield config_dir
 

@@ -403,8 +403,8 @@ _TILE_SCORE_VARIANT_RE = re.compile(r"f-task-score--([a-z-]+)")
 def _card_submission_status(card, labels: Any = None) -> str | None:
     """Read a class-grades card's submission state as a canonical token.
 
-    Returns :data:`~mb_cli.task_status.SUBMISSION_SUBMITTED` /
-    :data:`~mb_cli.task_status.SUBMISSION_NOT_SUBMITTED`, or ``None`` when the
+    Returns :data:`~tahuti.task_status.SUBMISSION_SUBMITTED` /
+    :data:`~tahuti.task_status.SUBMISSION_NOT_SUBMITTED`, or ``None`` when the
     card says nothing about submission.  ``None`` must stay ``None``: inventing a
     state here is exactly how a task the page never labelled came to be reported
     as unsubmitted (and, with no dropbox link to rescue it, as "Complete").
@@ -435,7 +435,7 @@ def _card_status_text(card, labels: Any = None) -> str | None:
     frozen classifier behave: the state-class span's text is stored **verbatim**
     (``"Not Submitted"`` — space, not hyphen), while a card with no span falls
     back to a label lookup that writes the **canonical token**.  Because
-    :func:`~mb_cli.task_status.get_submission_status` compares exactly, the
+    :func:`~tahuti.task_status.get_submission_status` compares exactly, the
     verbatim spelling never matches and PENDING comes from ``has_submit_btn``,
     while the label-derived token does match.
 

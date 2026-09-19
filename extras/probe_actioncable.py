@@ -26,7 +26,7 @@ import struct
 import sys
 import time
 
-from mb_cli.auth import build_client
+from tahuti.auth import build_client
 
 assert os.environ.get("MB_CRAWLER_CREDS_PATH"), "set MB_CRAWLER_CREDS_PATH=/nonexistent"
 

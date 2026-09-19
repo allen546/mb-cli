@@ -1,4 +1,4 @@
-"""Tests for mb_cli.filters."""
+"""Tests for tahuti.filters."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pytest
 
-from mb_cli.filters import (
+from tahuti.filters import (
     InvalidViewError,
     filter_result_by_status,
     filter_result_by_subject,
@@ -363,33 +363,33 @@ class TestFindTaskById:
 
 class TestMatchesTag:
     def test_matches_tag_exact(self):
-        from mb_cli.filters import matches_tag
+        from tahuti.filters import matches_tag
         task = {"labels": ["Summative", "Exam"]}
         assert matches_tag(task, "Exam") is True
 
     def test_matches_tag_case_insensitive(self):
-        from mb_cli.filters import matches_tag
+        from tahuti.filters import matches_tag
         task = {"labels": ["Summative", "Exam"]}
         assert matches_tag(task, "exam") is True
 
     def test_matches_tag_partial(self):
-        from mb_cli.filters import matches_tag
+        from tahuti.filters import matches_tag
         task = {"labels": ["Summative", "Exam"]}
         assert matches_tag(task, "Sum") is True
 
     def test_matches_tag_no_match(self):
-        from mb_cli.filters import matches_tag
+        from tahuti.filters import matches_tag
         task = {"labels": ["Summative", "Exam"]}
         assert matches_tag(task, "Quiz") is False
 
     def test_matches_tag_no_labels(self):
-        from mb_cli.filters import matches_tag
+        from tahuti.filters import matches_tag
         task = {}
         assert matches_tag(task, "Exam") is False
 
 
 def test_is_submitted_badge():
-    from mb_cli.filters import is_submitted_badge
+    from tahuti.filters import is_submitted_badge
     assert is_submitted_badge("Submitted") is True
     assert is_submitted_badge("submitted") is True
     assert is_submitted_badge("Not Submitted") is False
@@ -398,7 +398,7 @@ def test_is_submitted_badge():
 
 
 def test_is_task_submitted():
-    from mb_cli.filters import is_task_submitted
+    from tahuti.filters import is_task_submitted
     assert is_task_submitted({"status": "submitted"}) is True
     assert is_task_submitted({"labels": ["Submitted"]}) is True
     assert is_task_submitted({"labels": ["Not Submitted"]}) is False
@@ -407,7 +407,7 @@ def test_is_task_submitted():
 
 
 def test_is_task_unfinished_and_completed():
-    from mb_cli.filters import is_task_completed, is_task_unfinished
+    from tahuti.filters import is_task_completed, is_task_unfinished
 
     # Incomplete task: has submit button, not submitted, no passing grade, assessed
     task_todo = {
@@ -447,7 +447,7 @@ def test_is_task_unfinished_and_completed():
 
 def test_classify_task_view():
     from datetime import datetime
-    from mb_cli.filters import classify_task_view
+    from tahuti.filters import classify_task_view
 
     now = datetime(2026, 9, 10, 12, 0, 0)
 
@@ -477,7 +477,7 @@ def test_classify_task_view():
 
 
 def test_matches_submitted_not_submitted_bugfix():
-    from mb_cli.filters import matches_completed, matches_submitted
+    from tahuti.filters import matches_completed, matches_submitted
     task_not_sub = {"labels": ["Not Submitted"]}
     assert matches_submitted(task_not_sub, True) is False
     assert matches_submitted(task_not_sub, False) is True

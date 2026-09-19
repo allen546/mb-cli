@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.__main__ import (
+from tahuti.__main__ import (
     EXIT_FAILURE,
     EXIT_NOT_RUNNING,
     EXIT_OK,
@@ -66,7 +66,7 @@ def _run_main(argv):
         payloads.append(payload)
 
     with (
-        patch("mb_cli.__main__.print_payload", side_effect=_capture),
+        patch("tahuti.__main__.print_payload", side_effect=_capture),
         pytest.raises(SystemExit) as exc_info,
     ):
         main(argv)
@@ -84,14 +84,14 @@ class TestNotificationsMutationExitCode:
         for mark in ("mark_read", "mark_unread", "mark_all_read"):
             getattr(hub, mark).return_value = mark_result
         with (
-            patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
-            patch("mb_cli.auth.save_profile"),
-            patch("mb_cli.auth.save_session"),
+            patch("tahuti.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
+            patch("tahuti.auth.save_profile"),
+            patch("tahuti.auth.save_session"),
             # `cmd_notifications` builds its hub through `auth.hub_client`, not
             # `MNNHubClient` directly, so this is the seam to patch. Patching
             # the class left a real client talking to the fake `hub.example`
             # endpoint the fixture names.
-            patch("mb_cli.__main__.hub_client", return_value=hub),
+            patch("tahuti.__main__.hub_client", return_value=hub),
         ):
             return _run_main(argv)
 
@@ -164,11 +164,11 @@ def test_view_detail_fetch_error_dict_exits_nonzero(capsys):
     client.get_task_detail.return_value = {"error": "Session expired or invalid"}
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
         patch(
-            "mb_cli.__main__.find_task_by_id",
+            "tahuti.__main__.find_task_by_id",
             return_value={"id": "123", "title": "Essay", "link": "http://x/123"},
         ),
     ):
@@ -187,10 +187,10 @@ def test_view_detail_fetch_error_dict_from_url_target_exits_nonzero(capsys):
     client.get_task_detail.return_value = {"error": "boom"}
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
-        patch("mb_cli.__main__.find_task_by_id", return_value=None),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__.find_task_by_id", return_value=None),
     ):
         rc = cmd_view(
             _ViewArgs(
@@ -208,11 +208,11 @@ def test_view_success_still_exits_zero(capsys):
     client.get_task_detail.return_value = {"attachments": [], "status": "graded"}
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value={}),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value={}),
         patch(
-            "mb_cli.__main__.find_task_by_id",
+            "tahuti.__main__.find_task_by_id",
             return_value={"id": "123", "title": "Essay", "link": "http://x/123"},
         ),
     ):
@@ -251,9 +251,9 @@ def _run_download(tmp_path, detail_return):
         )
     )
     with (
-        patch("mb_cli.__main__._build_client", return_value=(state, client, "a@b.com")),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.load_snapshot", return_value=json.loads(snapshot_path.read_text())),
+        patch("tahuti.__main__._build_client", return_value=(state, client, "a@b.com")),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.load_snapshot", return_value=json.loads(snapshot_path.read_text())),
     ):
         return cmd_download(_DownloadArgs(tmp_path))
 
@@ -299,9 +299,9 @@ def test_grades_all_classes_when_every_class_failed_exits_nonzero(isolated_confi
     client.get_class_grades.side_effect = RuntimeError("session expired")
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.auth.save_profile"),
-        patch("mb_cli.auth.save_session"),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.auth.save_profile"),
+        patch("tahuti.auth.save_session"),
     ):
         code, payloads = _run_main(["grades", "--format", "json"])
 
@@ -337,9 +337,9 @@ def test_grades_all_classes_partial_failure_exits_zero(isolated_config):
     client.get_class_grades.side_effect = _grades
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.auth.save_profile"),
-        patch("mb_cli.auth.save_session"),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.auth.save_profile"),
+        patch("tahuti.auth.save_session"),
     ):
         code, payloads = _run_main(["grades", "--format", "json"])
 
@@ -358,9 +358,9 @@ def test_unexpected_exception_emits_payload_not_traceback(isolated_config):
     client.get_notification_token.side_effect = RuntimeError("socket exploded")
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), client, "a@b.com")),
-        patch("mb_cli.auth.save_profile"),
-        patch("mb_cli.auth.save_session"),
+        patch("tahuti.__main__._build_client", return_value=(_state(), client, "a@b.com")),
+        patch("tahuti.auth.save_profile"),
+        patch("tahuti.auth.save_session"),
     ):
         code, payloads = _run_main(["notifications", "--format", "json"])
 
@@ -383,10 +383,10 @@ def test_usage_error_is_argparse_owned(isolated_config):
 def test_command_error_maps_to_failure(isolated_config):
     """`CommandError` keeps its machine-readable code and a non-zero status."""
     with (
-        patch("mb_cli.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
-        patch("mb_cli.auth.save_profile"),
-        patch("mb_cli.auth.save_session"),
-        patch("mb_cli.__main__.hub_client") as MockHub,
+        patch("tahuti.__main__._build_client", return_value=(_state(), _client(), "a@b.com")),
+        patch("tahuti.auth.save_profile"),
+        patch("tahuti.auth.save_session"),
+        patch("tahuti.__main__.hub_client") as MockHub,
     ):
         MockHub.return_value.list.side_effect = RuntimeError("hub down")
         code, _payloads = _run_main(["notifications", "--format", "json"])

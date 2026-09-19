@@ -6,12 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mb_cli.daemon.events import DaemonConfig, MBEvent, ReminderThreshold, WebhookConfig
-from mb_cli.daemon.provider import AbstractNotificationProvider
-from mb_cli.daemon.scheduler import DDLScheduler
-from mb_cli.daemon.service import DaemonService
-from mb_cli.daemon.state import DaemonStateManager
-from mb_cli.task_status import (
+from tahuti.daemon.events import DaemonConfig, MBEvent, ReminderThreshold, WebhookConfig
+from tahuti.daemon.provider import AbstractNotificationProvider
+from tahuti.daemon.scheduler import DDLScheduler
+from tahuti.daemon.service import DaemonService
+from tahuti.daemon.state import DaemonStateManager
+from tahuti.task_status import (
     GradeStatus,
     get_grade_status,
     is_task_graded,

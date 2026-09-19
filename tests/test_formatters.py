@@ -1,4 +1,4 @@
-"""Tests for mb_cli.formatters."""
+"""Tests for tahuti.formatters."""
 
 from __future__ import annotations
 
@@ -9,13 +9,18 @@ from unittest.mock import patch
 
 import pytest
 
-from mb_cli.formatters import (
+from tahuti.formatters import (
     error,
     ok,
     print_payload,
     render_pretty,
     resolve_format,
 )
+
+#: Both spellings of the format override. ``TAHUTI_FORMAT`` is the documented
+#: one; ``MB_CLI_FORMAT`` is the pre-rename name, still read so a script that
+#: already exported it does not silently change behaviour on upgrade.
+FORMAT_ENV_NAMES = ("TAHUTI_FORMAT", "MB_CLI_FORMAT")
 
 
 class TestResolveFormat:
@@ -25,15 +30,16 @@ class TestResolveFormat:
     def test_explicit_pretty(self):
         assert resolve_format("pretty") == "pretty"
 
-    def test_explicit_format_beats_tty_and_env(self, monkeypatch):
-        monkeypatch.setenv("MB_CLI_FORMAT", "pretty")
-        with patch("mb_cli.formatters.sys") as mock_sys:
+    @pytest.mark.parametrize("env_name", FORMAT_ENV_NAMES)
+    def test_explicit_format_beats_tty_and_env(self, monkeypatch, env_name):
+        monkeypatch.setenv(env_name, "pretty")
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             assert resolve_format("json") == "json"
 
     def test_none_defaults_to_pretty_when_tty(self):
         # Unchanged: an interactive terminal still gets the human table.
-        with patch("mb_cli.formatters.sys") as mock_sys:
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = True
             assert resolve_format(None) == "pretty"
 
@@ -43,39 +49,58 @@ class TestResolveFormat:
         # documented non-TTY behaviour (README "Output Formatting",
         # `--format`'s own help text) did not exist, so `mb list | jq .`
         # failed to parse. The documented contract is JSON.
-        with patch("mb_cli.formatters.sys") as mock_sys:
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             assert resolve_format(None) == "json"
 
     @pytest.mark.parametrize("forced,is_tty", [("json", True), ("pretty", False)])
-    def test_env_override_beats_tty_probe(self, monkeypatch, forced, is_tty):
-        monkeypatch.setenv("MB_CLI_FORMAT", forced)
-        with patch("mb_cli.formatters.sys") as mock_sys:
+    @pytest.mark.parametrize("env_name", FORMAT_ENV_NAMES)
+    def test_env_override_beats_tty_probe(self, monkeypatch, env_name, forced, is_tty):
+        monkeypatch.setenv(env_name, forced)
+        with patch("tahuti.formatters.sys") as mock_sys:
             # The env wins in both directions, so a script gets the same shape
             # whether or not it happens to be attached to a terminal.
             mock_sys.stdout.isatty.return_value = is_tty
             assert resolve_format(None) == forced
 
-    def test_env_override_is_case_and_space_insensitive(self, monkeypatch):
-        monkeypatch.setenv("MB_CLI_FORMAT", "  JSON ")
+    def test_new_env_name_beats_legacy_env_name(self, monkeypatch):
+        # The whole point of the fallback: someone who already exported the old
+        # name must not override someone who set the new one. Without this
+        # precedence a stale MB_CLI_FORMAT in a shell profile would win over an
+        # explicit TAHUTI_FORMAT and look like the new name was ignored.
+        monkeypatch.setenv("MB_CLI_FORMAT", "json")
+        monkeypatch.setenv("TAHUTI_FORMAT", "pretty")
+        assert resolve_format(None) == "pretty"
+
+    def test_empty_legacy_env_name_falls_through(self, monkeypatch):
+        # An exported-but-empty old name counts as unset, matching how every
+        # other legacy env var in tahuti.config is treated.
+        monkeypatch.setenv("MB_CLI_FORMAT", "")
+        monkeypatch.setenv("TAHUTI_FORMAT", "json")
         assert resolve_format(None) == "json"
 
-    def test_unknown_env_value_is_ignored(self, monkeypatch):
-        monkeypatch.setenv("MB_CLI_FORMAT", "yaml")
-        with patch("mb_cli.formatters.sys") as mock_sys:
+    @pytest.mark.parametrize("env_name", FORMAT_ENV_NAMES)
+    def test_env_override_is_case_and_space_insensitive(self, monkeypatch, env_name):
+        monkeypatch.setenv(env_name, "  JSON ")
+        assert resolve_format(None) == "json"
+
+    @pytest.mark.parametrize("env_name", FORMAT_ENV_NAMES)
+    def test_unknown_env_value_is_ignored(self, monkeypatch, env_name):
+        monkeypatch.setenv(env_name, "yaml")
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             assert resolve_format(None) == "json"
 
     def test_isatty_failure_does_not_crash(self):
         # A closed/detached stdout must degrade to JSON, not raise.
-        with patch("mb_cli.formatters.sys") as mock_sys:
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.side_effect = ValueError("closed file")
             assert resolve_format(None) == "json"
 
     def test_real_stdout_is_never_a_tty_under_pytest(self):
         # Pytest replaces stdout with a non-TTY capture object; this is the
         # condition that makes `mb list` pipe JSON inside the test suite.
-        with patch("mb_cli.formatters.sys") as mock_sys:
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             assert resolve_format(None) == "json"
 
@@ -695,7 +720,7 @@ class TestPrintPayload:
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         dest = out_dir / "output.json"
-        with patch("mb_cli.formatters.os.replace", side_effect=OSError("disk full")):
+        with patch("tahuti.formatters.os.replace", side_effect=OSError("disk full")):
             with pytest.raises(OSError):
                 print_payload(payload, str(dest), "json")
         assert not dest.exists()
@@ -712,7 +737,7 @@ class TestPrintPayload:
         # The documented non-TTY default is JSON, so a bare `mb list` piped
         # into jq parses without `--format json`.
         payload = ok("login", "default", {"school": "myschool"})
-        with patch("mb_cli.formatters.sys") as mock_sys:
+        with patch("tahuti.formatters.sys") as mock_sys:
             mock_sys.stdout.isatty.return_value = False
             with patch("builtins.print") as mock_print:
                 print_payload(payload, None, None)
@@ -722,23 +747,23 @@ class TestPrintPayload:
 
 class TestDisplayWidthAndPadding:
     def test_get_display_width_ascii(self):
-        from mb_cli.formatters import get_display_width
+        from tahuti.formatters import get_display_width
         assert get_display_width("hello") == 5
 
     def test_get_display_width_cjk(self):
-        from mb_cli.formatters import get_display_width
+        from tahuti.formatters import get_display_width
         # Chinese characters take 2 columns each
         assert get_display_width("期末考试") == 8
         assert get_display_width("Math期末考试") == 12
 
     def test_pad_string_left(self):
-        from mb_cli.formatters import pad_string
+        from tahuti.formatters import pad_string
         padded = pad_string("期末考试", 12, "left")
         # 8 columns of CJK + 4 spaces = 12 columns
         assert padded == "期末考试    "
 
     def test_pad_string_right(self):
-        from mb_cli.formatters import pad_string
+        from tahuti.formatters import pad_string
         padded = pad_string("期末考试", 10, "right")
         # 2 spaces + 8 columns of CJK = 10 columns
         assert padded == "  期末考试"

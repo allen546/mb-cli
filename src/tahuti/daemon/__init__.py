@@ -438,13 +438,13 @@ def _diff_snapshots_full(old: dict, new: dict) -> list[dict]:
 
 
 def load_snapshot(path: Path) -> dict:
-    from mb_cli.__main__ import load_snapshot as _load
+    from tahuti.__main__ import load_snapshot as _load
 
     return _load(path)
 
 
 def save_snapshot(path: Path, data: dict) -> None:
-    from mb_cli.__main__ import save_snapshot as _save
+    from tahuti.__main__ import save_snapshot as _save
 
     _save(path, data)
 
@@ -589,10 +589,10 @@ def _is_tahuti_pid(pid: int) -> bool:
             return False
         cmdline = result.stdout.strip()
         # No bare "mb" here: it matches unrelated processes (systemd, etc.)
-        # and a stale pid file would then signal the wrong process. `mb_cli`
+        # and a stale pid file would then signal the wrong process. `tahuti`
         # stays because that is the module the daemon child is spawned as.
         return any(
-            k in cmdline for k in ("tahuti", "mb_cli", "mb_crawler", "mb.cli")
+            k in cmdline for k in ("tahuti", "tahuti", "mb_crawler", "mb.cli")
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -616,7 +616,7 @@ def make_auth_refresh_fn(
 ) -> Callable[[], bool]:
     """Build the session-refresh callback the daemon needs to survive expiry.
 
-    Without it, :class:`~mb_cli.daemon.provider.MNNHubProvider` re-raises the
+    Without it, :class:`~tahuti.daemon.provider.MNNHubProvider` re-raises the
     "session expired" error on every poll and the daemon spins on a dead session
     forever while ``daemon status`` still reports it running.
     """
@@ -795,7 +795,7 @@ def stop_daemon(path: str | None = None) -> dict:
         pid_path.unlink(missing_ok=True)
         return {
             "stopped": False,
-            "reason": "not_mb_cli_process",
+            "reason": "not_tahuti_process",
             "pid": pid,
             "pid_file": str(pid_path),
         }

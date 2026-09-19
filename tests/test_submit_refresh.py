@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.cache import ResponseCache
-from mb_cli.client import ManageBacClient
-from mb_cli.config import ProfileConfig
-from mb_cli.__main__ import (
+from tahuti.cache import ResponseCache
+from tahuti.client import ManageBacClient
+from tahuti.config import ProfileConfig
+from tahuti.__main__ import (
     _resolve_task_ids,
     update_snapshot_with_class_tasks,
     load_snapshot,
@@ -271,8 +271,8 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
     ]
 
     with (
-        patch("mb_cli.__main__._build_client", return_value=(mock_state, mock_client, "user@test.com")),
-        patch("mb_cli.__main__._authenticate_client"),
+        patch("tahuti.__main__._build_client", return_value=(mock_state, mock_client, "user@test.com")),
+        patch("tahuti.__main__._authenticate_client"),
     ):
         code = cmd_submit(submit_args)
         assert code == 0
@@ -311,8 +311,8 @@ def test_cmd_submit_eager_refresh_end_to_end(tmp_path: Path, capsys):
         "overdue": [],
     }
     with (
-        patch("mb_cli.__main__._build_client", return_value=(mock_state, mock_client, "user@test.com")),
-        patch("mb_cli.__main__._authenticate_client"),
+        patch("tahuti.__main__._build_client", return_value=(mock_state, mock_client, "user@test.com")),
+        patch("tahuti.__main__._authenticate_client"),
     ):
         code = cmd_list(list_args)
         assert code == 0

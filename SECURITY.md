@@ -66,7 +66,7 @@ the scope below.
 
 ### Scope
 
-In scope: the `mb_cli` Python package, the `tahuti` and `tahuti-mcp` console commands (also installed as the
+In scope: the `tahuti` Python package, the `tahuti` and `tahuti-mcp` console commands (also installed as the
   aliases `mb` and `mb-mcp`),
 and `extras/mb-notifier/`.
 

@@ -19,9 +19,9 @@ from unittest.mock import patch
 import pytest
 import requests_mock as rm
 
-from mb_cli.cache import ResponseCache
-from mb_cli.client import ManageBacClient, parse_due_date
-from mb_cli.exceptions import CommandError
+from tahuti.cache import ResponseCache
+from tahuti.client import ManageBacClient, parse_due_date
+from tahuti.exceptions import CommandError
 
 BASE = "https://myschool.managebac.cn"
 
@@ -633,7 +633,7 @@ class TestNoPathBypassesTheHostGuard:
         the task page shows the row gone, which is what makes ``ok`` honest.
         """
         client.retry = 1
-        monkeypatch.setattr("mb_cli.client.time.sleep", lambda _s: None)
+        monkeypatch.setattr("tahuti.client.time.sleep", lambda _s: None)
 
         deletes = {"n": 0}
         reads = {"n": 0}
@@ -852,7 +852,7 @@ class TestTaskDetailHasOneFailureShape:
 
     def test_auth_failure_is_still_a_single_falsy_result(self, bare_client):
         """A dead session is a failure like any other, not a distinct shape."""
-        from mb_cli.client import SessionExpiredError
+        from tahuti.client import SessionExpiredError
 
         with patch.object(bare_client, "_get", side_effect=SessionExpiredError("expired")):
             detail = bare_client.get_task_detail("/student/classes/1/core_tasks/10")

@@ -2,9 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from mb_cli.daemon.events import ReminderThreshold
-from mb_cli.daemon.scheduler import DDLScheduler
-from mb_cli.daemon.state import DaemonStateManager
+from tahuti.daemon.events import ReminderThreshold
+from tahuti.daemon.scheduler import DDLScheduler
+from tahuti.daemon.state import DaemonStateManager
 
 
 def test_scheduler_triggers_approaching_ddl(tmp_path: Path):
@@ -127,7 +127,7 @@ def test_scheduler_extracts_class_id_from_link_for_live_check(tmp_path: Path):
 
 
 def test_scheduler_emits_standardized_deadline_approaching_payload(tmp_path: Path):
-    from mb_cli.daemon.events import STANDARD_TASK_FIELDS
+    from tahuti.daemon.events import STANDARD_TASK_FIELDS
 
     state_file = tmp_path / "state.json"
     mgr = DaemonStateManager(state_file)

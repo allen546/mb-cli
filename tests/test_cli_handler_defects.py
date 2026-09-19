@@ -1,7 +1,7 @@
 """Regression tests for the CLI command-handler defects.
 
 Every test here was written to fail against the code as it shipped and pass
-after the fix in ``mb_cli/__main__.py``. They are grouped by the defect they
+after the fix in ``tahuti/__main__.py``. They are grouped by the defect they
 pin, in the order the defects were reported:
 
 1. ``daemon configure-channel`` was a write-only stub that silently succeeded
@@ -34,8 +34,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mb_cli.daemon import DEFAULT_WEBHOOK_URL
-from mb_cli.__main__ import (
+from tahuti.daemon import DEFAULT_WEBHOOK_URL
+from tahuti.__main__ import (
     _snapshot_path,
     build_parser,
     cmd_daemon_configure_channel,
@@ -74,14 +74,14 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setenv("MANAGEBAC_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("MANAGEBAC_SESSION", str(tmp_path / "session.json"))
     monkeypatch.setenv("MANAGEBAC_CREDS_PATH", str(tmp_path / "creds.json"))
-    monkeypatch.setattr("mb_cli.cache.DEFAULT_CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr("mb_cli.__main__.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json")
-    for module in ("mb_cli.daemon.system", "mb_cli.daemon"):
+    monkeypatch.setattr("tahuti.cache.DEFAULT_CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr("tahuti.__main__.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json")
+    for module in ("tahuti.daemon.system", "tahuti.daemon"):
         monkeypatch.setattr(f"{module}.DEFAULT_PID_PATH", tmp_path / "daemon.pid")
         monkeypatch.setattr(f"{module}.DEFAULT_LOG_PATH", tmp_path / "daemon.log")
-    monkeypatch.setattr("mb_cli.daemon.DEFAULT_DAEMON_PATH", tmp_path / "daemon.json")
+    monkeypatch.setattr("tahuti.daemon.DEFAULT_DAEMON_PATH", tmp_path / "daemon.json")
     monkeypatch.setattr(
-        "mb_cli.daemon.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json"
+        "tahuti.daemon.DEFAULT_SNAPSHOT_PATH", tmp_path / "snapshot.json"
     )
     return tmp_path
 
@@ -97,7 +97,7 @@ class TestStatePathsAreIsolated:
 
     def test_load_daemon_config_resolves_into_tmp_path(self, tmp_path, monkeypatch):
         _isolate_state(tmp_path, monkeypatch)
-        from mb_cli.daemon import load_daemon_config
+        from tahuti.daemon import load_daemon_config
 
         config = load_daemon_config()
         assert config["pid_file"] == str(tmp_path / "daemon.pid")
@@ -254,11 +254,11 @@ def _run_download(tmp_path, args, client, snapshot_tasks):
     captured, capture = _capture_payload()
     with (
         patch(
-            "mb_cli.__main__._build_client",
+            "tahuti.__main__._build_client",
             return_value=(state, client, "student@example.com"),
         ),
-        patch("mb_cli.__main__._authenticate_client"),
-        patch("mb_cli.__main__.print_payload", side_effect=capture),
+        patch("tahuti.__main__._authenticate_client"),
+        patch("tahuti.__main__.print_payload", side_effect=capture),
     ):
         rc = cmd_download(args)
     return rc, captured
@@ -333,11 +333,11 @@ class TestConfigureChannelFailsLoudly:
         args = build_parser().parse_args(
             ["daemon", "run", "--channel-id", "qq", "--recipient", "123456789"]
         )
-        from mb_cli.exceptions import CommandError
+        from tahuti.exceptions import CommandError
 
-        with patch("mb_cli.__main__._build_client") as build:
+        with patch("tahuti.__main__._build_client") as build:
             with pytest.raises(CommandError) as exc_info:
-                from mb_cli.__main__ import cmd_daemon_run
+                from tahuti.__main__ import cmd_daemon_run
 
                 cmd_daemon_run(args)
         assert exc_info.value.code == "channel_delivery_not_implemented"
@@ -355,13 +355,13 @@ class TestDaemonStartOnceReportsTruthfully:
         captured, capture = _capture_payload()
         with (
             patch(
-                "mb_cli.__main__._build_client",
+                "tahuti.__main__._build_client",
                 return_value=(state, client, "student@example.com"),
             ),
-            patch("mb_cli.__main__._authenticate_client"),
-            patch("mb_cli.__main__.load_daemon_config", return_value={}),
-            patch("mb_cli.__main__.start_loop", return_value=loop_result) as loop,
-            patch("mb_cli.__main__.print_payload", side_effect=capture),
+            patch("tahuti.__main__._authenticate_client"),
+            patch("tahuti.__main__.load_daemon_config", return_value={}),
+            patch("tahuti.__main__.start_loop", return_value=loop_result) as loop,
+            patch("tahuti.__main__.print_payload", side_effect=capture),
         ):
             rc = cmd_daemon_start(_DaemonArgs(once=True, **arg_overrides))
         return rc, captured, loop
@@ -450,7 +450,7 @@ class TestLoginAlwaysPersistsTheSession:
         ]
         # Only the HTTP layer is mocked; build_client and cmd_login run for real
         # so the flags have to survive both of them.
-        with patch("mb_cli.auth.ManageBacClient") as client_cls:
+        with patch("tahuti.auth.ManageBacClient") as client_cls:
             client = client_cls.return_value
             client.login.return_value = True
             client.session.cookies.get.return_value = "reusable-cookie"
@@ -569,7 +569,7 @@ class TestLogoutClearsTheRightAccount:
     ):
         _isolate_state(tmp_path, monkeypatch)
         _write_state(tmp_path, "profile@example.com", "other@example.com")
-        with patch("mb_cli.keychain.delete", return_value=True) as delete:
+        with patch("tahuti.keychain.delete", return_value=True) as delete:
             with patch("builtins.print"):
                 with pytest.raises(SystemExit):
                     main(["logout", "--format", "json"])
@@ -618,7 +618,7 @@ class TestDownloadDetailFailure:
 
     def test_view_error_shaped_detail_is_not_a_success(self):
         """`view` had the same hole as `download`, in both of its branches."""
-        from mb_cli.__main__ import cmd_view
+        from tahuti.__main__ import cmd_view
 
         for target, ident in (
             (None, "1000099"),  # the id branch
@@ -640,13 +640,13 @@ class TestDownloadDetailFailure:
             captured, capture = _capture_payload()
             with (
                 patch(
-                    "mb_cli.__main__._build_client",
+                    "tahuti.__main__._build_client",
                     return_value=(state, client, "student@example.com"),
                 ),
-                patch("mb_cli.__main__._authenticate_client"),
-                patch("mb_cli.__main__.load_snapshot", return_value={}),
-                patch("mb_cli.__main__.find_task_by_id", return_value=_task()),
-                patch("mb_cli.__main__.print_payload", side_effect=capture),
+                patch("tahuti.__main__._authenticate_client"),
+                patch("tahuti.__main__.load_snapshot", return_value={}),
+                patch("tahuti.__main__.find_task_by_id", return_value=_task()),
+                patch("tahuti.__main__.print_payload", side_effect=capture),
             ):
                 rc = cmd_view(args)
             assert rc == 1, f"view branch {target!r} reported success"
@@ -719,11 +719,11 @@ class TestPartialCrawlDoesNotInferDeletions:
         captured, capture = _capture_payload()
         with (
             patch(
-                "mb_cli.__main__._build_client",
+                "tahuti.__main__._build_client",
                 return_value=(state, client, "student@example.com"),
             ),
-            patch("mb_cli.__main__._authenticate_client"),
-            patch("mb_cli.__main__.print_payload", side_effect=capture),
+            patch("tahuti.__main__._authenticate_client"),
+            patch("tahuti.__main__.print_payload", side_effect=capture),
         ):
             rc = cmd_list(_ListArgs(pages=1))
 
@@ -753,11 +753,11 @@ class TestPartialCrawlDoesNotInferDeletions:
         captured, capture = _capture_payload()
         with (
             patch(
-                "mb_cli.__main__._build_client",
+                "tahuti.__main__._build_client",
                 return_value=(state, client, "student@example.com"),
             ),
-            patch("mb_cli.__main__._authenticate_client"),
-            patch("mb_cli.__main__.print_payload", side_effect=capture),
+            patch("tahuti.__main__._authenticate_client"),
+            patch("tahuti.__main__.print_payload", side_effect=capture),
         ):
             rc = cmd_list(_ListArgs())
 
@@ -823,11 +823,11 @@ class TestCacheTtlGatesTheSnapshot:
         captured, capture = _capture_payload()
         with (
             patch(
-                "mb_cli.__main__._build_client",
+                "tahuti.__main__._build_client",
                 return_value=(state, client, "student@example.com"),
             ),
-            patch("mb_cli.__main__._authenticate_client"),
-            patch("mb_cli.__main__.print_payload", side_effect=capture),
+            patch("tahuti.__main__._authenticate_client"),
+            patch("tahuti.__main__.print_payload", side_effect=capture),
         ):
             rc = cmd_list(args)
         return rc, captured, client
