@@ -356,20 +356,115 @@ in the parsed data for any future consumer.
 
 ---
 
-## 7. Open questions
+## 7. The tasks-list/tile path, verified against live markup
 
-1. **The tasks-list/tile path is unverified against live markup.** Change #6
-   moved it from 28 overdue to 11 on a synthetic mix, and this account never
-   fetches that page. Fetching it needs a second login. Until then treat the
-   tile path as untested, not as safe.
-2. **Should the latent divergence in §6 be closed?** It changes nothing
-   observable today and only prevents a future unapproved movement.
-3. **Genuinely-unknown tasks.** Seven live tasks have no submission badge, no
-   dropbox and no grade; they display `Complete` on the class path and, after
-   change #6, `Complete` on the tile path too (they previously read
-   `Incomplete (Todo)` there). Whether that should be `Complete`, an honest
-   `Unknown`, or `Incomplete (Todo)` is undecided.
+Fetched read-only on 2026-09-19: `/student/tasks_and_deadlines` plus its
+`view=upcoming|past|overdue` tabs — 58 unique tiles across 78 instances.
+
+**All four variants the code recognises occur. No unhandled variant, no bare
+`f-task-score`, and no tile without one.** Every suffix is
+`class="f-tile__suffix f-tile__suffix--extended"`.
+
+| Variant | Tiles | Markup |
+|---|---|---|
+| `--due` | 26 | `<a class="btn btn-primary" href="…/core_tasks/<id>">…Submit Coursework</a>` |
+| `--assessment` | 25 | `<h4 class="color-success">D</h4><p class="fw-semibold">24<span class="color-secondary">/35</span> pts</p>` |
+| `--not-assessed` | 6 | `<div class="f-task-score__body color-secondary">…<p class="fw-semibold">Not Assessed Yet</p></div>` |
+| `--submitted` | 1 | `<div class="f-task-score__body color-success">…<p class="fw-semibold">Submitted</p></div>` |
+
+### This path's classification is **not** identical to the original
+
+| | Original | Current |
+|---|---|---|
+| overdue | 20 | **15** |
+| past | 26 | 31 |
+| upcoming | 12 | 12 |
+
+**Five tasks moved, all `overdue` → `past`**, none the other way: `27612228`
+(Sep 18), `27590667` (Sep 18), `27606764` (Sep 17), `27596580` (Sep 17),
+`27575509` (Sep 11). All five are `--not-assessed` tiles. The display string
+also moves on six tiles, `Incomplete (Todo)` → bare `Complete`.
+
+Fields that differ: `grade_letter` on 6 (`None` → `"Not Assessed Yet"`),
+`has_submit_button` on 26, `submission_status` on 26, `status` on 21
+(`'not-submitted'` → `None`). Unchanged: `is_task_submitted` (11),
+`get_grade_status` (25 graded / 33 not assessed), `format_grade_display` on all
+58, and `title`/`id`/`class_id`/`due_date`/`class_name`/`labels`/`grade_score`
+on all 58.
+
+### The evidence for approving the movement
+
+**ManageBac's own `?view=overdue` tab returns exactly 3 tiles, all `--due`.** All
+six `--not-assessed` tiles are filed by the *server* under `past` (5) or
+`upcoming` (1) — none is in the server's overdue tab, including all five the fix
+moves. So the new behaviour agrees with ManageBac's own grouping, and the old
+behaviour manufactured five false positives.
+
+### The evidence against
+
+- **Neither version converges on the server.** 20 overdue (original) and 15
+  (current) against the server's 3. The fix is a partial improvement, not parity.
+- `--not-assessed` means the teacher has not graded the work; the tile does
+  **not** assert a submission state. Relabelling those six from
+  `Incomplete (Todo)` to bare `Complete` is an inference, and `Complete` is
+  strictly worse wording than `Complete (Submitted)` would be.
+- **`has_submit_button` is dead on this page under `main`** — False on all 58
+  tiles — because `_parse_tile` runs the submit-link scan only in the `else` of
+  `if score_div:`, and every live tile has an `f-task-score`, so the scan never
+  executes. The current code does not run it either; it synthesises the flag
+  from the `--due` variant (26 True, correlating 26/26 with the presence of a
+  `Submit Coursework` button).
+- **Trap for any future rule:** there are **zero** `/dropbox` hrefs on this page,
+  and the `--submitted` tile's text contains "Submitted" — so if the scan is
+  ever un-short-circuited, the text heuristic would flag an already-submitted
+  task as actionable. A rule built on `has_submit_button` must key off the
+  `--due` variant, not the submit/upload text scan.
+
+### Two defects to correct regardless of the decision
+
+1. **A comment in the fix is factually wrong.** It states that no tile on a live
+   tasks page carries a dropbox link or a "Submit" control, so the heuristic
+   below can never fire. In fact 26 of 58 tiles carry a `Submit Coursework`
+   button. The conclusion holds, but for the `if score_div:` short-circuit
+   reason above, not the one stated.
+2. **A pre-existing bug in `main`.** 47 tiles ship `submission_status='none'`
+   alongside `status='not-submitted'`, because `get_submission_status` is called
+   *before* `status` is written into the dict.
+
+### Blast radius
+
+The tile path is reached by MCP `list_tasks`, `submit_file` and
+`delete_submission` (all via `get_tasks_by_view`), and by `crawl_all` only when
+class discovery returns nothing. For this account — 9 classes discovered — it is
+**MCP-only**. `submit_file` and `delete_submission` read only `id`/`link`, so
+they are unaffected; `list_tasks` filters through `matches_submitted` /
+`matches_completed`, which route through `is_task_submitted` (unchanged) and
+`is_task_todo` (the six that move).
+
+### A classification-neutral middle path, tested
+
+Both halves move zero tasks on live markup:
+
+- Keeping `grade_letter = "Not Assessed Yet"` on `--not-assessed` tiles is a
+  pure data improvement on six tiles.
+- Un-short-circuiting the submit scan so `has_submit_button` becomes live is
+  safe: forcing the flag `True` on all 58 tiles moved neither
+  `classify_task_view` nor `get_task_display_status`.
+
+---
+
+## 8. Open questions
+
+1. **Approve or revert the five-task tile-path movement?** The server's own
+   overdue tab supports the new behaviour, but §7 is a change and the freeze
+   requires an explicit ruling.
+2. **Should the latent divergence in §6 be closed?** Costs nothing observable
+   today and only prevents a future unapproved movement.
+3. **What should the unbadged tasks display?** Six live tasks have no submission
+   badge, no dropbox and no grade; they read `Complete` on both paths now.
+   `Complete`, an honest `Unknown`, or `Incomplete (Todo)` is undecided.
 4. **`overdue` means "still actionable"** — the owner's proposed rule, not yet
    approved: past-due and still submittable, where a graded F stays overdue only
-   if resubmittable. It depends on `has_submit_button` being trustworthy, which
-   the tile path does not yet guarantee.
+   if resubmittable. It must key off the `--due` variant per §7, not the
+   submit-text scan.
+
