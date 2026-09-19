@@ -1,0 +1,139 @@
+name: Release
+
+# Publishing is gated on a tag push rather than on every commit: PyPI rejects a
+# re-upload of a version number that already exists, so publishing is
+# irreversible for a given `vX.Y.Z` and has to be an explicit, reviewable act.
+# `workflow_dispatch` exists to re-run after a transient PyPI failure — it
+# publishes from whatever ref you launch it on, so only ever launch it on a tag.
+#
+# The test and build jobs are re-run here rather than reading ci.yml's verdict
+# because a tag push does not trigger ci.yml: `on.push.branches` only matches
+# refs under refs/heads/, never refs/tags/. Building the release's own gate is
+# what makes "publish" mean "publish a commit that was just proven green".
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege by default — nothing here writes to the repo. The publish job
+# widens its own permissions to `id-token: write` for PyPI trusted publishing.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with requires-python in pyproject.toml (">=3.10").
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        run: .venv/bin/python -m pytest -q
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Assert the tag names the version pyproject declares
+        # A tag that disagrees with pyproject stamps the wrong number onto the
+        # artifact metadata, and `tahuti --version` then reports something else
+        # than what PyPI shows. 0.4.0 nearly shipped that way, so the release
+        # refuses to build rather than relying on the tagger remembering.
+        #
+        # The version is read with sed, not tomllib: tomllib is 3.11+ while the
+        # supported floor is 3.10, and a version lookup has no business
+        # depending on the interpreter version. (This job pins 3.12, but a
+        # copy-paste into a 3.10 context must not silently break.)
+        run: |
+          set -euo pipefail
+          py_version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' pyproject.toml | head -1)
+          if [ -z "$py_version" ]; then
+            echo "::error::could not read [project].version from pyproject.toml"
+            exit 1
+          fi
+          echo "pyproject version: $py_version"
+
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              tag_version=${GITHUB_REF#refs/tags/}
+              tag_version=${tag_version#v}
+              if [ "$tag_version" != "$py_version" ]; then
+                echo "::error::tag v$tag_version does not match pyproject version $py_version"
+                echo "::error::bump pyproject.toml and mb_cli.__version__, then re-tag"
+                exit 1
+              fi
+              echo "tag matches: v$tag_version"
+              ;;
+            *)
+              echo "not a release tag ($GITHUB_REF); skipping the tag/version match"
+              ;;
+          esac
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: twine check
+        run: uvx twine check dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    # A manual dispatch that is not on a tag must not publish anything.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      # PyPI trusted publishing (OIDC). This is the whole of the credential
+      # story: no long-lived API token is stored in this repository.
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Trusted publishing is the default path and needs no input here. The
+          # password line is a fallback for a repository whose PyPI pending
+          # publisher is not yet configured: an unset secret expands to the
+          # empty string, which the action treats as absent and falls through to
+          # OIDC, so this line can be left alone either way. Add a
+          # `PYPI_API_TOKEN` repository secret only if you would rather use a
+          # token.
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # PEP 740 provenance attestations, signed by this workflow's OIDC
+          # identity. Purely additive — an installer that predates attestations
+          # ignores them.
+          attestations: true

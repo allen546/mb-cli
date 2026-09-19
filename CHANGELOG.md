@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Dates for `0.3.0` and earlier are derived from git history (those releases were
 never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
-## [Unreleased]
+## [0.4.1] - 2026-09-19
 
-Findings from the 2026-09-19 full-codebase review.
+Security and parsing fixes from the 2026-09-19 full-codebase review.
+
+Task classification output is unchanged from `0.4.0` — the one deliberate
+deviation is latent-only on current data. See *Changed*.
 
 ### Security
 - **The scraped MNN hub endpoint is validated on every construction site.**
@@ -65,6 +68,37 @@ Findings from the 2026-09-19 full-codebase review.
   FullCalendar serializes a missing link as `"url": null`, and `dict.get("url",
   "")` then returned `None`, so `.startswith("/")` raised `AttributeError` for
   the entire listing.
+
+### Changed
+- **Nothing in task classification moved.** The submission-signal rewrite and
+  the submit-button fix below are both additive at the parse layer, and every
+  classifier function was diffed against `0.4.0` over a 301,056-row grid of
+  synthetic task dicts (3,010,560 comparisons, ten functions) with zero
+  differences, plus a live A/B over 58 real tiles that moved 0 tasks. Anyone
+  upgrading should see identical `--view overdue` output.
+- **Tasks carry two new fields: `submission_status` and `tile_declared_status`.**
+  The tile parser read its "not submitted" badge as a bare word, so a tile could
+  report `status="not-submitted"` while the parsed record said nothing about
+  submission at all — 47 of 58 live tiles did exactly that, and all 32 the CLI
+  calls *todo* were among them. The canonical `SubmissionStatus` token and the
+  tile's own declared string are now recorded alongside `status`. No classifier
+  reads them yet; they are there so the next change can be measured instead of
+  guessed. `get_class_tasks` (the CLI's path) still drops them, so the CLI's task
+  objects are unchanged.
+- **A submit button is read as a control, not as any anchor saying "submit".**
+  The class-page scan accepted any `<a>` or `<button>` anywhere in the card,
+  including the card's own title link. A task really named "Submitted reading
+  log" was therefore offered an upload it does not have and landed in `overdue`
+  instead of `past`, because `has_submit_btn` is the class path's only route to
+  PENDING. Heading anchors are excluded, an element no longer inherits the
+  wording of what it wraps, and the detail page scans `<main>` rather than the
+  whole document. Measured over the 58 live tiles: `has_submit_button` differs
+  on 0, so no current task changes — the fix is latent-only, which is what makes
+  it safe to land on a frozen classifier.
+- **`grade_letter` reports "Not Assessed Yet" on tiles the site marks
+  `--not-assessed`.** It previously stayed `None`, so callers could not tell a
+  not-yet-assessed task from one whose grade the parser missed. These six tiles
+  were already `NOT_ASSESSED` and display identically.
 
 ## [0.4.0] - 2026-09-19
 
