@@ -26,10 +26,16 @@ if "mb_cli.client" in sys.modules:
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 import requests_mock as rm
 
 from mb_cli.cache import ResponseCache
-from mb_cli.client import HEADERS, ManageBacClient, parse_task_url
+from mb_cli.client import (
+    HEADERS,
+    ManageBacClient,
+    _absolute_event_url,
+    parse_task_url,
+)
 
 
 @pytest.fixture()
@@ -1191,3 +1197,48 @@ class TestSchoolDisplayTimezone:
         assert parsed.utcoffset() is not None
         back = parsed.astimezone(dt.timezone.utc).astimezone(parsed.tzinfo)
         assert (back.month, back.day, back.hour, back.minute) == (9, 15, 23, 59)
+
+
+class TestRetryClamp:
+    """`--retry` is a plain int with no floor on the argparse side."""
+
+    @pytest.mark.parametrize("value", [-1, -5, -100])
+    def test_negative_retry_is_clamped_to_zero(self, value):
+        c = ManageBacClient("myschool", domain="managebac.cn", retry=value, verify=False)
+        assert c.retry == 0
+
+    def test_negative_retry_does_not_raise_typeerror(self):
+        """The bug: `range(retry + 1)` on a negative never ran the body, so the
+        wrapper fell through to `raise last_exc` with `last_exc` still None —
+        `TypeError: exceptions must derive from BaseException`."""
+        c = ManageBacClient("myschool", domain="managebac.cn", retry=-1, verify=False)
+        c.set_cookie("cookie")
+        with rm.Mocker() as m:
+            m.get(re.compile(r".*"), exc=requests.ConnectionError("boom"))
+            with pytest.raises(requests.ConnectionError):
+                c._get("/student/tasks_and_deadlines")
+
+
+class TestCalendarEventUrl:
+    """FullCalendar serializes a link-less event as ``"url": null``."""
+
+    def test_null_url_is_not_a_crash(self):
+        assert _absolute_event_url("https://x.cn", None) is None
+
+    def test_missing_and_empty_url(self):
+        assert _absolute_event_url("https://x.cn", "") is None
+
+    def test_non_string_url(self):
+        assert _absolute_event_url("https://x.cn", 12345) is None
+
+    def test_root_relative_is_expanded(self):
+        assert (
+            _absolute_event_url("https://x.cn", "/student/events/1")
+            == "https://x.cn/student/events/1"
+        )
+
+    def test_absolute_is_passed_through(self):
+        assert (
+            _absolute_event_url("https://x.cn", "https://other.test/e")
+            == "https://other.test/e"
+        )

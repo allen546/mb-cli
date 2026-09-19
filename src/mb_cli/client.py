@@ -136,6 +136,19 @@ def _local_iana_zone():
     return None
 
 
+def _absolute_event_url(base: str, url: object) -> str | None:
+    """Resolve a FullCalendar ``url`` field against *base*, or ``None``.
+
+    FullCalendar serializes a missing link as ``"url": null`` rather than
+    omitting the key, so ``dict.get("url", "")`` returns ``None`` and the naive
+    ``.startswith("/")`` raised ``AttributeError`` — which aborted the whole
+    `tahuti calendar` listing over one link-less event, not just that event.
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    return f"{base}{url}" if url.startswith("/") else url
+
+
 def _validate_school_domain(school: str, domain: str) -> tuple[str, str]:
     """Normalise and validate the school subdomain and base domain.
 
@@ -380,7 +393,13 @@ class ManageBacClient:
         self.session.verify = verify
         self.student_name: str | None = None
         self.cache = cache or ResponseCache()
-        self.retry = retry
+        # Clamped: `--retry` is a plain int with no floor, and `range(retry + 1)`
+        # on a negative value never runs the loop body, so the retry wrapper fell
+        # through to `raise last_exc` with `last_exc` still None —
+        # `TypeError: exceptions must derive from BaseException` instead of a
+        # usable error about the request that failed. The help text documents
+        # "0=off", so anything below 0 means the same thing.
+        self.retry = max(0, retry)
         self.request_delay = request_delay
         self._last_request_time: float = 0.0
         self._last_url: str | None = None
@@ -1727,9 +1746,7 @@ class ManageBacClient:
                 else None,
                 "type": e.get("type"),
                 "category": e.get("category"),
-                "url": f"{self.base}{e['url']}"
-                if e.get("url", "").startswith("/")
-                else e.get("url"),
+                "url": _absolute_event_url(self.base, e.get("url")),
                 "color": e.get("backgroundColor"),
             }
             for e in events
