@@ -5,10 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Release dates below are derived from git history (the last commit carrying each
-version string in `pyproject.toml`); there are no git tags in this repository.
+Release dates below are the date of the `vX.Y.Z` git tag; `0.4.0` is the first
+release to carry one.
 
 ## [Unreleased]
+
+Nothing yet.
+
+## [0.4.0] - 2026-09-19
+
+Contains a **breaking webhook signature change** — see `### Changed` below. Any
+deployed receiver rejects every payload until it adds `X-MB-Timestamp` to its
+signed material.
+
+> Renamed from `mb-cli` to **`tahuti`**. The distribution, the CLI command and
+> the repository are all `tahuti` now; the Python import path stays `mb_cli`, so
+> `import mb_cli` and `python -m mb_cli` are unchanged. Environment variables
+> stay `MB_CRAWLER_*` and the state directory stays `~/.config/tahuti/`.
+> (`mb-cli`/`mb_cli` on PyPI is an unrelated project by another author, so
+> nothing here overwrites it.)
+
 
 ### Added
 - **Per-endpoint delivery outcomes.** `WebhookDispatcher.dispatch()` returns a

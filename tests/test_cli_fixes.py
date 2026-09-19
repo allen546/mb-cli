@@ -41,6 +41,26 @@ def test_version_is_sourced_from_mb_cli_version():
     assert __version__ in action.version
 
 
+def test_pyproject_version_matches_mb_cli_version():
+    """`pyproject.toml` and `mb_cli.__version__` must agree.
+
+    They are the two places a version lives, and a release that updates one and
+    not the other builds an artifact whose metadata and runtime disagree — the
+    sdist is stamped from pyproject while `tahuti --version` reads the module.
+    Read with a regex rather than `tomllib`, which is 3.11+ and the floor is
+    3.10.
+    """
+    import re
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    match = re.search(
+        r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M
+    )
+    assert match, "could not read [project].version from pyproject.toml"
+    assert match.group(1) == __version__
+
+
 # ── `tahuti submissions --check-feedback <filter>` ───────────────────────
 
 
