@@ -19,6 +19,12 @@ from bs4 import BeautifulSoup
 from .cache import ResponseCache
 from .exceptions import CommandError
 from .filters import classify_task_view, is_task_submitted
+from .task_status import (
+    SUBMISSION_NOT_SUBMITTED,
+    SUBMISSION_SUBMITTED,
+    normalize_submission_status,
+    submission_status_from_labels,
+)
 
 log = logging.getLogger(__name__)
 
@@ -363,6 +369,75 @@ def _detect_upload_failure(response: requests.Response) -> str | None:
         if marker in lowered:
             return f"response contained {marker!r}"
     return None
+
+
+# ── Submission-state parsing ─────────────────────────────────────────────
+#
+# ManageBac signals submission in two places, and *neither* uses a CSS class
+# containing the word "submitted" for the submitted case:
+#
+# * the class-grades card, where the submitted state is a green box badge —
+#   ``<span class="badge color-box-green">…<span class="badge-label">Submitted</span></span>``
+#   — and the unsubmitted state is ``<span class="cell not-submitted">Not
+#   Submitted</span>`` (text with a space, not a hyphen);
+# * the tasks-list tile suffix, whose ``f-task-score--<variant>`` modifier names
+#   the state outright (``--submitted``, ``--not-assessed``, ``--assessment``,
+#   ``--due``) while carrying no dropbox link at all.
+#
+# So the state is read from those signals and canonicalised at the boundary;
+# anything else is an unlabelled task and stays unknown.
+
+# An element whose class states the state outright.  Kept for markup that does
+# carry it; the *text* is normalised regardless, because the live page writes
+# "Not Submitted".
+_STATE_CLASS_RE = re.compile(r"\b(submitted|not-submitted)\b")
+
+# The badge ManageBac actually renders for a submission state.
+_BADGE_CLASS_RE = re.compile(r"\b(?:badge|color-box)\b")
+
+# The tasks-list tile suffix variant: f-task-score--submitted, --not-assessed,
+# --assessment, --due.
+_TILE_SCORE_VARIANT_RE = re.compile(r"f-task-score--([a-z-]+)")
+
+
+def _card_submission_status(card, labels: Any = None) -> str | None:
+    """Read a class-grades card's submission state as a canonical token.
+
+    Returns :data:`~mb_cli.task_status.SUBMISSION_SUBMITTED` /
+    :data:`~mb_cli.task_status.SUBMISSION_NOT_SUBMITTED`, or ``None`` when the
+    card says nothing about submission.  ``None`` must stay ``None``: inventing a
+    state here is exactly how a task the page never labelled came to be reported
+    as unsubmitted (and, with no dropbox link to rescue it, as "Complete").
+    """
+    # 1. An element whose class states the state.  The text is normalised rather
+    #    than trusted verbatim.
+    for el in card.find_all(class_=_STATE_CLASS_RE):
+        token = normalize_submission_status(el.get_text(strip=True))
+        if token:
+            return token
+
+    # 2. The badge.  The pending badge is grey and the submitted one green, but
+    #    both are `badge`, so the label text decides — never the colour.
+    for el in card.find_all(class_=_BADGE_CLASS_RE):
+        token = normalize_submission_status(el.get_text(strip=True))
+        if token:
+            return token
+
+    # 3. Label text as a last resort.
+    return submission_status_from_labels(labels)
+
+
+def _tile_score_variant(score_div) -> str | None:
+    """Return a tasks-list tile's ``f-task-score--<variant>`` modifier, if any.
+
+    A bare ``f-task-score`` (older markup, no modifier) returns ``None`` — an
+    absent variant says nothing and must not be guessed at.
+    """
+    if score_div is None:
+        return None
+    classes = " ".join(score_div.get("class", []) or [])
+    match = _TILE_SCORE_VARIANT_RE.search(classes)
+    return match.group(1) if match else None
 
 
 class ManageBacClient:
@@ -841,11 +916,33 @@ class ManageBacClient:
         grade_letter = None
         grade_score = None
         has_submit_button = False
+        # The submission state the tile's suffix declares, if any.  Read from the
+        # suffix *variant* class, which is the only signal the current UI gives:
+        # none of the 47 tiles on a live tasks page carries a dropbox link or a
+        # "Submit" control, so the submit-button heuristic below can never fire
+        # and every tile looked identically unsubmitted-but-actionable.
+        declared_status = None
 
         suffix = tile.find("div", class_=re.compile(r"f-tile__suffix"))
-        if suffix:
-            score_div = suffix.find("div", class_=re.compile(r"f-task-score"))
-            if score_div:
+        score_div = suffix.find("div", class_=re.compile(r"f-task-score")) if suffix else None
+        variant = _tile_score_variant(score_div)
+        if score_div:
+            if variant == "submitted":
+                declared_status = SUBMISSION_SUBMITTED
+            elif variant == "due":
+                # Nothing handed in: the suffix falls back to the due date.
+                declared_status = SUBMISSION_NOT_SUBMITTED
+            elif variant == "not-assessed":
+                # "Not Assessed Yet" — parsed as the grade the page shows, and
+                # deliberately *not* as a submission state: the tile does not say
+                # the work was handed in, and guessing it would invent a state.
+                body = score_div.find(class_=re.compile(r"f-task-score__body")) or score_div
+                text = body.get_text(" ", strip=True)
+                if text:
+                    grade_letter = text
+            else:
+                # `--assessment` (a real grade) or a bare `f-task-score` in older
+                # markup: read the grade box.
                 h4 = score_div.find("h4")
                 p = score_div.find("p")
                 grade_letter = h4.get_text(strip=True) if h4 else None
@@ -853,17 +950,21 @@ class ManageBacClient:
                 # Grade score must be a genuine score/percentage/points, never a lifecycle badge
                 if raw_score and not any(k in raw_score.lower() for k in ["submitted", "pending", "task", "due", "not"]):
                     grade_score = raw_score
-            else:
-                # Suffix does not contain a grade box; extract status badges and action links
-                for el in suffix.find_all(["span", "div", "a"]):
-                    txt = el.get_text(strip=True)
-                    if txt and txt not in labels:
-                        labels.append(txt)
-                    href = str(el.get("href", "")).lower()
-                    if "dropbox" in href or any(kw in txt.lower() for kw in ("submit", "upload")):
-                        has_submit_button = True
+        else:
+            # Suffix does not contain a grade box; extract status badges and action links
+            for el in (suffix.find_all(["span", "div", "a"]) if suffix else []):
+                txt = el.get_text(strip=True)
+                if txt and txt not in labels:
+                    labels.append(txt)
+                href = str(el.get("href", "")).lower()
+                if "dropbox" in href or any(kw in txt.lower() for kw in ("submit", "upload")):
+                    has_submit_button = True
 
-        from .task_status import get_submission_status, SubmissionStatus
+        from .task_status import SubmissionStatus, get_submission_status
+
+        if declared_status is None:
+            declared_status = submission_status_from_labels(labels)
+
         parsed = {
             "title": title,
             "link": f"{self.base}{link}" if link.startswith("/") else link,
@@ -878,8 +979,22 @@ class ManageBacClient:
             "has_submit_button": has_submit_button,
         }
         sub_status = get_submission_status(parsed)
+        # The declared state wins: it comes from the page, while `parsed` carries
+        # no status yet for the classifier to work from.
+        if declared_status == SUBMISSION_SUBMITTED:
+            sub_status = SubmissionStatus.SUBMITTED
+        elif declared_status == SUBMISSION_NOT_SUBMITTED and sub_status != SubmissionStatus.SUBMITTED:
+            sub_status = SubmissionStatus.PENDING
         parsed["submission_status"] = sub_status.value
-        parsed["status"] = "submitted" if sub_status == SubmissionStatus.SUBMITTED else "not-submitted"
+        # `status` is only written when the tile actually says something.  The old
+        # line asserted "not-submitted" for every task it could not prove
+        # submitted, so 37 graded or unlabelled tiles carried a false status.
+        if sub_status == SubmissionStatus.SUBMITTED:
+            parsed["status"] = SUBMISSION_SUBMITTED
+        elif sub_status == SubmissionStatus.PENDING:
+            parsed["status"] = SUBMISSION_NOT_SUBMITTED
+        else:
+            parsed["status"] = None
         if sub_status == SubmissionStatus.PENDING:
             parsed["has_submit_button"] = True
         return parsed
@@ -1976,12 +2091,6 @@ class ManageBacClient:
             points_el = card.find("div", class_="points")
             points_text = points_el.get_text(strip=True) if points_el else None
 
-            # Submission status
-            status_el = card.find(
-                "span", class_=re.compile(r"\b(submitted|not-submitted)\b")
-            )
-            status = status_el.get_text(strip=True) if status_el else None
-
             # Category and badge labels
             labels: list[str] = []
             labels_set = card.find("div", class_="labels-set")
@@ -1995,13 +2104,15 @@ class ManageBacClient:
                     if t:
                         labels.append(t)
 
-            # Robust status detection from labels if status element is absent or generic
-            if not status:
-                labels_lower = [l.lower() for l in labels]
-                if "submitted" in labels_lower:
-                    status = "submitted"
-                elif "pending" in labels_lower or "not submitted" in labels_lower:
-                    status = "not-submitted"
+            # Submission status.  Read off the real signals (the green
+            # `Submitted` badge, the `cell not-submitted` span) and canonicalised
+            # here: the old code stored the span's text verbatim, so the 11
+            # unsubmitted tasks carried "Not Submitted" — capital N, capital S,
+            # space not hyphen — which the `status == "not-submitted"` test
+            # downstream could never match.  Six more tasks have no dropbox link
+            # (their teacher closed it) and no badge at all; those stay None
+            # rather than being guessed into a state.
+            status = _card_submission_status(card, labels)
 
             # Parse submit button
             dropbox_link = card.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
@@ -2278,9 +2389,10 @@ class ManageBacClient:
             )
             detail["has_submit_button"] = has_submit_btn
 
-            # Parse status
-            status_el = card.find("span", class_=re.compile(r"\b(submitted|not-submitted)\b"))
-            status = status_el.get_text(strip=True) if status_el else None
+            # Parse status.  Same two signals as the class-grades card, same
+            # canonicalisation: the detail page renders the submitted state as a
+            # badge with no `submitted` class, and the unsubmitted one as
+            # `cell not-submitted` reading "Not Submitted".
             labels = []
             labels_set = card.find("div", class_="labels-set")
             if labels_set:
@@ -2292,13 +2404,7 @@ class ManageBacClient:
                     t = badge.get_text(strip=True)
                     if t and t not in labels:
                         labels.append(t)
-            if not status:
-                labels_lower = [l.lower() for l in labels]
-                if "submitted" in labels_lower:
-                    status = "submitted"
-                elif "pending" in labels_lower or "not submitted" in labels_lower:
-                    status = "not-submitted"
-            detail["status"] = status
+            detail["status"] = _card_submission_status(card, labels)
             detail["labels"] = labels
 
         if not from_hint:
@@ -2426,13 +2532,18 @@ class ManageBacClient:
             due_date = t.get("due_date")
             has_submit_btn = bool(t.get("has_submit_button", False))
             is_submitted = is_task_submitted(t)
+            # Compare the canonical token, not the raw page text: the grades page
+            # writes "Not Submitted" (space, not hyphen), so an exact string test
+            # here silently dropped the unsubmitted state for any card whose
+            # teacher had closed the dropbox link.
+            canonical_status = normalize_submission_status(t.get("status"))
 
             if is_submitted:
                 task_status = "submitted"
-            elif has_submit_btn or t.get("status") == "not-submitted":
+            elif has_submit_btn or canonical_status == SUBMISSION_NOT_SUBMITTED:
                 task_status = "not-submitted"
             else:
-                task_status = t.get("status")
+                task_status = canonical_status or t.get("status")
 
             reconstructed_task = {
                 "id": task_id,
