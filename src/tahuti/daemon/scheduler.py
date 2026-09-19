@@ -85,17 +85,16 @@ class DDLScheduler:
             if not due_str:
                 continue
 
-            due_dt = parse_due_date(due_str)
+            due_dt = parse_due_date(due_str, school_tz=self.school_timezone)
             if due_dt is None:
                 continue
 
             # Ensure due_dt and task_now have matching tzinfo without mutating current_time
             task_now = current_time
             if due_dt.tzinfo is None:
-                # A naive due date is school-local wall clock. Attach the
-                # configured school zone when there is one; otherwise fall back
-                # to whatever zone `task_now` carries, which is the historical
-                # (and wrong-for-remote-schools) behaviour.
+                # Unreachable while parse_due_date keeps returning aware
+                # datetimes, but kept so a future caller that hands back a naive
+                # value still lands on the school clock rather than the host's.
                 assumed = self.school_timezone or task_now.tzinfo
                 if assumed is not None:
                     due_dt = due_dt.replace(tzinfo=assumed)

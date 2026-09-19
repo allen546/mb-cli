@@ -833,6 +833,56 @@ def test_naive_due_date_is_read_on_the_configured_school_clock(tmp_path: Path):
     assert host_clock.evaluate_deadlines(now=now) == []
 
 
+@pytest.mark.parametrize("host_tz", ["UTC", "Asia/Shanghai", "America/New_York"])
+def test_school_timezone_beats_the_host_clock(host_tz, monkeypatch, tmp_path):
+    """`school_timezone=` must not depend on what zone the daemon runs in.
+
+    It did. `parse_due_date` attached the *host's* zone to every naive due
+    date, so `due_dt.tzinfo` was never None and the scheduler's school-zone
+    branch could never run — the feature was written but never connected. The
+    symptom was a test that passed only when the host happened to be UTC+8 and
+    failed on UTC, so CI was red on every Python version while it looked fine
+    locally in Beijing.
+    """
+    monkeypatch.setenv("TZ", host_tz)
+
+    state = DaemonStateManager(tmp_path / "state.json")
+    state.update_task(
+        {
+            "id": "1000099",
+            "class_id": "1000012",
+            "title": "Essay",
+            "due_date": "September 15, 2026 at 11:59 PM",
+            "status": "not-submitted",
+        }
+    )
+    scheduler = DDLScheduler(
+        state, [ReminderThreshold(threshold_minutes=60, name="1h")],
+        school_timezone="Asia/Shanghai",
+    )
+    # 23:59 in Beijing is 15:59 UTC, so at 15:00 UTC it is 59 minutes away.
+    now = datetime(2026, 9, 15, 15, 0, tzinfo=ZoneInfo("UTC"))
+    events = scheduler.evaluate_deadlines(now=now)
+    assert len(events) == 1, host_tz
+    assert events[0].data["due_iso"].endswith("+08:00"), host_tz
+
+
+def test_parse_due_date_honours_the_school_zone_not_the_host(monkeypatch):
+    """The same wall-clock string must mean the same instant everywhere."""
+    from tahuti.client import parse_due_date
+
+    text = "September 15, 2026 at 11:59 PM"
+    for host_tz in ("UTC", "Asia/Shanghai", "America/New_York", "Australia/Sydney"):
+        monkeypatch.setenv("TZ", host_tz)
+        school = parse_due_date(text, school_tz=ZoneInfo("Asia/Shanghai"))
+        assert school.utcoffset().total_seconds() == 8 * 3600, host_tz
+        assert (school.hour, school.minute) == (23, 59), host_tz
+
+        # An input carrying its own offset keeps it under any school zone.
+        iso = parse_due_date("2026-09-15T23:59:00+02:00", school_tz=ZoneInfo("Asia/Shanghai"))
+        assert iso.utcoffset().total_seconds() == 2 * 3600, host_tz
+
+
 def test_resolve_school_timezone_rejects_junk():
     assert resolve_school_timezone(None) is None
     assert resolve_school_timezone("") is None

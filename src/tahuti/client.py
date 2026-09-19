@@ -191,15 +191,32 @@ HEADERS = {
 }
 
 
-def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> datetime | None:
+def parse_due_date(
+    due_date_str: str,
+    now_ref: datetime | None = None,
+    school_tz: tzinfo | None = None,
+) -> datetime | None:
     """Parse a ManageBac due date into a **timezone-aware** datetime.
 
     Every return value carries a ``tzinfo``, so two parsed dates are always
     comparable.  See :func:`_school_display_tz` for the timezone assumption
     applied to inputs that carry no offset of their own.
 
+    *school_tz* overrides that assumption for the naive inputs — pass the
+    school's zone and "September 15, 2026 at 23:59" is read as 23:59 *there*
+    rather than on the daemon host's clock.  It has to be a parameter rather
+    than something the caller can fix up afterwards: once the host's zone has
+    been attached the fact that the input was a bare wall-clock time is gone,
+    and the school's reading cannot be recovered from the result.
+
+    Inputs that carry their own offset keep it under every *school_tz*.
+
     Returns ``None`` when *due_date_str* is empty or unparseable.
     """
+
+    def _wall_clock(naive: datetime) -> datetime:
+        return naive.replace(tzinfo=school_tz or _school_display_tz(naive))
+
     if not due_date_str:
         return None
     try:
@@ -215,9 +232,7 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
                 # An ISO string with an offset keeps it; one without gets the
                 # school-display timezone rather than staying naive.
                 if parsed_iso.tzinfo is None:
-                    parsed_iso = parsed_iso.replace(
-                        tzinfo=_school_display_tz(parsed_iso)
-                    )
+                    parsed_iso = _wall_clock(parsed_iso)
                 return parsed_iso
             except (ValueError, TypeError):
                 pass
@@ -240,21 +255,21 @@ def parse_due_date(due_date_str: str, now_ref: datetime | None = None) -> dateti
                 parsed = datetime.strptime(cleaned_no_at, fmt)
                 # The offset has to be resolved for *this* date: a DST-aware zone
                 # object would pin whichever offset is in force at call time.
-                return parsed.replace(tzinfo=_school_display_tz(parsed))
+                return _wall_clock(parsed)
             except ValueError:
                 continue
 
         # 3. Formats without year (infer from ref year with wrapping)
         ref = now_ref or datetime.now()
         if ref.tzinfo is None:
-            ref = ref.replace(tzinfo=_school_display_tz(ref))
+            ref = _wall_clock(ref)
         current_year = ref.year
 
         dt = None
         for fmt in ("%b %d, %I:%M %p", "%B %d, %I:%M %p", "%b %d", "%B %d"):
             try:
                 parsed = datetime.strptime(f"{cleaned_no_at} {current_year}", f"{fmt} %Y")
-                dt = parsed.replace(tzinfo=_school_display_tz(parsed))
+                dt = _wall_clock(parsed)
                 break
             except ValueError:
                 continue
