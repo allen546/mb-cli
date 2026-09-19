@@ -1,29 +1,31 @@
-"""Submission-state parsing against the live ManageBac markup.
+"""Submission-state parsing, pinned to the frozen (Era 2) behaviour.
 
 Every state-bearing fragment in this file is verbatim markup captured from the
 ``myschool.managebac.cn`` class-grades and tasks-list pages on 2026-09-19.
-Nothing here is invented markup; the surrounding card/tile scaffolding is only
-what the parser needs to find a title.
 
-The two facts that made the old parser wrong, both of which the fixtures below
-pin:
+**What this file is for.**  A 2026-09-19 review found real defects in how these
+signals are read and fixed them, then discovered the fixes *moved
+classifications*.  The owner ruled that classification output is frozen — the
+frozen version is the one that survived a week of live pressure testing through
+the daemon and webhook — so the fixes were reverted here and the corrected
+readings were preserved as **additive fields** that no classifier consults.
 
-* ManageBac never renders a CSS class containing "submitted" for the submitted
-  case.  On a class-grades page the submitted state is a green box badge whose
-  nested ``badge-label`` reads "Submitted" — there is no ``span.submitted``
-  anywhere on any class-grades page, so ``find(class_=...submitted...)`` returns
-  ``None`` for all 11 genuinely-submitted tasks.
-* The unsubmitted state is ``<span class="cell not-submitted">`` whose *text* is
-  "Not Submitted" — capital N, capital S, space and not hyphen.  Storing that
-  text verbatim made the ``status == "not-submitted"`` test downstream
-  permanently dead, and for a card whose teacher had closed the dropbox link
-  there was nothing left to rescue it: a task the page labels ``Not Submitted``
-  displayed as plain "Complete".
+The contract this file pins:
 
-Six real tasks carry no badge, a "Not Assessed Yet" cell and no dropbox link at
-all.  Whether those should display "Complete", "Incomplete (Todo)" or an honest
-"Unknown" is an open design question for the project owner, so these tests pin
-only what the page says and leave the display string exactly as it was.
+* ``status`` carries ManageBac's own spelling, verbatim.  The unsubmitted state
+  is ``<span class="cell not-submitted">`` whose *text* is "Not Submitted" —
+  capital N, capital S, a space where the token has a hyphen.
+* :func:`~mb_cli.task_status.get_submission_status` compares ``status`` by
+  **exact lowercased string equality**.  So "not submitted" never matches
+  "not-submitted", and on the class path PENDING is reached through
+  ``has_submit_btn`` alone.  That asymmetry is load-bearing; see §"Why the
+  classifier is exact" below.
+* The corrected reading lives in ``submission_status`` (class path) and
+  ``tile_declared_status`` (tile path).  Neither moves a classification, and
+  both exist so a future *approved* rule can be built on real signals.
+
+Changing anything in the first three bullets is a classification change and
+needs the owner's approval, not just a passing test run.
 """
 
 from __future__ import annotations
@@ -61,6 +63,7 @@ from mb_cli.task_status import (
     SUBMISSION_NOT_SUBMITTED,
     SUBMISSION_SUBMITTED,
     SubmissionStatus,
+    classify_task_view,
     format_grade_display,
     get_submission_status,
     get_task_display_status,
@@ -183,11 +186,67 @@ def _parse_tiles(client, tiles: list[str]) -> list[dict]:
             if (t := client._parse_tile(tile))]
 
 
-# ── Consequence 3: the submitted state is never read at all ──────────────
+# ── Why the classifier is exact ──────────────────────────────────────────
 
 
-class TestSubmittedBadgeIsTheSignal:
-    """The submitted state lives in a badge whose class never says "submitted"."""
+class TestWhyTheClassifierIsExact:
+    """The frozen contract, stated as executable assertions.
+
+    Every test here is a behaviour the review *tried to change* and reverted.
+    They read like bugs because on their own terms they are; they are pinned
+    because the owner froze the output, and because reverting them is what makes
+    the 24 pre-existing tests in ``test_task_status.py`` pass again.
+    """
+
+    def test_the_cell_text_is_stored_verbatim(self, client):
+        """``status`` keeps the page's spelling, space and all."""
+        tasks = _parse_cards(client, [_card("1000103", "Vocabulary quiz", NOT_SUBMITTED_CELL)])
+        assert tasks[0]["status"] == "Not Submitted"
+
+    def test_verbatim_cell_text_does_not_match_the_token(self):
+        """...which is exactly why it never reaches PENDING through ``status``."""
+        task = {"status": "Not Submitted", "due_date": "Sep 07, 11:59 PM"}
+        assert get_submission_status(task) == SubmissionStatus.NONE
+        assert is_task_todo(task) is False
+        assert classify_task_view(task) == "past"
+
+    def test_only_the_exact_token_matches(self):
+        assert get_submission_status({"status": "not-submitted"}) == SubmissionStatus.PENDING
+        for raw in ("not submitted", "Not Submitted", "NOT SUBMITTED", "not_submitted"):
+            assert get_submission_status({"status": raw}) == SubmissionStatus.NONE, raw
+
+    def test_submitted_is_likewise_exact_but_lowercased(self):
+        assert get_submission_status({"status": "submitted"}) == SubmissionStatus.SUBMITTED
+        assert get_submission_status({"status": "Submitted"}) == SubmissionStatus.SUBMITTED
+        assert get_submission_status({"status": "SUBMITTED"}) == SubmissionStatus.SUBMITTED
+
+    def test_has_submit_btn_is_the_class_path_route_to_pending(self, client):
+        """Same card, with and without the dropbox link — the only difference."""
+        closed = _parse_cards(
+            client, [_card("1000106", "Chinese oral", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=False)]
+        )[0]
+        open_ = _parse_cards(
+            client, [_card("1000106", "Chinese oral", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=True)]
+        )[0]
+
+        assert closed["status"] == open_["status"] == "Not Submitted"
+        assert closed["has_submit_button"] is False
+        assert open_["has_submit_button"] is True
+        assert get_submission_status(closed) == SubmissionStatus.NONE
+        assert get_submission_status(open_) == SubmissionStatus.PENDING
+
+    def test_a_state_free_status_is_not_invented(self):
+        for raw in (None, "", "graded", "Not Assessed Yet", "Formative", "Pending", "Waiting"):
+            assert get_submission_status({"status": raw}) == SubmissionStatus.NONE, raw
+
+
+# ── The class path reads only the state-class span and the labels ────────
+
+
+class TestClassPathReadsOnlyWhatTheFrozenVersionRead:
+    """The submitted badge is *not* a signal on the class path — that is the
+    single biggest thing the reverted fix changed, so it is pinned hardest.
+    """
 
     def test_no_element_on_a_submitted_card_carries_a_submitted_class(self):
         soup = BeautifulSoup(_card("1000101", "Reading response", SUBMITTED_BADGE), "html.parser")
@@ -196,44 +255,55 @@ class TestSubmittedBadgeIsTheSignal:
             "fixture ever grows one, the fixture stopped being live markup"
         )
 
-    def test_submitted_badge_detected_without_any_submitted_class(self, client):
+    def test_a_bare_submitted_badge_is_not_read_as_submitted(self, client):
+        """Frozen behaviour: the badge is not consulted, so the task is not todo.
+
+        ``submission_status`` *does* record the corrected reading — additively,
+        without moving the classification.
+        """
         tasks = _parse_cards(client, [_card("1000101", "Reading response", SUBMITTED_BADGE)])
         task = tasks[0]
 
-        # No labels to fall back on either: the badge is the only signal.
         assert task["labels"] is None
-        assert task["status"] == SUBMISSION_SUBMITTED
-        assert get_submission_status(task) == SubmissionStatus.SUBMITTED
-        assert get_task_display_status(task) == "Complete (Submitted)"
+        assert task["status"] is None
+        assert task["submission_status"] == SUBMISSION_SUBMITTED
+        assert get_submission_status(task) == SubmissionStatus.NONE
+        assert get_task_display_status(task) == "Complete"
 
-    def test_submitted_badge_inside_labels_set_is_detected_too(self, client):
-        """The live card also carries the badge inside its ``labels-set`` cell.
+    def test_a_bare_pending_badge_is_not_read_as_unsubmitted(self, client):
+        """Same shape, same reason: only its ``badge-label`` says anything."""
+        tasks = _parse_cards(client, [_card("1000102", "Essay plan", PENDING_BADGE)])
+        task = tasks[0]
 
-        Pre-fix that label text was the *only* reason the 11 submitted tasks were
-        detected at all — incidentally, through a label, never through the badge.
-        Both shapes must now read the same.
+        assert task["status"] is None
+        assert task["submission_status"] == SUBMISSION_NOT_SUBMITTED
+        assert get_submission_status(task) == SubmissionStatus.NONE
+        assert get_task_display_status(task) == "Complete"
+
+    def test_the_badge_inside_labels_set_is_read_through_the_label(self, client):
+        """The one route by which the frozen version *did* detect these.
+
+        When the badge sits inside the card's ``labels-set`` cell its text lands
+        in ``labels``, and the frozen label fallback writes the canonical token —
+        which then matches exactly.  Detection through a label, never through the
+        badge: this asymmetry between the two card shapes is the frozen behaviour.
         """
         cell = f'<div class="cell labels-set">{SUBMITTED_BADGE}</div>'
         tasks = _parse_cards(client, [_card("1000108", "Reading response", cell)])
         task = tasks[0]
+
         assert "Submitted" in (task["labels"] or [])
         assert task["status"] == SUBMISSION_SUBMITTED
+        assert get_submission_status(task) == SubmissionStatus.SUBMITTED
         assert get_task_display_status(task) == "Complete (Submitted)"
 
-    def test_pending_badge_alone_also_names_the_unsubmitted_state(self, client):
-        """The grey badge carries no state class either — only its label says it."""
-        tasks = _parse_cards(client, [_card("1000102", "Essay plan", PENDING_BADGE)])
-        assert tasks[0]["status"] == SUBMISSION_NOT_SUBMITTED
-        assert get_task_display_status(tasks[0]) == "Incomplete (Todo)"
-
-    def test_cell_text_is_canonicalised_not_stored_verbatim(self, client):
-        """The cell's text is "Not Submitted"; the stored token is "not-submitted"."""
-        tasks = _parse_cards(
-            client, [_card("1000103", "Vocabulary quiz", NOT_SUBMITTED_CELL, PENDING_BADGE)]
-        )
+    def test_a_pending_label_writes_the_canonical_token(self, client):
+        """``labels`` spelling the outstanding state does reach PENDING."""
+        cell = f'<div class="cell labels-set"><div class="label">Not Submitted</div></div>'
+        tasks = _parse_cards(client, [_card("1000109", "Essay plan", cell)])
         task = tasks[0]
+
         assert task["status"] == SUBMISSION_NOT_SUBMITTED
-        assert task["status"] != "Not Submitted"
         assert get_submission_status(task) == SubmissionStatus.PENDING
         assert is_task_todo(task) is True
         assert get_task_display_status(task) == "Incomplete (Todo)"
@@ -250,19 +320,24 @@ class TestSubmittedBadgeIsTheSignal:
         assert task["grade_letter"] == "A"
         assert task["points"] == "95 / 100 pts"
         assert task["status"] is None
+        assert task["submission_status"] is None
         assert get_task_display_status(task) == "Complete (Graded)"
 
 
-# ── Consequence 2: the latent wrong answer, already reachable ────────────
+# ── The closed-dropbox case: frozen, and visibly odd ─────────────────────
 
 
-class TestClosedDropboxStillClassifiesPending:
-    """Six real tasks have no dropbox link because their teacher closed it.
+class TestClosedDropboxStaysComplete:
+    """A card the page labels ``Not Submitted`` whose teacher closed the dropbox.
 
-    With ``has_submit_button`` False and the raw page text "Not Submitted", a
-    task the page explicitly labels ``Not Submitted`` used to classify as
-    ``none`` — which ``get_task_display_status`` prints as plain "Complete" and
-    ``format_grade_display`` as "Ungraded".
+    The review called this the headline defect: with ``has_submit_button`` False
+    and the verbatim text not matching, such a task classified as ``none`` and
+    displayed as plain "Complete".  That is wrong on its own terms and is exactly
+    the §6 divergence — but it is the frozen behaviour, so it is pinned here and
+    left alone until the owner approves a change.
+
+    Verified live: none of the 45 class-grades cards is in this shape today, so
+    no current task is affected.  Latent, not absent.
     """
 
     def _closed_dropbox_task(self, client) -> dict:
@@ -274,31 +349,33 @@ class TestClosedDropboxStillClassifiesPending:
         assert task["has_submit_button"] is False, "this case has no dropbox link"
         return task
 
-    def test_closed_dropbox_task_is_pending(self, client):
+    def test_it_is_not_todo(self, client):
         task = self._closed_dropbox_task(client)
-        assert task["status"] == SUBMISSION_NOT_SUBMITTED
-        assert get_submission_status(task) == SubmissionStatus.PENDING
-        assert is_task_todo(task) is True
+        assert task["status"] == "Not Submitted"
+        assert task["submission_status"] == SUBMISSION_NOT_SUBMITTED
+        assert get_submission_status(task) == SubmissionStatus.NONE
+        assert is_task_todo(task) is False
 
-    def test_closed_dropbox_task_is_never_complete(self, client):
-        task = self._closed_dropbox_task(client)
-        display = get_task_display_status(task)
-        assert display == "Incomplete (Todo)"
-        assert display not in ("Complete", "Complete (Graded)", "Complete (Submitted)")
+    def test_it_displays_complete(self, client):
+        assert get_task_display_status(self._closed_dropbox_task(client)) == "Complete"
 
-    def test_closed_dropbox_task_grade_is_unsubmitted_not_ungraded(self, client):
-        task = self._closed_dropbox_task(client)
-        grade = format_grade_display(task)
-        assert grade != "Ungraded"
-        assert grade in ("Unsubmitted", "⚠ Unsubmitted")
+    def test_it_is_not_unsubmitted_in_the_grade_display(self, client):
+        assert format_grade_display(self._closed_dropbox_task(client)) == "Ungraded"
 
-    def test_get_class_tasks_keeps_the_state_for_raw_page_text(self, client):
-        """The ``get_class_tasks`` reconstruction compares tokens, not page text.
+    def test_the_corrected_reading_is_available_anyway(self, client):
+        """``submission_status`` carries the state the page actually declared.
 
-        Fed a task still carrying the verbatim cell text "Not Submitted" and no
-        dropbox link — exactly what the old parse produced — the reconstruction
-        must still record "not-submitted" instead of dropping the state.
+        This is the field an approved rule should read; nothing classifies on it
+        today, which is precisely why restoring the frozen output was possible
+        without discarding the corrected parse.
         """
+        assert self._closed_dropbox_task(client)["submission_status"] == SUBMISSION_NOT_SUBMITTED
+
+
+class TestGetClassTasksGateIsExact:
+    """The §6 site: ``get_class_tasks`` reconstructs ``status`` from the card."""
+
+    def _reconstruct(self, client, status: str | None, has_btn: bool) -> dict:
         raw = {
             "task_id": "1000106",
             "title": "Chinese oral",
@@ -306,19 +383,34 @@ class TestClosedDropboxStillClassifiesPending:
             "due_date": "Sep 07",
             "grade_letter": None,
             "points": None,
-            "status": "Not Submitted",
+            "status": status,
             "category": None,
             "labels": None,
-            "has_submit_button": False,
+            "has_submit_button": has_btn,
         }
         with patch.object(client, "get_class_grades", return_value={"tasks": [raw]}):
-            tasks = client.get_class_tasks(CLASS_ID, class_name="Chinese A", bypass_cache=True)
+            return client.get_class_tasks(CLASS_ID, class_name="Chinese A", bypass_cache=True)[0]
 
-        assert tasks[0]["status"] == SUBMISSION_NOT_SUBMITTED
-        assert get_task_display_status(tasks[0]) == "Incomplete (Todo)"
+    def test_verbatim_page_text_does_not_become_the_token(self, client):
+        """The reverted fix canonicalised here; the frozen version does not."""
+        task = self._reconstruct(client, "Not Submitted", has_btn=False)
+        assert task["status"] == "Not Submitted"
+        assert task["status"] != SUBMISSION_NOT_SUBMITTED
+        assert get_task_display_status(task) == "Complete"
+
+    def test_the_exact_token_still_survives_reconstruction(self, client):
+        task = self._reconstruct(client, "not-submitted", has_btn=False)
+        assert task["status"] == SUBMISSION_NOT_SUBMITTED
+        assert get_submission_status(task) == SubmissionStatus.PENDING
+        assert get_task_display_status(task) == "Incomplete (Todo)"
+
+    def test_the_submit_button_alone_is_enough(self, client):
+        task = self._reconstruct(client, "Not Submitted", has_btn=True)
+        assert task["status"] == SUBMISSION_NOT_SUBMITTED
+        assert get_task_display_status(task) == "Incomplete (Todo)"
 
 
-# ── Out of scope: genuinely unknown submission state ─────────────────────
+# ── Genuinely unknown submission state ───────────────────────────────────
 
 
 class TestUnlabelledTaskStaysUnknown:
@@ -334,6 +426,7 @@ class TestUnlabelledTaskStaysUnknown:
         task = tasks[0]
         assert task["has_submit_button"] is False
         assert task["status"] is None
+        assert task["submission_status"] is None
         assert get_submission_status(task) == SubmissionStatus.NONE
 
     def test_display_string_is_unchanged(self, client):
@@ -344,105 +437,43 @@ class TestUnlabelledTaskStaysUnknown:
         assert normalize_submission_status("Not Assessed Yet") is None
 
 
-# ── The acceptance criterion: the live-verified classification table ─────
+# ── The tile path asserts its status ─────────────────────────────────────
 
 
-class TestLiveClassificationTable:
-    """45 real tasks: 17 graded, 11 submitted, 11 unsubmitted, 6 unlabelled.
+class TestTilePathAssertsItsStatus:
+    """``_parse_tile`` writes ``status`` unconditionally and never sets
+    ``has_submit_button``.
 
-    Complete (Graded) ×17, Complete (Submitted) ×11, Incomplete (Todo) ×11,
-    Complete ×6 — every row in the same place, plus the latent closed-dropbox
-    case now correct.
+    Both are frozen quirks, and both are pinned:
+
+    * ``status`` is ``"submitted"`` only when the *pre-status* pass proved it;
+      everything else is written ``"not-submitted"``.  A ``--submitted`` tile
+      therefore reports ``not-submitted`` — the variant is recorded in
+      ``tile_declared_status`` but is not fed to the classifier.
+    * ``has_submit_button`` is set only when that pass returned PENDING, which
+      it never does (it runs before ``status`` exists), so it is always False.
+      Measured on 58 live tiles: False in every single case, both versions.
+
+    The downstream consequence — ``submission_status`` reading ``"none"`` beside a
+    ``status`` of ``"not-submitted"`` — is the same in both versions and is what
+    makes an unsubmitted tile still count as todo.
     """
 
-    CARDS: list[str] = []
-    EXPECTED: dict[str, str] = {}
-    for _i in range(17):
-        CARDS.append(_card(f"{2100 + _i}", f"Graded {_i}", GRADED_CELL))
-        EXPECTED[f"Graded {_i}"] = "Complete (Graded)"
-    for _i in range(11):
-        CARDS.append(_card(f"{3100 + _i}", f"Submitted {_i}", SUBMITTED_BADGE))
-        EXPECTED[f"Submitted {_i}"] = "Complete (Submitted)"
-    for _i in range(11):
-        CARDS.append(
-            _card(f"{4100 + _i}", f"Todo {_i}", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=True)
-        )
-        EXPECTED[f"Todo {_i}"] = "Incomplete (Todo)"
-    for _i in range(6):
-        CARDS.append(_card(f"{5100 + _i}", f"Unlabelled {_i}", NOT_ASSESSED_CELL))
-        EXPECTED[f"Unlabelled {_i}"] = "Complete"
-    # The latent case: page says Not Submitted, teacher closed the dropbox.
-    CARDS.append(_card("6100", "Closed dropbox", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=False))
-    EXPECTED["Closed dropbox"] = "Incomplete (Todo)"
-
-    def test_the_45_verified_rows_stay_where_they_are(self, client):
-        tasks = _parse_cards(client, self.CARDS)
-        assert len(tasks) == 46  # the 45 real tasks plus the latent closed-dropbox case
-
-        counts = Counter(get_task_display_status(t) for t in tasks)
-        assert counts["Complete (Graded)"] == 17
-        assert counts["Complete (Submitted)"] == 11
-        assert counts["Incomplete (Todo)"] == 12  # the 11 real ones + the latent case
-        assert counts["Complete"] == 6
-
-    def test_every_row_lands_in_its_verified_bucket(self, client):
-        tasks = _parse_cards(client, self.CARDS)
-        actual = {t["title"]: get_task_display_status(t) for t in tasks}
-        assert actual == self.EXPECTED
-
-    def test_parsed_status_tokens_are_canonical(self, client):
-        tasks = {t["title"]: t for t in _parse_cards(client, self.CARDS)}
-
-        assert {t["status"] for name, t in tasks.items() if name.startswith("Submitted")} == {
-            SUBMISSION_SUBMITTED
-        }
-        assert {
-            t["status"] for name, t in tasks.items() if name.startswith(("Todo", "Closed"))
-        } == {SUBMISSION_NOT_SUBMITTED}
-        # Graded and unlabelled cards say nothing about submission; that stays
-        # None rather than being coerced into "not-submitted".
-        assert {t["status"] for name, t in tasks.items() if name.startswith(("Graded", "Unlabelled"))} == {
-            None
-        }
-
-    def test_all_11_unsubmitted_rows_are_genuinely_unsubmitted(self, client):
-        """Every Incomplete (Todo) row carries the page's own Not Submitted cell."""
-        tasks = _parse_cards(client, self.CARDS)
-        todo = [t for t in tasks if get_task_display_status(t) == "Incomplete (Todo)"]
-        assert len(todo) == 12
-        assert all(t["status"] == SUBMISSION_NOT_SUBMITTED for t in todo)
-        assert all(get_submission_status(t) == SubmissionStatus.PENDING for t in todo)
-
-    def test_all_11_submitted_rows_are_detected(self, client):
-        tasks = _parse_cards(client, self.CARDS)
-        submitted = [t for t in tasks if get_task_display_status(t) == "Complete (Submitted)"]
-        assert len(submitted) == 11
-        assert all(get_submission_status(t) == SubmissionStatus.SUBMITTED for t in submitted)
-
-
-# ── Consequence 4: the tile path and its four suffix variants ────────────
-
-
-class TestTileSuffixVariants:
-    """The tile suffix variant class is the signal; the submit-button heuristic
-    is dead — none of the 47 tiles on a live tasks page carries a dropbox link.
-    """
-
-    def test_submitted_variant(self, client):
+    def test_submitted_variant_is_not_read_as_submitted(self, client):
         (tile,) = _parse_tiles(client, [_tile("1000099", "Reading log", TILE_SUFFIX_SUBMITTED)])
-        assert tile["status"] == SUBMISSION_SUBMITTED
-        assert tile["submission_status"] == "submitted"
-        # The badge word must not leak into the grade fields.
+        assert tile["status"] == SUBMISSION_NOT_SUBMITTED
+        assert tile["submission_status"] == "none"
+        assert tile["tile_declared_status"] == SUBMISSION_SUBMITTED
+        assert tile["has_submit_button"] is False
+        # The frozen version did not read the suffix body text at all.
         assert tile["grade_letter"] is None
         assert tile["grade_score"] is None
-        assert tile["has_submit_button"] is False
 
-    def test_assessment_variant_parses_the_grade_and_claims_no_submission_state(self, client):
+    def test_assessment_variant_parses_the_grade_and_asserts_a_status(self, client):
         (tile,) = _parse_tiles(client, [_tile("1000098", "Unit test", TILE_SUFFIX_ASSESSMENT)])
         assert tile["grade_letter"] == "D"
         assert tile["grade_score"] == "24 /35 pts"
-        # Graded, so nothing to submit and no submission state to report.
-        assert tile["status"] is None
+        assert tile["status"] == SUBMISSION_NOT_SUBMITTED
         assert tile["submission_status"] == "none"
         assert tile["has_submit_button"] is False
 
@@ -454,33 +485,29 @@ class TestTileSuffixVariants:
         # and is never treated as a score.
         assert tile["grade_letter"] == "Not Assessed Yet"
         assert tile["grade_score"] is None
-        assert tile["status"] is None
+        assert tile["status"] == SUBMISSION_NOT_SUBMITTED
         assert tile["submission_status"] == "none"
 
-    def test_due_variant_is_the_pending_state(self, client):
-        """No grade element and no text at all — the variant class is all there is."""
+    def test_due_variant_is_asserted_but_not_actionable(self, client):
+        """No grade element and no text at all — nothing reaches the classifier."""
         (tile,) = _parse_tiles(client, [_tile("1000096", "Essay draft", TILE_SUFFIX_DUE)])
         assert tile["grade_letter"] is None
         assert tile["grade_score"] is None
         assert tile["status"] == SUBMISSION_NOT_SUBMITTED
-        assert tile["submission_status"] == "pending"
-        # A pending tile is offered an upload, as it always was.
-        assert tile["has_submit_button"] is True
+        assert tile["submission_status"] == "none"
+        assert tile["tile_declared_status"] == SUBMISSION_NOT_SUBMITTED
+        assert tile["has_submit_button"] is False
 
     def test_every_variant_is_read_from_the_class_alone(self, client):
-        """Strip the variant modifier and the state disappears with it.
+        """Strip the variant modifier and the declared state disappears with it.
 
-        Proves the detection is reading the ``f-task-score--<variant>`` class
-        rather than some leftover text heuristic.
+        Proves ``tile_declared_status`` is read from the
+        ``f-task-score--<variant>`` class rather than some text heuristic.
         """
-        variants = {
-            TILE_SUFFIX_SUBMITTED: SUBMISSION_SUBMITTED,
-            TILE_SUFFIX_DUE: SUBMISSION_NOT_SUBMITTED,
-        }
-        for suffix, expected in variants.items():
+        for suffix in (TILE_SUFFIX_SUBMITTED, TILE_SUFFIX_DUE, TILE_SUFFIX_ASSESSMENT):
             stripped = re.sub(r"f-task-score--[a-z-]+", "f-task-score", suffix)
             (tile,) = _parse_tiles(client, [_tile("1000095", "Essay draft", stripped)])
-            assert tile["status"] != expected
+            assert tile["tile_declared_status"] is None, suffix
 
     def test_legacy_suffix_markup_still_works(self, client):
         """Older tiles with no score box keep their badge/link driven status."""
@@ -490,8 +517,9 @@ class TestTileSuffixVariants:
             '<div class="f-tile__suffix"><span class="badge">Submitted</span></div>',
         )
         (tile,) = _parse_tiles(client, [legacy_submitted])
-        assert tile["status"] == SUBMISSION_SUBMITTED
+        # The badge lands in labels, so the pre-status pass does see it here.
         assert tile["submission_status"] == "submitted"
+        assert tile["status"] == SUBMISSION_SUBMITTED
 
         legacy_pending = _tile(
             "1000093",
@@ -500,9 +528,9 @@ class TestTileSuffixVariants:
             'href="/student/classes/1000012/core_tasks/1000093/dropbox">Submit Coursework</a></div>',
         )
         (tile,) = _parse_tiles(client, [legacy_pending])
-        assert tile["status"] == SUBMISSION_NOT_SUBMITTED
-        assert tile["submission_status"] == "pending"
         assert tile["has_submit_button"] is True
+        assert tile["submission_status"] == "pending"
+        assert tile["status"] == SUBMISSION_NOT_SUBMITTED
 
     def test_a_task_list_tile_is_no_longer_reported_submitted_by_its_action_label(self, client):
         """"Submit Coursework" is an action, not a state."""
@@ -510,24 +538,91 @@ class TestTileSuffixVariants:
         assert submission_status_from_labels(["Formative", "Upload submission"]) is None
 
 
-class TestTileTableMovesAsTheOwnerExpects:
-    """The tile path is *expected* to change: it called nearly everything todo.
+# ── The frozen tables ────────────────────────────────────────────────────
 
-    Under the live UI the tile path asserted "not-submitted" for anything it
-    could not prove submitted, so all 45 of these tiles carried that token — and
-    since the classifier re-derives state from it, all 45 read as pending — while
-    ``has_submit_button`` stayed False for every one of them.  Measured on this
-    fixture: 28 of the 45 displayed as "Incomplete (Todo)" (including all 11
-    genuinely-submitted ones) and 28 landed in ``overdue``; after the fix the
-    same 45 read 17 graded / 11 submitted / 11 due / 6 unlabelled, with 11 in
-    ``overdue``.
 
-    Only the class-grades table is the no-regression bar; this pins the corrected
-    tile reading so the movement is deliberate and visible.
+class TestFrozenClassGradesTable:
+    """The 45 live tasks, re-rendered from captured markup.
+
+    Frozen output: 17 Complete (Graded), 11 Complete, 11 Incomplete (Todo),
+    6 Complete.  Note the two "Complete" groups — the 11 submitted-badge tasks
+    land in the *same* bucket as the 6 unlabelled ones, because the frozen class
+    parser reads neither badge.  That is the frozen behaviour, not an oversight
+    this file is willing to paper over.
+    """
+
+    CARDS: list[str] = []
+    EXPECTED: dict[str, str] = {}
+    for _i in range(17):
+        CARDS.append(_card(f"{2100 + _i}", f"Graded {_i}", GRADED_CELL))
+        EXPECTED[f"Graded {_i}"] = "Complete (Graded)"
+    # Titles deliberately avoid the substring "submit": the frozen
+    # `has_submit_btn` scan accepts *any* <a>/<button> whose text contains it,
+    # including the card's own title link.  A task actually named "Submitted…"
+    # would therefore be read as actionable.  That is frozen behaviour and a real
+    # latent quirk, but it is not what these fixtures are here to measure.
+    for _i in range(11):
+        CARDS.append(_card(f"{3100 + _i}", f"Handed in {_i}", SUBMITTED_BADGE))
+        EXPECTED[f"Handed in {_i}"] = "Complete"
+    for _i in range(11):
+        CARDS.append(
+            _card(f"{4100 + _i}", f"Todo {_i}", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=True)
+        )
+        EXPECTED[f"Todo {_i}"] = "Incomplete (Todo)"
+    for _i in range(6):
+        CARDS.append(_card(f"{5100 + _i}", f"Unlabelled {_i}", NOT_ASSESSED_CELL))
+        EXPECTED[f"Unlabelled {_i}"] = "Complete"
+    # The latent closed-dropbox case, which also lands in "Complete".
+    CARDS.append(_card("6100", "Closed dropbox", NOT_SUBMITTED_CELL, PENDING_BADGE, dropbox=False))
+    EXPECTED["Closed dropbox"] = "Complete"
+
+    def test_the_45_verified_rows_stay_where_they_are(self, client):
+        tasks = _parse_cards(client, self.CARDS)
+        assert len(tasks) == 46  # the 45 real tasks plus the latent closed-dropbox case
+
+        counts = Counter(get_task_display_status(t) for t in tasks)
+        assert counts["Complete (Graded)"] == 17
+        assert counts["Incomplete (Todo)"] == 11
+        assert counts["Complete"] == 18  # 11 submitted-badge + 6 unlabelled + 1 closed-dropbox
+        assert counts["Complete (Submitted)"] == 0
+
+    def test_every_row_lands_in_its_verified_bucket(self, client):
+        tasks = _parse_cards(client, self.CARDS)
+        actual = {t["title"]: get_task_display_status(t) for t in tasks}
+        assert actual == self.EXPECTED
+
+    def test_the_corrected_readings_are_all_available(self, client):
+        """``submission_status`` is right even where ``status`` is frozen dumb."""
+        tasks = {t["title"]: t for t in _parse_cards(client, self.CARDS)}
+
+        assert {
+            t["submission_status"] for name, t in tasks.items() if name.startswith("Handed")
+        } == {SUBMISSION_SUBMITTED}
+        assert {
+            t["submission_status"] for name, t in tasks.items() if name.startswith("Todo")
+        } == {SUBMISSION_NOT_SUBMITTED}
+        # Graded and unlabelled cards say nothing about submission; that stays
+        # None rather than being coerced into a state.
+        assert {
+            t["submission_status"] for name, t in tasks.items()
+            if name.startswith(("Graded", "Unlabelled"))
+        } == {None}
+
+
+class TestFrozenTileTable:
+    """The same 45 tasks as tasks-list tiles.
+
+    Frozen output: 28 Incomplete (Todo) — the 11 submitted-badge tiles, the 11
+    due tiles and the 6 not-assessed tiles, all of them, because every tile
+    carries an asserted ``status`` of ``not-submitted`` and the downstream
+    classifier reads that as PENDING.  Only the 17 graded tiles escape.
+
+    A 2026-09-19 fix narrowed this to the 11 due tiles and moved 17 tasks out of
+    todo.  That movement was **not approved** and is reverted; this test is the
+    guard that it does not come back by accident.
     """
 
     def _tiles_for(self, client):
-        """The same 45 tasks re-rendered as tasks-list tiles."""
         tiles = []
         for i in range(17):
             tiles.append(_tile(f"{2100 + i}", f"Graded {i}", TILE_SUFFIX_ASSESSMENT))
@@ -539,46 +634,60 @@ class TestTileTableMovesAsTheOwnerExpects:
             tiles.append(_tile(f"{5100 + i}", f"Unlabelled {i}", TILE_SUFFIX_NOT_ASSESSED))
         return _parse_tiles(client, tiles)
 
-    def test_no_graded_or_submitted_tile_is_reported_unsubmitted(self, client):
+    def test_every_tile_asserts_a_status(self, client):
         tiles = self._tiles_for(client)
-        by_title = {t["title"]: t for t in tiles}
+        assert {t["status"] for t in tiles} == {SUBMISSION_NOT_SUBMITTED}
+        assert all(t["has_submit_button"] is False for t in tiles)
 
-        for name, task in by_title.items():
-            if name.startswith("Graded"):
-                assert task["grade_letter"] == "D", name
-                assert task["status"] is None, name
-            if name.startswith("Submitted"):
-                assert task["status"] == SUBMISSION_SUBMITTED, name
-            if name.startswith("Todo"):
-                assert task["status"] == SUBMISSION_NOT_SUBMITTED, name
-            if name.startswith("Unlabelled"):
-                assert task["status"] is None, name
-
-    def test_todo_count_drops_from_28_to_the_11_due_tiles(self, client):
+    def test_todo_count_is_the_frozen_28(self, client):
         tiles = self._tiles_for(client)
         todo = [t for t in tiles if get_task_display_status(t) == "Incomplete (Todo)"]
-        assert {t["title"] for t in todo} == {f"Todo {i}" for i in range(11)}
+        assert len(todo) == 28
+        assert {t["title"] for t in todo} == (
+            {f"Submitted {i}" for i in range(11)}
+            | {f"Todo {i}" for i in range(11)}
+            | {f"Unlabelled {i}" for i in range(6)}
+        )
+
+    def test_graded_tiles_are_graded(self, client):
+        tiles = {t["title"]: t for t in self._tiles_for(client)}
+        assert {t["grade_letter"] for name, t in tiles.items() if name.startswith("Graded")} == {"D"}
+        assert {
+            get_task_display_status(t) for name, t in tiles.items() if name.startswith("Graded")
+        } == {"Complete (Graded)"}
+
+    def test_the_declared_variants_are_all_recorded(self, client):
+        """The corrected reading, available but inert."""
+        tiles = {t["title"]: t for t in self._tiles_for(client)}
+        assert {
+            t["tile_declared_status"] for name, t in tiles.items() if name.startswith("Submitted")
+        } == {SUBMISSION_SUBMITTED}
+        assert {
+            t["tile_declared_status"] for name, t in tiles.items() if name.startswith("Todo")
+        } == {SUBMISSION_NOT_SUBMITTED}
+        assert {
+            t["tile_declared_status"] for name, t in tiles.items() if name.startswith("Unlabelled")
+        } == {None}
 
 
-# ── Consequence 1: the classifier tolerates every spelling ───────────────
+# ── The normalizer, which the parse layer still uses ─────────────────────
 
 
-class TestClassifierToleratesEverySpelling:
-    """Defence in depth: even raw page text classifies correctly."""
+class TestNormalizer:
+    """:func:`normalize_submission_status` survived the revert intact.
 
-    @pytest.mark.parametrize(
-        "raw",
-        ["not-submitted", "not submitted", "Not Submitted", "NOT SUBMITTED", "not_submitted"],
-    )
-    def test_unsubmitted_spellings_are_pending(self, raw):
-        task = {"status": raw, "due_date": "Sep 07, 11:59 PM"}
-        assert get_submission_status(task) == SubmissionStatus.PENDING
-        assert is_task_todo(task) is True
-        assert get_task_display_status(task) == "Incomplete (Todo)"
+    The classifier no longer consults it — that is the whole point of the
+    freeze — but the parse layer still calls it to fill the additive
+    ``submission_status`` / ``tile_declared_status`` fields, so its contract is
+    still worth pinning.
+    """
 
-    @pytest.mark.parametrize("raw", ["submitted", "Submitted", "SUBMITTED"])
-    def test_submitted_spellings_are_submitted(self, raw):
-        assert get_submission_status({"status": raw}) == SubmissionStatus.SUBMITTED
+    def test_round_trip(self):
+        assert normalize_submission_status("Not Submitted") == SUBMISSION_NOT_SUBMITTED
+        assert normalize_submission_status("not-submitted") == SUBMISSION_NOT_SUBMITTED
+        assert normalize_submission_status("Submitted") == SUBMISSION_SUBMITTED
+        assert normalize_submission_status(None) is None
+        assert normalize_submission_status("") is None
 
     def test_a_phrase_that_is_not_purely_a_state_is_not_read_as_one(self):
         """The whitelist is deliberate: an action or a qualifier is not a state.
@@ -589,21 +698,6 @@ class TestClassifierToleratesEverySpelling:
         """
         for raw in ("Submit Coursework", "Upload submission", "Submitted 18 hours early"):
             assert normalize_submission_status(raw) is None, raw
-
-    def test_pending_and_waiting_wordings_are_the_unsubmitted_state(self):
-        for raw in ("Pending", "pending", "Waiting", "Not submitted yet", "No submission"):
-            assert get_submission_status({"status": raw}) == SubmissionStatus.PENDING, raw
-
-    def test_a_state_free_status_is_not_invented(self):
-        for raw in (None, "", "graded", "Not Assessed Yet", "Formative"):
-            assert get_submission_status({"status": raw}) == SubmissionStatus.NONE, raw
-
-    def test_normalizer_round_trip(self):
-        assert normalize_submission_status("Not Submitted") == SUBMISSION_NOT_SUBMITTED
-        assert normalize_submission_status("not-submitted") == SUBMISSION_NOT_SUBMITTED
-        assert normalize_submission_status("Submitted") == SUBMISSION_SUBMITTED
-        assert normalize_submission_status(None) is None
-        assert normalize_submission_status("") is None
 
     def test_labels_prefer_the_submitted_state(self):
         assert submission_status_from_labels(["Formative", "Submitted"]) == SUBMISSION_SUBMITTED

@@ -118,14 +118,30 @@ def submission_status_from_labels(labels: Any) -> str | None:
 def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
     """Evaluate canonical submission status of a task.
 
-    Defence in depth: the parse layer canonicalises what it reads, but this
-    classifier normalizes ``status`` itself as well, so a task carrying raw page
-    text ("Not Submitted", "not submitted", "not-submitted") is classified the
-    same as one carrying the canonical token.  It does not depend on the parse
-    layer having done its job.
+    **This comparison is deliberately exact-string and must stay that way.**
+
+    ``status`` holds ManageBac's *own spelling* — the class-grades card's
+    ``cell not-submitted`` span reads ``"Not Submitted"``, capital N, capital S,
+    a space where the token has a hyphen.  Lowercasing it yields
+    ``"not submitted"``, which does not equal ``"not-submitted"``, so on the
+    class path the token arm below never fires and PENDING is reached through
+    ``has_submit_btn`` alone.
+
+    That is load-bearing, not accidental.  The owner ruled on 2026-09-19 that
+    classification output is frozen: the exact behaviour here is the version
+    that ran a week of live pressure testing through the daemon and webhook.
+    Normalising ``status`` through :func:`normalize_submission_status` makes the
+    token arm fire for every card whose teacher closed the dropbox link, moving
+    those tasks from ``past`` to ``overdue`` — the §6 divergence.  Verified
+    live: zero of the 45 class-grades cards are affected today, so it is latent
+    rather than wrong, but latent is not the same as absent.
+
+    The corrected parse is still available and still trustworthy: producers
+    store the canonical token in ``submission_status`` alongside this field, so
+    an approved rule can be built on real signals without this function moving.
     """
-    status = normalize_submission_status(task.get("status"))
-    if status == SUBMISSION_SUBMITTED:
+    status = str(task.get("status") or "").strip().lower()
+    if status == "submitted":
         return SubmissionStatus.SUBMITTED
 
     labels = (task.get("labels") or [])
@@ -135,7 +151,7 @@ def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
     if any(is_submitted_badge(l) for l in all_labels):
         return SubmissionStatus.SUBMITTED
 
-    if normalize_submission_status(detail.get("status")) == SUBMISSION_SUBMITTED:
+    if str(detail.get("status") or "").strip().lower() == "submitted":
         return SubmissionStatus.SUBMITTED
     if detail.get("submission") or detail.get("submissions"):
         return SubmissionStatus.SUBMITTED
@@ -150,7 +166,7 @@ def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
         task.get("has_submit_button", False)
         or detail.get("has_submit_button", False)
     )
-    if status == SUBMISSION_NOT_SUBMITTED or has_submit_btn:
+    if status == "not-submitted" or has_submit_btn:
         return SubmissionStatus.PENDING
 
     return SubmissionStatus.NONE

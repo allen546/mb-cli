@@ -427,6 +427,33 @@ def _card_submission_status(card, labels: Any = None) -> str | None:
     return submission_status_from_labels(labels)
 
 
+def _card_status_text(card, labels: Any = None) -> str | None:
+    """Return a class-grades card's ``status`` field exactly as the frozen
+    version wrote it.
+
+    Two vocabularies live in this one field, and the split is what makes the
+    frozen classifier behave: the state-class span's text is stored **verbatim**
+    (``"Not Submitted"`` — space, not hyphen), while a card with no span falls
+    back to a label lookup that writes the **canonical token**.  Because
+    :func:`~mb_cli.task_status.get_submission_status` compares exactly, the
+    verbatim spelling never matches and PENDING comes from ``has_submit_btn``,
+    while the label-derived token does match.
+
+    Collapsing both onto one spelling — canonicalising the span, as this branch
+    briefly did — makes the token arm fire for span-bearing cards too, which is
+    the §6 divergence.  This function exists to keep them apart.
+    """
+    status_el = card.find("span", class_=re.compile(r"\b(submitted|not-submitted)\b"))
+    status = status_el.get_text(strip=True) if status_el else None
+    if not status:
+        labels_lower = [l.lower() for l in (labels or [])]
+        if "submitted" in labels_lower:
+            status = "submitted"
+        elif "pending" in labels_lower or "not submitted" in labels_lower:
+            status = SUBMISSION_NOT_SUBMITTED
+    return status
+
+
 def _tile_score_variant(score_div) -> str | None:
     """Return a tasks-list tile's ``f-task-score--<variant>`` modifier, if any.
 
@@ -979,22 +1006,18 @@ class ManageBacClient:
             "has_submit_button": has_submit_button,
         }
         sub_status = get_submission_status(parsed)
-        # The declared state wins: it comes from the page, while `parsed` carries
-        # no status yet for the classifier to work from.
-        if declared_status == SUBMISSION_SUBMITTED:
-            sub_status = SubmissionStatus.SUBMITTED
-        elif declared_status == SUBMISSION_NOT_SUBMITTED and sub_status != SubmissionStatus.SUBMITTED:
-            sub_status = SubmissionStatus.PENDING
         parsed["submission_status"] = sub_status.value
-        # `status` is only written when the tile actually says something.  The old
-        # line asserted "not-submitted" for every task it could not prove
-        # submitted, so 37 graded or unlabelled tiles carried a false status.
-        if sub_status == SubmissionStatus.SUBMITTED:
-            parsed["status"] = SUBMISSION_SUBMITTED
-        elif sub_status == SubmissionStatus.PENDING:
-            parsed["status"] = SUBMISSION_NOT_SUBMITTED
-        else:
-            parsed["status"] = None
+        # The page's own declared state, kept for a future approved rule.  It
+        # deliberately does *not* feed classification — see below.
+        parsed["tile_declared_status"] = declared_status
+        # `status` is asserted, not proven: any tile that cannot be shown
+        # submitted is written "not-submitted", which the frozen classifier reads
+        # as PENDING, so every unsubmitted tile is actionable and a past-due one
+        # lands in `overdue`.  That is the frozen version's behaviour and the one
+        # that ran a week of live daemon + webhook traffic.  Narrowing this to
+        # only the tiles that say so outright — the change this branch had made —
+        # moved 5 tasks from `overdue` to `past` and is reverted here.
+        parsed["status"] = "submitted" if sub_status == SubmissionStatus.SUBMITTED else "not-submitted"
         if sub_status == SubmissionStatus.PENDING:
             parsed["has_submit_button"] = True
         return parsed
@@ -2104,15 +2127,16 @@ class ManageBacClient:
                     if t:
                         labels.append(t)
 
-            # Submission status.  Read off the real signals (the green
-            # `Submitted` badge, the `cell not-submitted` span) and canonicalised
-            # here: the old code stored the span's text verbatim, so the 11
-            # unsubmitted tasks carried "Not Submitted" — capital N, capital S,
-            # space not hyphen — which the `status == "not-submitted"` test
-            # downstream could never match.  Six more tasks have no dropbox link
-            # (their teacher closed it) and no badge at all; those stay None
-            # rather than being guessed into a state.
-            status = _card_submission_status(card, labels)
+            # Two fields, deliberately.  `status` keeps the frozen version's own
+            # spelling (see `_card_status_text`), so the frozen classifier reads
+            # it exactly as it always did.  `submission_status` carries the
+            # canonical token read off the real signals — the green `Submitted`
+            # badge, the `cell not-submitted` span — so an approved rule has a
+            # trustworthy state to build on without moving a classification.
+            # Six tasks have no dropbox link and no badge at all; those stay
+            # None rather than being guessed into a state.
+            status = _card_status_text(card, labels)
+            submission_status = _card_submission_status(card, labels)
 
             # Parse submit button
             dropbox_link = card.find("a", href=re.compile(r"/core_tasks/\d+/dropbox"))
@@ -2160,6 +2184,7 @@ class ManageBacClient:
                     "grade_letter": grade_letter,
                     "points": points_text,
                     "status": status,
+                    "submission_status": submission_status,
                     "category": labels[0] if labels else None,
                     "labels": labels or None,
                     "has_submit_button": has_submit_btn,
@@ -2404,7 +2429,10 @@ class ManageBacClient:
                     t = badge.get_text(strip=True)
                     if t and t not in labels:
                         labels.append(t)
-            detail["status"] = _card_submission_status(card, labels)
+            # Same split as the class-grades card: `status` keeps the frozen
+            # spelling, `submission_status` carries the canonical token.
+            detail["status"] = _card_status_text(card, labels)
+            detail["submission_status"] = _card_submission_status(card, labels)
             detail["labels"] = labels
 
         if not from_hint:
@@ -2532,18 +2560,21 @@ class ManageBacClient:
             due_date = t.get("due_date")
             has_submit_btn = bool(t.get("has_submit_button", False))
             is_submitted = is_task_submitted(t)
-            # Compare the canonical token, not the raw page text: the grades page
-            # writes "Not Submitted" (space, not hyphen), so an exact string test
-            # here silently dropped the unsubmitted state for any card whose
-            # teacher had closed the dropbox link.
-            canonical_status = normalize_submission_status(t.get("status"))
+            # Exact string test on the frozen `status` spelling — this is the §6
+            # gate, and it is deliberately the frozen version's test.  The grades
+            # page writes "Not Submitted" (space, not hyphen), so this arm fires
+            # only for the label-derived canonical token, never for the span text.
+            # Canonising it (as this branch briefly did) makes it fire for every
+            # card whose teacher closed the dropbox link, moving those from `past`
+            # to `overdue`.  The trustworthy reading of that state now lives in
+            # `submission_status`, which nothing here classifies on.
 
             if is_submitted:
                 task_status = "submitted"
-            elif has_submit_btn or canonical_status == SUBMISSION_NOT_SUBMITTED:
+            elif has_submit_btn or t.get("status") == "not-submitted":
                 task_status = "not-submitted"
             else:
-                task_status = canonical_status or t.get("status")
+                task_status = t.get("status")
 
             reconstructed_task = {
                 "id": task_id,
