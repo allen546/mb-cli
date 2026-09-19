@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -97,8 +98,87 @@ EXIT_NOT_RUNNING = 3
 # ── Client helpers ──────────────────────────────────────────────────────
 
 
+def _stdin_is_interactive() -> bool:
+    """Whether a human is present to answer a prompt.
+
+    Same defensive shape as ``resolve_format`` in :mod:`mb_cli.formatters`: a
+    closed or replaced stdin must degrade to "non-interactive" rather than
+    raise, because the daemon and every CI caller reach the code this guards.
+    """
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _prompt_login_setup(args) -> None:
+    """Walk a fresh device through domain, school and email, in that order.
+
+    Asks about what is still unknown — plus the domain, which always has a
+    value and is therefore always confirmed — so a configured machine is not
+    interrogated and a new one is walked through instead of failing on a flag
+    nobody knew it needed. The password prompt stays in :func:`_build_client`
+    and runs last, which puts the credential questions in the order they are
+    actually used.
+
+    Deliberately gated on ``login``: every other command funnels through
+    ``_build_client`` too, and prompting there would stall ``list``/``submit``
+    in scripts and hang the detached daemon. Non-interactive stdin returns
+    immediately, leaving the existing silent resolution — and its
+    ``missing_credentials`` errors — in charge.
+    """
+    if not _stdin_is_interactive() or args.cookie:
+        return
+    try:
+        state = load_state(args.profile, args.config, args.session_file)
+    except Exception:
+        # An absent or unreadable state file must not become a traceback on the
+        # way to a prompt; treat it as "nothing has been saved yet".
+        state = None
+    profile = getattr(state, "profile", None)
+    session = getattr(state, "session", None)
+
+    # `--domain` is the override, and without it this is always asked. It looks
+    # redundant next to the school/email "only if unknown" rule below, but
+    # `ProfileConfig.domain` and `SessionConfig.domain` both default to
+    # "managebac.com", so a domain is *never* absent — an "only if unknown" rule
+    # would silently skip the one choice worth putting on screen.
+    if not args.domain:
+        current_domain = (
+            getattr(profile, "domain", None)
+            or getattr(session, "domain", None)
+            or "managebac.com"
+        )
+        # Empty means "keep it" rather than an error, so the common case is one
+        # keystroke instead of a flag you have to remember exists.
+        args.domain = (
+            input(f"Base domain [{current_domain}]: ").strip() or current_domain
+        )
+
+    if not (
+        args.school
+        or getattr(profile, "school", None)
+        or getattr(session, "school", None)
+    ):
+        # Nothing sensible can be defaulted here — it is the hostname — so keep
+        # asking rather than handing an empty string to the URL builder.
+        while not args.school:
+            args.school = input("School subdomain (e.g. myschool): ").strip()
+
+    if not (
+        args.email
+        or getattr(profile, "email", None)
+        or getattr(session, "email", None)
+    ):
+        args.email = input("Email: ").strip() or args.email
+
+
 def _build_client(args, command: str) -> tuple:
     """CLI wrapper: maps argparse namespace to :func:`auth.build_client`."""
+    # `command` exists for exactly this: the interactive setup belongs to
+    # `login`, not to the fifteen other commands that share this builder.
+    if command == "login":
+        _prompt_login_setup(args)
     password = getattr(args, "password", None)
     cookie = args.cookie
     if not password and not cookie:
@@ -1934,7 +2014,11 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--config", help="Path to config JSON")
         subparser.add_argument("--session-file", help="Path to session JSON")
         subparser.add_argument("--school", help="School subdomain (e.g. myschool)")
-        subparser.add_argument("--domain", "-d", help="Base domain (e.g. managebac.cn)")
+        subparser.add_argument(
+            "--domain",
+            "-d",
+            help="Base domain (default: managebac.com)",
+        )
         subparser.add_argument("--email", "-e", help="Login email")
         if include_password:
             subparser.add_argument("--password", "-p", help="Login password")

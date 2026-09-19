@@ -1384,3 +1384,194 @@ class TestCredsPathResolvesOnce:
 
         with pytest.raises(AttributeError):
             config.THIS_NAME_DOES_NOT_EXIST
+
+
+# ── `login` walks a fresh device through domain, school, email ────────────
+
+
+class TestLoginInteractiveSetup:
+    """`_prompt_login_setup`: ask only for what is unknown, and only for login."""
+
+    def _login_args(self, *extra):
+        return m.build_parser().parse_args(["login", "--format", "json", *extra])
+
+    def _write_profile(self, school=None, domain=None, email=None, cookie="cookieval"):
+        """Persist real state so `_prompt_login_setup` sees known values.
+
+        Goes through the actual save functions rather than hand-writing JSON:
+        the saved domain lives in *both* config.json and session.json, and
+        `ProfileConfig.domain` defaults to "managebac.com", so a session-only
+        file leaves a truthy default that masks the saved value.
+        """
+        state = m.load_state(None, None, None)
+        state.profile.school = school
+        state.profile.domain = domain or "managebac.com"
+        state.profile.email = email
+        state.session.school = school
+        state.session.domain = domain or "managebac.com"
+        state.session.email = email
+        state.session.cookie = cookie
+        m.save_profile(state)
+        m.save_session(state)
+
+    def _run(self, args, answers):
+        """Drive the prompts with *answers*, returning the sequence asked."""
+        asked = []
+
+        def fake_input(prompt=""):
+            asked.append(prompt)
+            return answers[len(asked) - 1] if len(asked) <= len(answers) else ""
+
+        with (
+            patch.object(m, "_stdin_is_interactive", return_value=True),
+            patch("builtins.input", side_effect=fake_input),
+        ):
+            m._prompt_login_setup(args)
+        return asked
+
+    def test_fresh_device_is_asked_in_use_order(self, isolated_env):
+        """domain, then school, then email — the order they are actually used."""
+        args = self._login_args()
+        asked = self._run(args, ["", "myschool", "student@example.com"])
+        assert asked == [
+            "Base domain [managebac.com]: ",
+            "School subdomain (e.g. myschool): ",
+            "Email: ",
+        ]
+        assert args.domain == "managebac.com"  # empty means the default
+        assert args.school == "myschool"
+        assert args.email == "student@example.com"
+
+    def test_configured_device_only_confirms_the_domain(self, isolated_env):
+        """School and email are known, so they are not re-asked.
+
+        The domain still is, and shows the saved value — that is the point: a
+        ``managebac.cn`` operator must be able to see the domain in play rather
+        than have it inherit a silent default.
+        """
+        self._write_profile(
+            school="myschool", domain="managebac.cn", email="student@example.com"
+        )
+        args = self._login_args()
+        asked = self._run(args, [""])
+        assert asked == ["Base domain [managebac.cn]: "]
+        assert args.domain == "managebac.cn"  # empty means "keep it"
+        assert args.school is None
+        assert args.email is None
+
+    def test_domain_prompt_offers_the_builtin_default(self, isolated_env):
+        """A fresh device shows managebac.com rather than failing or guessing."""
+        args = self._login_args()
+        asked = self._run(args, ["", "myschool", "student@example.com"])
+        assert asked[0] == "Base domain [managebac.com]: "
+        assert args.domain == "managebac.com"
+
+    def test_explicit_domain_flag_suppresses_the_prompt(self, isolated_env):
+        """`--domain` is the override; it must not be second-guessed."""
+        args = self._login_args("--domain", "managebac.cn")
+        asked = self._run(args, ["myschool", "student@example.com"])
+        assert asked == ["School subdomain (e.g. myschool): ", "Email: "]
+        assert args.domain == "managebac.cn"
+
+    def test_only_the_missing_field_is_asked(self, isolated_env):
+        """Partial config prompts the gap, not the whole questionnaire."""
+        args = self._login_args("--school", "myschool")
+        asked = self._run(args, ["", "student@example.com"])
+        assert asked == ["Base domain [managebac.com]: ", "Email: "]
+
+    def test_flags_count_as_known_and_suppress_every_prompt(self, isolated_env):
+        args = self._login_args(
+            "--school", "myschool", "--domain", "managebac.cn", "--email", "a@b.c"
+        )
+        asked = self._run(args, [])
+        assert asked == []
+
+    def test_non_interactive_stdin_prompts_nothing(self, isolated_env):
+        """The daemon and CI reach this path; they must never block on input."""
+        args = self._login_args()
+        with (
+            patch.object(m, "_stdin_is_interactive", return_value=False),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            m._prompt_login_setup(args)
+        assert args.school is None
+        assert args.domain is None
+        assert args.email is None
+
+    def test_closed_stdin_is_treated_as_non_interactive(self, isolated_env):
+        """isatty() can raise on a detached fd; that must not crash login."""
+        args = self._login_args()
+        real = sys.stdin
+        try:
+            m.sys.stdin = None  # None.isatty() raises AttributeError
+            assert m._stdin_is_interactive() is False
+            with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+                m._prompt_login_setup(args)
+        finally:
+            m.sys.stdin = real
+        assert args.domain is None
+
+    def test_cookie_login_skips_the_questionnaire(self, isolated_env):
+        """A cookie needs no email or domain walk-through."""
+        args = self._login_args("--cookie", "abc123")
+        with (
+            patch.object(m, "_stdin_is_interactive", return_value=True),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            m._prompt_login_setup(args)
+        assert args.domain is None
+
+    def test_empty_school_is_re_asked(self, isolated_env):
+        """An empty school would build a URL with no host, so keep asking."""
+        args = self._login_args("--domain", "managebac.com")
+        asked = self._run(args, ["", "   ", "myschool", "student@example.com"])
+        assert asked == [
+            "School subdomain (e.g. myschool): ",
+            "School subdomain (e.g. myschool): ",
+            "School subdomain (e.g. myschool): ",
+            "Email: ",
+        ]
+        assert args.school == "myschool"
+
+    def test_unreadable_state_file_still_prompts(self, isolated_env, monkeypatch):
+        """A corrupt state file must not turn into a traceback on the way in."""
+        Path(os.environ["MB_CRAWLER_SESSION"]).write_text("{not json")
+        args = self._login_args()
+        asked = self._run(args, ["", "myschool", "student@example.com"])
+        assert asked[0] == "Base domain [managebac.com]: "
+
+    def test_other_commands_never_prompt(self, isolated_env):
+        """The gate: only `login` may block waiting on a human."""
+        args = m.build_parser().parse_args(["list", "--format", "json"])
+        with (
+            patch.object(m, "build_client", side_effect=SystemExit(0)),
+            patch.object(m.getpass, "getpass", return_value="typed"),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            with pytest.raises(SystemExit):
+                m._build_client(args, "list")
+
+    def test_login_still_prompts_for_the_password_last(self, isolated_env):
+        """Order guarantee: the setup questions precede the credential one."""
+        order = []
+        args = self._login_args()
+        with (
+            patch.object(m, "_stdin_is_interactive", return_value=True),
+            patch.object(m.getpass, "getpass", lambda *a, **k: order.append("password") or "pw"),
+            patch.object(m, "build_client", side_effect=SystemExit(0)),
+        ):
+            def fake_input(prompt=""):
+                order.append(prompt)
+                return {"Base domain [managebac.com]: ": "",
+                        "School subdomain (e.g. myschool): ": "myschool",
+                        "Email: ": "student@example.com"}[prompt]
+
+            with patch("builtins.input", side_effect=fake_input):
+                with pytest.raises(SystemExit):
+                    m._build_client(args, "login")
+        assert order == [
+            "Base domain [managebac.com]: ",
+            "School subdomain (e.g. myschool): ",
+            "Email: ",
+            "password",
+        ]

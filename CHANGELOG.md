@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Dates for `0.3.0` and earlier are derived from git history (those releases were
 never tagged); from `0.4.0` on, a date is the date of its `vX.Y.Z` git tag.
 
+## [Unreleased]
+
+### Changed
+- **`tahuti login` asks for the domain, school and email before the password.**
+  A fresh device no longer has to know that `--school` and `--domain` exist:
+  it is asked, in the order those values are actually used. The domain is
+  always confirmed and shows its current value — `Base domain
+  [managebac.com]:` — with an empty answer meaning "keep it", so the one choice
+  worth seeing is never inherited silently. School and email have no sensible
+  default (the school *is* the hostname), so they are asked only when nothing
+  is known yet; a configured device therefore sees at most the domain line.
+  `--domain` is the override and is never second-guessed.
+  Prompting is gated on `login` and on an interactive stdin, so the daemon,
+  CI and every other command that shares `_build_client` cannot be stalled
+  waiting on a human. `--domain`'s help text now names the real default
+  (`managebac.com`) rather than implying `managebac.cn`.
+
 ## [0.4.1] - 2026-09-19
 
 Security and parsing fixes from the 2026-09-19 full-codebase review.
