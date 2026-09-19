@@ -31,10 +31,101 @@ def is_submitted_badge(badge: str) -> bool:
     return "submitted" in b and "not" not in b and "un" not in b
 
 
+# The only two submission states anything downstream may compare against.  Every
+# producer stores one of these and every consumer tests against them, so no
+# caller is one capital letter — or one space-versus-hyphen — away from a wrong
+# answer.
+SUBMISSION_SUBMITTED = "submitted"
+SUBMISSION_NOT_SUBMITTED = "not-submitted"
+
+# ManageBac's wordings for "this has been handed in".
+_SUBMIT_WORDS = frozenset(
+    {"submit", "submits", "submitted", "submitting", "submission", "submissions"}
+)
+
+# Wordings that say the outstanding state, either on their own ("Pending",
+# "Waiting") or as a qualifier on a submit word ("Not Submitted", "No
+# submission", "Awaiting submission").
+_OUTSTANDING_WORDS = frozenset(
+    {"unsubmitted", "unsubmission", "unsubmissions", "pending", "waiting", "awaiting", "awaited", "outstanding"}
+)
+_NEGATION_WORDS = frozenset({"not", "no", "never", "none", "non"})
+
+# Words that can pad a state phrase without changing it ("Not submitted yet").
+_FILLER_WORDS = frozenset({"yet", "still", "is", "are", "was", "were", "been", "be"})
+
+# A submission state is spelled *only* out of these words.  The whitelist is what
+# keeps an action ("Submit Coursework", "Upload submission") from being read as a
+# state — that mistake reported a pending task with an open dropbox link as
+# already submitted.
+_STATE_WORDS = _SUBMIT_WORDS | _OUTSTANDING_WORDS | _NEGATION_WORDS | _FILLER_WORDS
+
+
+def normalize_submission_status(raw: Any) -> str | None:
+    """Canonicalise ManageBac's submission wording to a canonical token.
+
+    The same two states arrive spelled half a dozen ways: "Submitted",
+    "not-submitted", "Not Submitted" (space, not hyphen — that is literally what
+    the ``cell not-submitted`` span contains), "Pending", "Waiting".  Storing
+    that text verbatim is what made the ``status == "not-submitted"`` test
+    downstream permanently dead, so the parse layer canonicalises here and the
+    classifier below independently tolerates the raw spellings: neither layer
+    depends on the other.
+
+    Returns :data:`SUBMISSION_SUBMITTED` / :data:`SUBMISSION_NOT_SUBMITTED`, or
+    ``None`` when *raw* is not a submission state at all — an action label, a
+    category name, "Not Assessed Yet".  ``None`` is a real answer and must never
+    be coerced into a state, which is how unlabelled tasks came to be reported as
+    unsubmitted (and, with no dropbox link to rescue them, as "Complete").
+    """
+    text = str(raw or "").strip().lower()
+    if not text:
+        return None
+    # "Not Submitted", "not-submitted", "not_submitted" and "not  submitted"
+    # all collapse to the same word list.
+    words = [w for w in re.split(r"[^a-z]+", text) if w]
+    if not words or any(w not in _STATE_WORDS for w in words):
+        return None
+
+    if any(w in _SUBMIT_WORDS for w in words):
+        # A qualifier decides: "Not Submitted", "No submission" and "Submission
+        # pending" are all the outstanding state, not the submitted one.
+        if any(w in _OUTSTANDING_WORDS or w in _NEGATION_WORDS for w in words):
+            return SUBMISSION_NOT_SUBMITTED
+        return SUBMISSION_SUBMITTED
+
+    if any(w in _OUTSTANDING_WORDS for w in words):
+        return SUBMISSION_NOT_SUBMITTED
+    return None
+
+
+def submission_status_from_labels(labels: Any) -> str | None:
+    """Canonicalise the submission wording carried by a list of labels.
+
+    Badge and category labels are the only signal some pages give, so "Submitted"
+    among the labels means submitted.  The outstanding state is only inferred when
+    a label says so outright — silence stays ``None`` rather than becoming
+    "unsubmitted".
+    """
+    tokens = [normalize_submission_status(label) for label in (labels or [])]
+    if SUBMISSION_SUBMITTED in tokens:
+        return SUBMISSION_SUBMITTED
+    if SUBMISSION_NOT_SUBMITTED in tokens:
+        return SUBMISSION_NOT_SUBMITTED
+    return None
+
+
 def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
-    """Evaluate canonical submission status of a task."""
-    status = str(task.get("status") or "").strip().lower()
-    if status == "submitted":
+    """Evaluate canonical submission status of a task.
+
+    Defence in depth: the parse layer canonicalises what it reads, but this
+    classifier normalizes ``status`` itself as well, so a task carrying raw page
+    text ("Not Submitted", "not submitted", "not-submitted") is classified the
+    same as one carrying the canonical token.  It does not depend on the parse
+    layer having done its job.
+    """
+    status = normalize_submission_status(task.get("status"))
+    if status == SUBMISSION_SUBMITTED:
         return SubmissionStatus.SUBMITTED
 
     labels = (task.get("labels") or [])
@@ -44,7 +135,7 @@ def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
     if any(is_submitted_badge(l) for l in all_labels):
         return SubmissionStatus.SUBMITTED
 
-    if str(detail.get("status") or "").strip().lower() == "submitted":
+    if normalize_submission_status(detail.get("status")) == SUBMISSION_SUBMITTED:
         return SubmissionStatus.SUBMITTED
     if detail.get("submission") or detail.get("submissions"):
         return SubmissionStatus.SUBMITTED
@@ -59,7 +150,7 @@ def get_submission_status(task: dict[str, Any]) -> SubmissionStatus:
         task.get("has_submit_button", False)
         or detail.get("has_submit_button", False)
     )
-    if status == "not-submitted" or has_submit_btn:
+    if status == SUBMISSION_NOT_SUBMITTED or has_submit_btn:
         return SubmissionStatus.PENDING
 
     return SubmissionStatus.NONE
